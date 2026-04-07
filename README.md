@@ -29,6 +29,7 @@ If you need a non-default PyTorch wheel source, set `TORCH_INDEX_URL` before run
 
 ## CLI Entry Points
 
+- `trifusesurv-prepare-opscc-tabular` -- prepare OPSCC cohort from CSV files (no DICOM required)
 - `trifusesurv-preprocess-export-swinunetr` -- export CT and mask volumes from DICOM
 - `trifusesurv-make-cv-splits` -- create patient-level fold files
 - `trifusesurv-stage1-train-seg` -- stage 1 segmentation pretraining
@@ -44,14 +45,49 @@ Legacy entry points (`trifusesurv-moe-train`, `trifusesurv-seg-pretrain`, etc.) 
 
 ## Pipeline
 
+### Full Pipeline (with DICOM imaging)
+
 - Preparation:
-  run `trifusesurv-preprocess-export-swinunetr` to export CT and mask volumes, then `trifusesurv-make-cv-splits` to create patient-level fold files.
+  run `trifusesurv-preprocess-export-swinunetr` to export CT and mask volumes, then `trifusesurv-prepare-opscc-tabular` to merge `opscc_survival_time_event.csv`, `clinical_covariate.csv`, and `cohort_radiomics_patient_wide.csv` into the stage-2 metafile, then `trifusesurv-make-cv-splits` to create patient-level fold files.
 - Stage 1 segmentation:
   train with `trifusesurv-stage1-train-seg`, evaluate with `trifusesurv-stage1-eval-seg`, and inspect attention with `trifusesurv-stage1-gradcam-seg`.
 - Stage 2 multimodal survival:
   train with `trifusesurv-stage2-train-survival` (add `--use_lora` for LoRA fine-tuning), then run SHAP analysis with `trifusesurv-stage2-shap-tokens` or `trifusesurv-stage2-shap-grouped`.
 - Two-stage H100 test driver:
   source settings from `scripts/config/pipeline_2xh100_test.env`, then run `./scripts/run_two_stage_pipeline_2xh100.sh`.
+  The packaged defaults assume this relative layout from the workspace root that contains `TriFuseSurv_package`:
+  - `OPSCC`
+  - `opscc_survival_time_event.csv`
+  - `clinical_covariate.csv`
+  - `cohort_radiomics_patient_wide.csv`
+  GPU assignment is automatic by default: the pipeline detects all available GPUs and distributes stage jobs across them unless you override the GPU fields in the settings file.
+
+### Stage-2 Metafile Preparation
+
+`trifusesurv-prepare-opscc-tabular` is the bridge between preprocessing/stage 1 and stage 2. It keeps the CT and mask paths from `cohort_preprocessed.csv`, refreshes the survival endpoints from `opscc_survival_time_event.csv`, merges the clinical covariates, and records which patients are covered by the patient-wide radiomics CSV.
+
+Example:
+```bash
+trifusesurv-prepare-opscc-tabular \
+  --base_meta_csv OPSCC_preprocessed_128/cohort_preprocessed.csv \
+  --surv_csv opscc_survival_time_event.csv \
+  --clin_csv clinical_covariate.csv \
+  --radio_csv cohort_radiomics_patient_wide.csv \
+  --out_dir OPSCC_preprocessed_128 \
+  --out_csv cohort_preprocessed_stage2.csv
+
+trifusesurv-make-cv-splits \
+  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
+  --endpoint OS \
+  --cv_folds 4 \
+  --out_dir runs/opscc_splits
+
+trifusesurv-stage2-train-survival \
+  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
+  --splits_dir runs/opscc_splits \
+  --use_radiomics \
+  --radiomics_root cohort_radiomics_patient_wide.csv
+```
 
 ## Zip Bundle
 

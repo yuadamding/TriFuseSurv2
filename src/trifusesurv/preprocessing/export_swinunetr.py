@@ -7,9 +7,9 @@ End-to-end OFFLINE preprocessing for Swin UNETR survival on OPSCC:
 Inputs
 ------
 1) DICOM cohort root (one folder per patient):
-    data/OPSCC/A0522/*.dcm  (CT + RTSTRUCT in same folder)
+    OPSCC/A0522/*.dcm  (CT + RTSTRUCT in same folder)
 2) Survival table:
-    data/opscc_survival_time_event.csv
+    opscc_survival_time_event.csv
 3) (Optional) A cohort_meta.csv produced by the summarization step is NOT required.
    This script will redo the minimal DICOM/RTSTRUCT parsing itself.
 
@@ -52,8 +52,7 @@ pip install opencv-python-headless
 
 Example run
 -----------
-cd .
-PYTHONPATH=src python3 -m trifusesurv.preprocessing.export_swinunetr \
+PYTHONPATH=TriFuseSurv_package/src python3 -m trifusesurv.preprocessing.export_swinunetr \
   --root OPSCC \
   --surv_csv opscc_survival_time_event.csv \
   --out_root OPSCC_preprocessed_128_2 \
@@ -70,12 +69,29 @@ import itertools
 import re
 from typing import Optional, Tuple, List, Dict, Any
 
-import numpy as np
-import pandas as pd
-import pydicom
-import SimpleITK as sitk
-
-from rt_utils import RTStructBuilder
+try:
+    import numpy as np
+    import pandas as pd
+    import pydicom
+    import SimpleITK as sitk
+    from rt_utils import RTStructBuilder
+except ModuleNotFoundError as exc:
+    missing = getattr(exc, "name", "a required dependency")
+    raise SystemExit(
+        f"Missing preprocessing dependency: {missing}. "
+        "Run ./scripts/install_env.sh or install the package dependencies with "
+        "`python -m pip install --upgrade -e .`."
+    ) from exc
+except ImportError as exc:
+    msg = str(exc)
+    if "libxcb" in msg or "cv2" in msg:
+        raise SystemExit(
+            "OpenCV failed to import for preprocessing. "
+            "Reinstall the headless OpenCV build with:\n"
+            "  python -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless opencv-contrib-python-headless\n"
+            "  python -m pip install --upgrade --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84"
+        ) from exc
+    raise
 
 
 # ---------------------------

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+cd "$WORKSPACE_ROOT"
 
-export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
-DICOM_ROOT="${DICOM_ROOT:-data/OPSCC}"
-SURV_CSV="${SURV_CSV:-data/opscc_survival_time_event.csv}"
+DICOM_ROOT="${DICOM_ROOT:-OPSCC}"
+SURV_CSV="${SURV_CSV:-opscc_survival_time_event.csv}"
 OUT_ROOT="${OUT_ROOT:-OPSCC_preprocessed_128}"
 OUT_CSV="${OUT_CSV:-cohort_preprocessed.csv}"
 SPACING_X="${SPACING_X:-0.5}"

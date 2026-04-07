@@ -24,7 +24,7 @@ mkdir -p "$OUT"
 
 CUDA_VISIBLE_DEVICES=0 \
 python -m trifusesurv.multimodal_survival.train \
-  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_with_clin.csv \
+  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
   --splits_dir runs/opscc_splits_os_seed1 \
   --cv_folds 4 --debug_fold 0 --strict_splits \
   --endpoint OS \
@@ -46,6 +46,7 @@ python -m trifusesurv.multimodal_survival.train \
   --lr_lora 3e-4 --wd_lora 0 \
   --lr_head 8e-5 --wd_head 1e-3 --wd_clin 5e-4 --wd_rad 2e-3 \
   --pt_shell_radius 5 --ln_shell_radius 5 \
+  --radiomics_root cohort_radiomics_patient_wide.csv \
   --radiomics_pca_total_components 100 \
   --shell_body_from_ct \
   --use_lora --lora_scope both --lora_r 16 --lora_alpha 32 --lora_dropout 0.10 \
@@ -78,7 +79,7 @@ mkdir -p "$OUT"
 
 CUDA_VISIBLE_DEVICES=1 \
 python -m trifusesurv.multimodal_survival.train \
-  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_with_clin.csv \
+  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
   --splits_dir runs/opscc_splits_os_seed1 \
   --cv_folds 4 --debug_fold 1 --strict_splits \
   --endpoint OS \
@@ -100,6 +101,7 @@ python -m trifusesurv.multimodal_survival.train \
   --lr_lora 3e-4 --wd_lora 0 \
   --lr_head 8e-5 --wd_head 1e-3 --wd_clin 5e-4 --wd_rad 2e-3 \
   --pt_shell_radius 5 --ln_shell_radius 5 \
+  --radiomics_root cohort_radiomics_patient_wide.csv \
   --radiomics_pca_total_components 100 \
   --shell_body_from_ct \
   --use_lora --lora_scope both --lora_r 16 --lora_alpha 32 --lora_dropout 0.10 \
@@ -1468,7 +1470,12 @@ def parse_args():
     p.add_argument("--use_radiomics", dest="use_radiomics", action="store_true")
     p.add_argument("--no_radiomics", dest="use_radiomics", action="store_false")
     p.set_defaults(use_radiomics=True)
-    p.add_argument("--radiomics_root", type=str, default="radiomics_features/radiomics_features")
+    p.add_argument(
+        "--radiomics_root",
+        type=str,
+        default="radiomics_features/radiomics_features",
+        help="Radiomics source: directory of per-patient CSVs or a patient-wide CSV file.",
+    )
     p.add_argument("--radiomics_pca_total_components", type=int, default=100)
 
     # Swin cfg

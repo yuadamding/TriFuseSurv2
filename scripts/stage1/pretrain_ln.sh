@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+cd "$WORKSPACE_ROOT"
 
-export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
 
 META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed.csv}"
 OUT_DIR="${OUT_DIR:-runs/seg_overfit_ln_big_stable}"
-CUDA_DEVICE="${CUDA_DEVICE:-1}"
+CUDA_DEVICE="${CUDA_DEVICE:-auto}"
 DEVICE="${DEVICE:-cuda:0}"
+
+if [[ "$CUDA_DEVICE" == "auto" || -z "$CUDA_DEVICE" ]]; then
+  if ! CUDA_DEVICE="$(tf_first_gpu_id)"; then
+    echo "[error] could not detect an available GPU for stage1 LN pretraining." >&2
+    exit 1
+  fi
+fi
 
 CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" \
 python3 -m trifusesurv.segmentation.train \

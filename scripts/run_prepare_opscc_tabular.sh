@@ -2,4 +2,4 @@
 set -euo pipefail
 
 PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec bash "$PACKAGE_DIR/scripts/stage1/pretrain_ln.sh" "$@"
+exec bash "$PACKAGE_DIR/scripts/preprocessing/prepare_opscc_tabular.sh" "$@"

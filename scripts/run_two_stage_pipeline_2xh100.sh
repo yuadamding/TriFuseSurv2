@@ -1,19 +1,65 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
 
-SETTINGS_FILE="${1:-${PIPELINE_SETTINGS:-scripts/config/pipeline_2xh100_test.env}}"
+SETTINGS_FILE="${1:-${PIPELINE_SETTINGS:-$PACKAGE_DIR/scripts/config/pipeline_2xh100_test.env}}"
+if [[ "$SETTINGS_FILE" != /* && ! -f "$SETTINGS_FILE" && -f "$PACKAGE_DIR/$SETTINGS_FILE" ]]; then
+  SETTINGS_FILE="$PACKAGE_DIR/$SETTINGS_FILE"
+fi
 if [[ ! -f "$SETTINGS_FILE" ]]; then
   echo "[error] settings file not found: $SETTINGS_FILE" >&2
   exit 1
 fi
 
+ENV_RUN_PREPROCESS="${RUN_PREPROCESS-__TF_UNSET__}"
+ENV_RUN_PREPARE_STAGE2="${RUN_PREPARE_STAGE2-__TF_UNSET__}"
+ENV_RUN_SPLITS="${RUN_SPLITS-__TF_UNSET__}"
+ENV_RUN_STAGE1="${RUN_STAGE1-__TF_UNSET__}"
+ENV_RUN_STAGE2="${RUN_STAGE2-__TF_UNSET__}"
+
 # shellcheck disable=SC1090
 source "$SETTINGS_FILE"
 
-export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+if [[ "$ENV_RUN_PREPROCESS" != "__TF_UNSET__" ]]; then
+  RUN_PREPROCESS="$ENV_RUN_PREPROCESS"
+fi
+if [[ "$ENV_RUN_PREPARE_STAGE2" != "__TF_UNSET__" ]]; then
+  RUN_PREPARE_STAGE2="$ENV_RUN_PREPARE_STAGE2"
+fi
+if [[ "$ENV_RUN_SPLITS" != "__TF_UNSET__" ]]; then
+  RUN_SPLITS="$ENV_RUN_SPLITS"
+fi
+if [[ "$ENV_RUN_STAGE1" != "__TF_UNSET__" ]]; then
+  RUN_STAGE1="$ENV_RUN_STAGE1"
+fi
+if [[ "$ENV_RUN_STAGE2" != "__TF_UNSET__" ]]; then
+  RUN_STAGE2="$ENV_RUN_STAGE2"
+fi
+
+: "${STAGE1_GPU_PT:=}"
+: "${STAGE1_GPU_LN:=}"
+if ! declare -p STAGE2_GPU_IDS >/dev/null 2>&1; then
+  STAGE2_GPU_IDS=()
+else
+  case "$(declare -p STAGE2_GPU_IDS 2>/dev/null)" in
+    "declare -a "*)
+      ;;
+    *)
+      if [[ -n "${STAGE2_GPU_IDS:-}" ]]; then
+        STAGE2_GPU_IDS=("$STAGE2_GPU_IDS")
+      else
+        STAGE2_GPU_IDS=()
+      fi
+      ;;
+  esac
+fi
+
+cd "$WORKSPACE_ROOT"
+
+export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
 
 wait_all_or_fail() {
   local status=0
@@ -24,6 +70,116 @@ wait_all_or_fail() {
     fi
   done
   return "$status"
+}
+
+detect_available_gpus() {
+  local -a ids=()
+  mapfile -t ids < <(tf_detect_gpu_ids)
+  if (( ${#ids[@]} == 0 )); then
+    echo "[error] no GPUs detected. Set CUDA_VISIBLE_DEVICES or ensure nvidia-smi is available." >&2
+    exit 1
+  fi
+  AVAILABLE_GPU_IDS=("${ids[@]}")
+  echo "[pipeline] detected GPUs: ${AVAILABLE_GPU_IDS[*]}"
+}
+
+resolve_stage1_gpus() {
+  RESOLVED_STAGE1_GPU_PT="${STAGE1_GPU_PT:-}"
+  RESOLVED_STAGE1_GPU_LN="${STAGE1_GPU_LN:-}"
+
+  if [[ -n "$RESOLVED_STAGE1_GPU_PT" && -n "$RESOLVED_STAGE1_GPU_LN" ]]; then
+    return
+  fi
+
+  if [[ -n "$RESOLVED_STAGE1_GPU_PT" && -z "$RESOLVED_STAGE1_GPU_LN" ]]; then
+    if mapfile -t AVAILABLE_GPU_IDS < <(tf_detect_gpu_ids); then
+      if (( ${#AVAILABLE_GPU_IDS[@]} >= 2 )); then
+        RESOLVED_STAGE1_GPU_LN="${AVAILABLE_GPU_IDS[1]}"
+      else
+        RESOLVED_STAGE1_GPU_LN="$RESOLVED_STAGE1_GPU_PT"
+      fi
+      return
+    fi
+    RESOLVED_STAGE1_GPU_LN="$RESOLVED_STAGE1_GPU_PT"
+    return
+  fi
+
+  if [[ -z "$RESOLVED_STAGE1_GPU_PT" && -n "$RESOLVED_STAGE1_GPU_LN" ]]; then
+    RESOLVED_STAGE1_GPU_PT="$RESOLVED_STAGE1_GPU_LN"
+    return
+  fi
+
+  detect_available_gpus
+
+  if [[ -z "$RESOLVED_STAGE1_GPU_PT" ]]; then
+    RESOLVED_STAGE1_GPU_PT="${AVAILABLE_GPU_IDS[0]}"
+  fi
+  if [[ -z "$RESOLVED_STAGE1_GPU_LN" ]]; then
+    if (( ${#AVAILABLE_GPU_IDS[@]} >= 2 )); then
+      RESOLVED_STAGE1_GPU_LN="${AVAILABLE_GPU_IDS[1]}"
+    else
+      RESOLVED_STAGE1_GPU_LN="${AVAILABLE_GPU_IDS[0]}"
+    fi
+  fi
+}
+
+resolve_stage2_gpus() {
+  local -a ids=()
+
+  if (( ${#STAGE2_GPU_IDS[@]} > 0 )); then
+    ids=()
+    local gpu
+    for gpu in "${STAGE2_GPU_IDS[@]}"; do
+      if [[ -z "$gpu" ]]; then
+        continue
+      fi
+      if [[ "$gpu" == *","* || "$gpu" == *" "* ]]; then
+        local part
+        for part in ${gpu//,/ }; do
+          [[ -n "$part" ]] && ids+=("$part")
+        done
+      else
+        ids+=("$gpu")
+      fi
+    done
+  fi
+
+  if (( ${#ids[@]} == 0 )); then
+    detect_available_gpus
+    ids=("${AVAILABLE_GPU_IDS[@]}")
+  fi
+
+  RESOLVED_STAGE2_GPU_IDS=("${ids[@]}")
+}
+
+maybe_enable_missing_prereqs() {
+  local preprocess_meta="${PREPROCESS_OUT_ROOT}/${PREPROCESS_OUT_CSV}"
+  local stage2_meta="${PREPARE_STAGE2_OUT_DIR}/${PREPARE_STAGE2_OUT_CSV}"
+
+  if [[ "$RUN_PREPROCESS" != "1" ]]; then
+    if [[ "$RUN_PREPARE_STAGE2" == "1" || "$RUN_STAGE1" == "1" ]]; then
+      if [[ ! -f "$preprocess_meta" ]]; then
+        echo "[pipeline] missing $preprocess_meta, enabling preprocessing"
+        RUN_PREPROCESS=1
+      fi
+    fi
+  fi
+
+  if [[ "$RUN_PREPARE_STAGE2" != "1" ]]; then
+    if [[ "$RUN_SPLITS" == "1" || "$RUN_STAGE2" == "1" ]]; then
+      if [[ ! -f "$stage2_meta" ]]; then
+        echo "[pipeline] missing $stage2_meta, enabling stage-2 metafile preparation"
+        RUN_PREPARE_STAGE2=1
+      fi
+    fi
+  fi
+
+  if [[ "$RUN_SPLITS" != "1" && "$RUN_STAGE2" == "1" ]]; then
+    if [[ ! -d "$SPLITS_OUT_DIR" ]]; then
+      echo "[pipeline] missing $SPLITS_OUT_DIR, enabling split generation"
+      RUN_SPLITS=1
+    fi
+  fi
 }
 
 run_preprocess() {
@@ -42,7 +198,7 @@ run_preprocess() {
   HU_MIN="$PREPROCESS_HU_MIN" \
   HU_MAX="$PREPROCESS_HU_MAX" \
   RECURSIVE="$PREPROCESS_RECURSIVE" \
-  ./scripts/run_preprocess_export_swinunetr.sh "${PREPROCESS_EXTRA_ARGS[@]}"
+  bash "$PACKAGE_DIR/scripts/run_preprocess_export_swinunetr.sh" "${PREPROCESS_EXTRA_ARGS[@]}"
 }
 
 run_splits() {
@@ -56,28 +212,54 @@ run_splits() {
   VAL_FRAC="$SPLITS_VAL_FRAC" \
   SPLIT_SEED="$SPLITS_SEED" \
   OUT_DIR="$SPLITS_OUT_DIR" \
-  ./scripts/run_make_cv_splits.sh "${SPLITS_EXTRA_ARGS[@]}"
+  bash "$PACKAGE_DIR/scripts/run_make_cv_splits.sh" "${SPLITS_EXTRA_ARGS[@]}"
+}
+
+run_prepare_stage2() {
+  echo "[pipeline] preparing stage-2 metafile -> $PREPARE_STAGE2_OUT_DIR/$PREPARE_STAGE2_OUT_CSV"
+  BASE_META_CSV="$PREPARE_STAGE2_BASE_META_CSV" \
+  SURV_CSV="$PREPARE_STAGE2_SURV_CSV" \
+  CLIN_CSV="$PREPARE_STAGE2_CLIN_CSV" \
+  RADIO_CSV="$PREPARE_STAGE2_RADIO_CSV" \
+  OUT_DIR="$PREPARE_STAGE2_OUT_DIR" \
+  OUT_CSV="$PREPARE_STAGE2_OUT_CSV" \
+  bash "$PACKAGE_DIR/scripts/run_prepare_opscc_tabular.sh" "${PREPARE_STAGE2_EXTRA_ARGS[@]}"
 }
 
 run_stage1() {
-  echo "[pipeline] stage 1 PT/LN pretraining on GPUs $STAGE1_GPU_PT and $STAGE1_GPU_LN"
+  resolve_stage1_gpus
+  echo "[pipeline] stage 1 PT/LN pretraining on GPUs $RESOLVED_STAGE1_GPU_PT and $RESOLVED_STAGE1_GPU_LN"
 
   META_CSV="$STAGE1_META_CSV" \
   OUT_DIR="$STAGE1_PT_OUT_DIR" \
-  CUDA_DEVICE="$STAGE1_GPU_PT" \
+  CUDA_DEVICE="$RESOLVED_STAGE1_GPU_PT" \
   DEVICE="$STAGE1_DEVICE" \
-  ./scripts/run_stage1_pretrain_pt.sh \
+  bash "$PACKAGE_DIR/scripts/run_stage1_pretrain_pt.sh" \
     --epochs "$STAGE1_EPOCHS" \
     --batch_size "$STAGE1_BATCH_SIZE" \
     --workers "$STAGE1_WORKERS" \
     "${STAGE1_PT_EXTRA_ARGS[@]}" &
   pt_pid=$!
 
+  if [[ "$RESOLVED_STAGE1_GPU_LN" == "$RESOLVED_STAGE1_GPU_PT" ]]; then
+    wait_all_or_fail "$pt_pid"
+    META_CSV="$STAGE1_META_CSV" \
+    OUT_DIR="$STAGE1_LN_OUT_DIR" \
+    CUDA_DEVICE="$RESOLVED_STAGE1_GPU_LN" \
+    DEVICE="$STAGE1_DEVICE" \
+    bash "$PACKAGE_DIR/scripts/run_stage1_pretrain_ln.sh" \
+      --epochs "$STAGE1_EPOCHS" \
+      --batch_size "$STAGE1_BATCH_SIZE" \
+      --workers "$STAGE1_WORKERS" \
+      "${STAGE1_LN_EXTRA_ARGS[@]}"
+    return
+  fi
+
   META_CSV="$STAGE1_META_CSV" \
   OUT_DIR="$STAGE1_LN_OUT_DIR" \
-  CUDA_DEVICE="$STAGE1_GPU_LN" \
+  CUDA_DEVICE="$RESOLVED_STAGE1_GPU_LN" \
   DEVICE="$STAGE1_DEVICE" \
-  ./scripts/run_stage1_pretrain_ln.sh \
+  bash "$PACKAGE_DIR/scripts/run_stage1_pretrain_ln.sh" \
     --epochs "$STAGE1_EPOCHS" \
     --batch_size "$STAGE1_BATCH_SIZE" \
     --workers "$STAGE1_WORKERS" \
@@ -131,30 +313,32 @@ run_stage2_fold() {
     SPLITS_DIR="$STAGE2_SPLITS_DIR" \
     PT_CKPT="$STAGE2_PT_CKPT" \
     LN_CKPT="$STAGE2_LN_CKPT" \
+    RADIOMICS_SOURCE="$STAGE2_RADIOMICS_SOURCE" \
     OUT_DIR="$STAGE2_OUT_DIR" \
     EXP_NAME="$exp_name" \
     DEBUG_FOLD="$fold" \
     CUDA_DEVICE="$gpu" \
     DEVICE="$STAGE2_DEVICE" \
-    ./scripts/run_stage2_survival_lora.sh "${extra_args[@]}"
+    bash "$PACKAGE_DIR/scripts/run_stage2_survival_lora.sh" "${extra_args[@]}"
   else
     META_CSV="$STAGE2_META_CSV" \
     SPLITS_DIR="$STAGE2_SPLITS_DIR" \
     PT_CKPT="$STAGE2_PT_CKPT" \
     LN_CKPT="$STAGE2_LN_CKPT" \
+    RADIOMICS_SOURCE="$STAGE2_RADIOMICS_SOURCE" \
     OUT_DIR="$STAGE2_OUT_DIR" \
     EXP_NAME="$exp_name" \
     DEBUG_FOLD="$fold" \
     CUDA_DEVICE="$gpu" \
     DEVICE="$STAGE2_DEVICE" \
-    ./scripts/run_stage2_survival.sh "${extra_args[@]}"
+    bash "$PACKAGE_DIR/scripts/run_stage2_survival.sh" "${extra_args[@]}"
   fi
 }
 
 run_stage2() {
   if [[ ! -f "$STAGE2_META_CSV" ]]; then
     echo "[error] stage 2 meta csv not found: $STAGE2_META_CSV" >&2
-    echo "[error] provide a clinically augmented metafile in the settings file." >&2
+    echo "[error] provide a prepared stage-2 metafile in the settings file." >&2
     exit 1
   fi
   if [[ ! -d "$STAGE2_SPLITS_DIR" ]]; then
@@ -163,17 +347,14 @@ run_stage2() {
   fi
 
   resolve_stage1_ckpts
+  resolve_stage2_gpus
 
-  local max_parallel="${#STAGE2_GPU_IDS[@]}"
-  if (( max_parallel == 0 )); then
-    echo "[error] STAGE2_GPU_IDS is empty." >&2
-    exit 1
-  fi
+  local max_parallel="${#RESOLVED_STAGE2_GPU_IDS[@]}"
 
   local -a pids=()
   local launch_idx=0
   for fold in "${STAGE2_FOLDS[@]}"; do
-    local gpu="${STAGE2_GPU_IDS[$(( launch_idx % max_parallel ))]}"
+    local gpu="${RESOLVED_STAGE2_GPU_IDS[$(( launch_idx % max_parallel ))]}"
     run_stage2_fold "$fold" "$gpu" &
     pids+=("$!")
     launch_idx=$(( launch_idx + 1 ))
@@ -189,8 +370,14 @@ run_stage2() {
   fi
 }
 
+maybe_enable_missing_prereqs
+
 if [[ "$RUN_PREPROCESS" == "1" ]]; then
   run_preprocess
+fi
+
+if [[ "${RUN_PREPARE_STAGE2:-0}" == "1" ]]; then
+  run_prepare_stage2
 fi
 
 if [[ "$RUN_SPLITS" == "1" ]]; then

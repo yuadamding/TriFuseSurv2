@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+cd "$WORKSPACE_ROOT"
 
-export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
-META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed.csv}"
+META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
 QC_REPORT="${QC_REPORT:-}"
 QC_POLICY="${QC_POLICY:-none}"
 QC_DROP_AIR_GT="${QC_DROP_AIR_GT:-0}"

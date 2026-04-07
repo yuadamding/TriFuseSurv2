@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import random
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import SimpleITK as sitk
@@ -15,9 +16,6 @@ from trifusesurv.utils.clinical import ClinicalEncoder, ClinicalEncoderCompact
 from trifusesurv.utils.radiomics import RadiomicsEncoder
 
 
-# ---------------------------------------------------------------------------
-# Augmentation
-# ---------------------------------------------------------------------------
 def rand_flip_3d(ct: np.ndarray, m1: np.ndarray, m2: np.ndarray, p: float = 0.5):
     if random.random() < p:
         ct = np.flip(ct, 0).copy()
@@ -43,42 +41,39 @@ def rand_intensity(ct: np.ndarray, p: float = 0.3):
     return np.clip(ct, 0.0, 1.0).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
 class PreprocessedMoEDataset(Dataset):
-    """Dataset for multimodal survival training and evaluation.
-
-    Returns (x_img, time, event, clinical, radiomics, patient_id)
-    and optionally (pt_mask_present, ln_mask_present) if track_mask_presence=True.
-    """
+    """Dataset for multimodal survival training and evaluation."""
 
     def __init__(
         self,
         meta,
         *,
+        id_col: str,
+        time_col: str,
+        event_col: str,
         ct_col: str,
         mask_pt_col: str,
         mask_ln_col: str,
-        time_col: str,
-        event_col: str,
-        id_col: str,
         clinical_encoder: Optional[ClinicalEncoder | ClinicalEncoderCompact],
         radiomics_encoder: Optional[RadiomicsEncoder],
-        target_shape=(128, 256, 256),
+        use_radiomics: bool = True,
+        strict_files: bool = True,
+        expected_dhw: Optional[Tuple[int, int, int]] = None,
         mode: str = "eval",
         track_mask_presence: bool = False,
     ):
         self.meta = meta.reset_index(drop=True)
+        self.id_col = id_col
+        self.time_col = time_col
+        self.event_col = event_col
         self.ct_col = ct_col
         self.mask_pt_col = mask_pt_col
         self.mask_ln_col = mask_ln_col
-        self.time_col = time_col
-        self.event_col = event_col
-        self.id_col = id_col
         self.clinical_encoder = clinical_encoder
         self.radiomics_encoder = radiomics_encoder
-        self.target_shape = tuple(target_shape)
+        self.use_radiomics = bool(use_radiomics)
+        self.strict_files = bool(strict_files)
+        self.expected_dhw = tuple(expected_dhw) if expected_dhw is not None else None
         self.mode = mode
         self.track_mask_presence = track_mask_presence
 
@@ -87,32 +82,40 @@ class PreprocessedMoEDataset(Dataset):
 
     def _load_nii(self, path: str) -> np.ndarray:
         img = sitk.ReadImage(str(path))
-        arr = sitk.GetArrayFromImage(img).astype(np.float32)
-        # pad/crop to target shape
-        out = np.zeros(self.target_shape, dtype=np.float32)
-        slices_src = []
-        slices_dst = []
-        for i in range(3):
-            s = arr.shape[i]
-            t = self.target_shape[i]
-            if s >= t:
-                start = (s - t) // 2
-                slices_src.append(slice(start, start + t))
-                slices_dst.append(slice(0, t))
-            else:
-                start = (t - s) // 2
-                slices_src.append(slice(0, s))
-                slices_dst.append(slice(start, start + s))
-        out[slices_dst[0], slices_dst[1], slices_dst[2]] = arr[slices_src[0], slices_src[1], slices_src[2]]
-        return out
+        return sitk.GetArrayFromImage(img).astype(np.float32)
+
+    def _zeros_like_expected(self) -> np.ndarray:
+        shape = self.expected_dhw if self.expected_dhw is not None else (128, 256, 256)
+        return np.zeros(shape, dtype=np.float32)
 
     def __getitem__(self, idx):
         row = self.meta.iloc[idx]
         pid = str(row[self.id_col])
 
-        ct = self._load_nii(row[self.ct_col])
-        pt = self._load_nii(row[self.mask_pt_col]).clip(0, 1)
-        ln = self._load_nii(row[self.mask_ln_col]).clip(0, 1)
+        ct_path = str(row[self.ct_col])
+        pt_path = str(row[self.mask_pt_col])
+        ln_path = str(row[self.mask_ln_col])
+
+        if (not os.path.isfile(ct_path)) or (not os.path.isfile(pt_path)) or (not os.path.isfile(ln_path)):
+            if self.strict_files:
+                raise RuntimeError(
+                    f"Missing ct/pt/ln mask for pid={pid}: ct={ct_path} pt={pt_path} ln={ln_path}"
+                )
+            ct = self._zeros_like_expected()
+            pt = self._zeros_like_expected()
+            ln = self._zeros_like_expected()
+        else:
+            ct = self._load_nii(ct_path)
+            pt = (self._load_nii(pt_path) > 0.5).astype(np.float32)
+            ln = (self._load_nii(ln_path) > 0.5).astype(np.float32)
+
+        if self.expected_dhw is not None:
+            if tuple(ct.shape) != self.expected_dhw:
+                raise RuntimeError(f"[SHAPE] pid={pid} CT {tuple(ct.shape)} != expected {self.expected_dhw}")
+            if tuple(pt.shape) != self.expected_dhw:
+                raise RuntimeError(f"[SHAPE] pid={pid} PT {tuple(pt.shape)} != expected {self.expected_dhw}")
+            if tuple(ln.shape) != self.expected_dhw:
+                raise RuntimeError(f"[SHAPE] pid={pid} LN {tuple(ln.shape)} != expected {self.expected_dhw}")
 
         if self.mode == "train":
             ct, pt, ln = rand_flip_3d(ct, pt, ln)
@@ -127,7 +130,7 @@ class PreprocessedMoEDataset(Dataset):
         else:
             clin_t = torch.zeros(0, dtype=torch.float32)
 
-        if self.radiomics_encoder is not None:
+        if self.use_radiomics and self.radiomics_encoder is not None and self.radiomics_encoder.output_dim > 0:
             rad_t = torch.tensor(self.radiomics_encoder.encode_patient(pid), dtype=torch.float32)
         else:
             rad_t = torch.zeros(0, dtype=torch.float32)

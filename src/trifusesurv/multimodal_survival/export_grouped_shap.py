@@ -761,7 +761,12 @@ def parse_args():
 
     p.add_argument("--clinical_cols", type=str, nargs="*", default=DEFAULT_CLINICAL_COLS)
     p.add_argument("--use_radiomics", action="store_true")
-    p.add_argument("--radiomics_root", type=str, default="radiomics_features/radiomics_features")
+    p.add_argument(
+        "--radiomics_root",
+        type=str,
+        default="radiomics_features/radiomics_features",
+        help="Radiomics source: directory of per-patient CSVs or a patient-wide CSV file.",
+    )
     p.add_argument("--radiomics_pca_total_components", type=int, default=100)
 
     p.add_argument("--img_size", type=int, nargs=3, default=[128, 256, 256])

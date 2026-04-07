@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+cd "$WORKSPACE_ROOT"
 
-export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
 
-META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_with_clin.csv}"
+META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
 SPLITS_DIR="${SPLITS_DIR:-runs/opscc_splits_os_seed1}"
-PT_CKPT="${PT_CKPT:-runs/seg_overfit_pt_big_stable/all/seg_best.pt}"
-LN_CKPT="${LN_CKPT:-runs/seg_overfit_ln_big_stable/all/seg_best.pt}"
+PT_CKPT="${PT_CKPT:-runs/seg_pt_h100_test/all/seg_best.pt}"
+LN_CKPT="${LN_CKPT:-runs/seg_ln_h100_test/all/seg_best.pt}"
+RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
 OUT_DIR="${OUT_DIR:-runs/moe_discrete_swinunetr}"
 EXP_NAME="${EXP_NAME:-cv4_best_fold03}"
-CUDA_DEVICE="${CUDA_DEVICE:-3}"
+CUDA_DEVICE="${CUDA_DEVICE:-auto}"
 DEVICE="${DEVICE:-cuda:0}"
 DEBUG_FOLD="${DEBUG_FOLD:-3}"
+
+if [[ "$CUDA_DEVICE" == "auto" || -z "$CUDA_DEVICE" ]]; then
+  if ! CUDA_DEVICE="$(tf_first_gpu_id)"; then
+    echo "[error] could not detect an available GPU for stage2 survival training." >&2
+    exit 1
+  fi
+fi
 
 CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" \
 python3 -m trifusesurv.multimodal_survival.train \
@@ -39,6 +49,7 @@ python3 -m trifusesurv.multimodal_survival.train \
   --use_checkpoint \
   --device "$DEVICE" \
   --use_radiomics \
+  --radiomics_root "$RADIOMICS_SOURCE" \
   --use_ema \
   --use_swa \
   --export_extra_risks \

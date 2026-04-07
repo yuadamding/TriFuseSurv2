@@ -19,7 +19,7 @@ Robustness:
   - handles SHAP returning extra singleton output dims (e.g., (N,1,D) or (1,N,D))
   - always squeezes SHAP arrays to expected shapes before plotting/exporting
 
-CUDA_VISIBLE_DEVICES=1 python -m trifusesurv.multimodal_survival.explain_tokens --train_script trifusesurv.multimodal_survival.train --ckpt_fold 0:runs/moe_discrete_swinunetr/cv4_best_fold00_test2/fold_00/last.pt --ckpt_fold 1:runs/moe_discrete_swinunetr/cv4_best_fold01_test2/fold_01/last.pt --ckpt_fold 2:runs/moe_discrete_swinunetr/cv4_best_fold02_test2/fold_02/last.pt --ckpt_fold 3:runs/moe_discrete_swinunetr/cv4_best_fold03_test2/fold_03/last.pt --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_with_clin.csv --splits_dir runs/opscc_splits_os_seed1 --cv_folds 4 --strict_splits --endpoint OS --ct_col ct_out_path --mask_pt_col mask_primary_out_path --mask_ln_col mask_nodal_out_path --img_size 128 256 256 --time_bin_width_days 180 --risk_horizon_days 1095 --use_radiomics --radiomics_pca_total_components 50 --device cuda:0 --amp --weights ema --n_background 16 --n_explain 200 --explainer gradient --out_dir runs/shap_cv --strict_load --pool_clinical
+CUDA_VISIBLE_DEVICES=1 python -m trifusesurv.multimodal_survival.explain_tokens --train_script trifusesurv.multimodal_survival.train --ckpt_fold 0:runs/moe_discrete_swinunetr/cv4_best_fold00_test2/fold_00/last.pt --ckpt_fold 1:runs/moe_discrete_swinunetr/cv4_best_fold01_test2/fold_01/last.pt --ckpt_fold 2:runs/moe_discrete_swinunetr/cv4_best_fold02_test2/fold_02/last.pt --ckpt_fold 3:runs/moe_discrete_swinunetr/cv4_best_fold03_test2/fold_03/last.pt --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv --splits_dir runs/opscc_splits_os_seed1 --cv_folds 4 --strict_splits --endpoint OS --ct_col ct_out_path --mask_pt_col mask_primary_out_path --mask_ln_col mask_nodal_out_path --img_size 128 256 256 --time_bin_width_days 180 --risk_horizon_days 1095 --use_radiomics --radiomics_root cohort_radiomics_patient_wide.csv --radiomics_pca_total_components 50 --device cuda:0 --amp --weights ema --n_background 16 --n_explain 200 --explainer gradient --out_dir runs/shap_cv --strict_load --pool_clinical
 """
 
 from __future__ import annotations
@@ -807,7 +807,12 @@ def parse_args():
     # clinical / radiomics
     p.add_argument("--clinical_cols", type=str, nargs="*", default=None)
     p.add_argument("--use_radiomics", action="store_true")
-    p.add_argument("--radiomics_root", type=str, default="radiomics_features/radiomics_features")
+    p.add_argument(
+        "--radiomics_root",
+        type=str,
+        default="radiomics_features/radiomics_features",
+        help="Radiomics source: directory of per-patient CSVs or a patient-wide CSV file.",
+    )
     p.add_argument("--radiomics_pca_total_components", type=int, default=100)
 
     # model arch

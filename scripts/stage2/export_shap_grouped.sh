@@ -1,22 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT_DIR"
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
+cd "$WORKSPACE_ROOT"
 
-export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
 
-META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_with_clin.csv}"
+META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
 SPLITS_DIR="${SPLITS_DIR:-runs/opscc_splits_os_seed1}"
 OUT_DIR="${OUT_DIR:-runs/shap_oof_lora96}"
-CUDA_DEVICE="${CUDA_DEVICE:-0}"
+CUDA_DEVICE="${CUDA_DEVICE:-auto}"
 DEVICE="${DEVICE:-cuda:0}"
 CKPT_BASE_DIR="${CKPT_BASE_DIR:-runs/moe_runs}"
+RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
 
 CKPT_FOLD_0="${CKPT_FOLD_0:-$CKPT_BASE_DIR/cv4_fold00_lora96_perfTune_v4_rad70_gate30_swa45/fold_00/last.pt}"
 CKPT_FOLD_1="${CKPT_FOLD_1:-$CKPT_BASE_DIR/cv4_fold01_lora96_perfTune_v4_rad70_gate30_swa45/fold_01/last.pt}"
 CKPT_FOLD_2="${CKPT_FOLD_2:-$CKPT_BASE_DIR/cv4_fold02_lora96_perfTune_v4_rad70_gate30_swa45/fold_02/last.pt}"
 CKPT_FOLD_3="${CKPT_FOLD_3:-$CKPT_BASE_DIR/cv4_fold03_lora96_perfTune_v4_rad70_gate30_swa45/fold_03/last.pt}"
+
+if [[ "$CUDA_DEVICE" == "auto" || -z "$CUDA_DEVICE" ]]; then
+  if ! CUDA_DEVICE="$(tf_first_gpu_id)"; then
+    echo "[error] could not detect an available GPU for grouped SHAP export." >&2
+    exit 1
+  fi
+fi
 
 CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" \
 python3 -m trifusesurv.multimodal_survival.export_grouped_shap \
@@ -52,6 +62,7 @@ python3 -m trifusesurv.multimodal_survival.export_grouped_shap \
   --time_bin_width_days 180 \
   --risk_horizon_days 365 \
   --use_radiomics \
+  --radiomics_root "$RADIOMICS_SOURCE" \
   --radiomics_pca_total_components 100 \
   --n_perm 32 \
   --bg_size 64 \

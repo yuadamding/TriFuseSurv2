@@ -5,7 +5,7 @@ trifusesurv.segmentation.gradcam  (UPDATED for latest SwinViTEncoderSeg)
 Generate Grad-CAM for ALL samples (or one sample) from ONE checkpoint for the seg-pretrained encoder-only model.
 
 Inputs:
-- meta_csv: cohort_preprocessed.csv (or cohort_preprocessed_with_clin.csv)
+- meta_csv: cohort_preprocessed.csv (or cohort_preprocessed_stage2.csv)
   must include:
     patient_id, ct_out_path, mask_union_out_path
   optionally:

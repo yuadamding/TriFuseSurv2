@@ -22,7 +22,7 @@ import pandas as pd
 
 # ---- EDIT THESE ----
 EXP_DIR = "runs/moe_discrete_swinunetr/cv4_ptln_tokens_globalPretrain_withClin"
-META_CSV = "OPSCC_preprocessed_128/cohort_preprocessed_with_clin.csv"
+META_CSV = "OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv"
 ID_COL = "patient_id"
 TIME_COL = "OS.TIME"
 EVENT_COL = "OS.EVENT"

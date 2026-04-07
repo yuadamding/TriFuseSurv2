@@ -9,10 +9,11 @@ description = "TriFuseSurv survival and segmentation workflows packaged as an in
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "einops",
   "matplotlib",
   "monai",
   "numpy",
-  "opencv-python-headless",
+  "opencv-python-headless==4.10.0.84",
   "pandas",
   "pydicom",
   "rt-utils",
@@ -41,6 +42,7 @@ trifusesurv-stage2-shap-grouped = "trifusesurv.multimodal_survival.export_groupe
 trifusesurv-stage2-shap-grouped-v2 = "trifusesurv.multimodal_survival.export_grouped_shap:main"
 trifusesurv-preprocess-export-swinunetr = "trifusesurv.preprocessing.export_swinunetr:main"
 trifusesurv-make-cv-splits = "trifusesurv.preprocessing.make_cv_splits:main"
+trifusesurv-prepare-opscc-tabular = "trifusesurv.preprocessing.prepare_opscc_tabular:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
