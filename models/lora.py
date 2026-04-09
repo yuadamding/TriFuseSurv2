@@ -145,8 +145,8 @@ def inject_lora_from_state_dict(
 ) -> int:
     """Inject LoRA wrappers where checkpoint expects them (by scanning keys)."""
     scope = str(scope).lower().strip()
-    if scope not in ("pt", "ln", "both"):
-        raise ValueError(f"--lora_scope must be pt|ln|both, got {scope}")
+    if scope not in ("pt", "ln", "both", "shared", "all", "auto"):
+        raise ValueError(f"--lora_scope must be pt|ln|both|shared|all|auto, got {scope}")
 
     prefixes = sorted({
         k[: -len(".lora_A.weight")]
@@ -156,11 +156,22 @@ def inject_lora_from_state_dict(
     if not prefixes:
         return 0
 
+    def _scope_matches(prefix: str) -> bool:
+        if scope in ("all", "auto"):
+            return True
+        if scope == "pt":
+            return ".backbone_pt." in prefix
+        if scope == "ln":
+            return ".backbone_ln." in prefix
+        if scope == "shared":
+            return ".backbone_shared." in prefix
+        # "both" historically meant both PT/LN branches; in the shared-mask
+        # architecture there is only one image backbone, so accept any image branch.
+        return any(tag in prefix for tag in (".backbone_pt.", ".backbone_ln.", ".backbone_shared."))
+
     nrep = 0
     for pref in prefixes:
-        if scope == "pt" and ".backbone_pt." not in pref:
-            continue
-        if scope == "ln" and ".backbone_ln." not in pref:
+        if not _scope_matches(pref):
             continue
 
         akey = pref + ".lora_A.weight"

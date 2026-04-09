@@ -296,16 +296,21 @@ def discrete_time_nll_loss(
     total_loglik = hazards_logits.new_zeros(())
 
     if is_event.any():
+        event_rows = torch.nonzero(is_event, as_tuple=False).view(-1)
         k = bin_idx[is_event]
         pre = torch.zeros_like(k, dtype=hazards_logits.dtype, device=device)
         has_pre = (k > 0)
-        pre[has_pre] = cum_log1m[is_event, (k - 1)[has_pre]]
-        ll = pre + log_h[is_event, k]
+        if has_pre.any():
+            pre_rows = event_rows[has_pre]
+            pre_cols = (k - 1)[has_pre]
+            pre[has_pre] = cum_log1m[pre_rows, pre_cols]
+        ll = pre + log_h[event_rows, k]
         total_loglik = total_loglik + ll.sum()
 
     if is_cens.any():
+        cens_rows = torch.nonzero(is_cens, as_tuple=False).view(-1)
         k = bin_idx[is_cens]
-        ll = cum_log1m[is_cens, k]
+        ll = cum_log1m[cens_rows, k]
         total_loglik = total_loglik + ll.sum()
 
     loss = -total_loglik / float(B)

@@ -11,6 +11,9 @@ import torch.nn as nn
 from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
     SwinUNETRPTLNIntraPeriTokenBackbone,
 )
+from trifusesurv.models.swinunetr_shared_roi_token_backbone import (
+    SharedMaskROITokenBackbone,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +93,16 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         self.fused_dim = int(fused_dim)
         self.nan_guard = bool(nan_guard)
 
-        self.img_backbone = SwinUNETRPTLNIntraPeriTokenBackbone(**backbone_cfg)
+        backbone_cfg = dict(backbone_cfg)
+        self.image_encoder_mode = str(backbone_cfg.pop("image_encoder_mode", "dual_backbone")).strip().lower()
+        if self.image_encoder_mode in ("dual_backbone", "legacy_dual"):
+            self.img_backbone = SwinUNETRPTLNIntraPeriTokenBackbone(**backbone_cfg)
+            self.image_encoder_mode = "dual_backbone"
+        elif self.image_encoder_mode in ("shared_mask", "shared_roi"):
+            self.img_backbone = SharedMaskROITokenBackbone(**backbone_cfg)
+            self.image_encoder_mode = "shared_mask"
+        else:
+            raise ValueError(f"Unknown image_encoder_mode: {self.image_encoder_mode}")
         self.num_experts = int(self.img_backbone.num_tokens)
 
         self.expert_dropout_p = float(expert_dropout_p)

@@ -268,6 +268,54 @@ def read_seg_pretrain_backbone_cfg(ckpt_path: str) -> Dict[str, Any]:
 
 
 def align_backbone_cfg_to_seg_pretrain(args):
+    mode = _image_encoder_mode(args)
+    if mode == "shared_mask":
+        shared_ckpt = _resolve_existing_shared_ckpt_for_cfg(args)
+        cfg = read_seg_pretrain_backbone_cfg(shared_ckpt) if (shared_ckpt and os.path.isfile(shared_ckpt)) else None
+        if cfg is None:
+            print("[SWINCFG] No shared pretrain ckpt found for cfg alignment; using CLI Swin cfg.")
+            return args
+
+        want_img = tuple(int(x) for x in cfg["img_size"])
+        want_fs = int(cfg["feature_size"])
+        want_depths = tuple(int(x) for x in cfg["depths"])
+        want_heads = tuple(int(x) for x in cfg["num_heads"])
+
+        cur_img = tuple(int(x) for x in args.img_size)
+        cur_fs = int(args.feature_size)
+        cur_depths = tuple(int(x) for x in args.depths)
+        cur_heads = tuple(int(x) for x in args.num_heads)
+
+        if cur_img != want_img:
+            print(f"[SWINCFG][WARN] CLI --img_size {cur_img} != shared pretrain {want_img}. Overriding to shared pretrain.")
+            args.img_size = list(want_img)
+        if (cur_fs, cur_depths, cur_heads) != (want_fs, want_depths, want_heads):
+            print("[SWINCFG][WARN] CLI Swin cfg != shared pretrain cfg. Overriding to match shared pretrain.")
+            print(f"  CLI : feature_size={cur_fs} depths={cur_depths} num_heads={cur_heads}")
+            print(f"  CKPT: feature_size={want_fs} depths={want_depths} num_heads={want_heads}")
+
+        args.feature_size = want_fs
+        args.depths = list(want_depths)
+        args.num_heads = list(want_heads)
+        args.drop_rate = float(cfg.get("drop_rate", args.drop_rate))
+        args.attn_drop_rate = float(cfg.get("attn_drop_rate", args.attn_drop_rate))
+        args.dropout_path_rate = float(cfg.get("dropout_path_rate", args.dropout_path_rate))
+        if bool(cfg.get("use_checkpoint", True)) and (not bool(args.use_checkpoint)):
+            args.use_checkpoint = True
+
+        print("[SWINCFG] aligned to shared pretrain:")
+        print(
+            f"  img_size={tuple(args.img_size)} feature_size={args.feature_size} "
+            f"depths={tuple(args.depths)} heads={tuple(args.num_heads)}"
+        )
+        print(
+            f"  drop_rate={args.drop_rate} attn_drop_rate={args.attn_drop_rate} "
+            f"drop_path={args.dropout_path_rate} use_checkpoint={args.use_checkpoint}"
+        )
+        if shared_ckpt:
+            print(f"  shared_ckpt_for_cfg={shared_ckpt}")
+        return args
+
     pt_ckpt = _resolve_existing_seg_ckpt_for_cfg(args, "pt")
     ln_ckpt = _resolve_existing_seg_ckpt_for_cfg(args, "ln")
 
@@ -503,9 +551,12 @@ def make_param_groups(
     enc_lora_named: List[Tuple[str, torch.nn.Parameter]] = []
     enc_nonlora_named: List[Tuple[str, torch.nn.Parameter]] = []
 
-    for prefix, bb in [("pt", mm.img_backbone.backbone_pt), ("ln", mm.img_backbone.backbone_ln)]:
+    encoder_pairs = _iter_image_encoder_backbones(mm.img_backbone)
+    encoder_prefixes = []
+    for prefix, bb in encoder_pairs:
+        encoder_prefixes.append(f"{prefix}.")
         for n, p in bb.named_parameters():
-            full = f"img_backbone.backbone_{prefix}.{n}"
+            full = f"img_backbone.{prefix}.{n}"
             if not p.requires_grad:
                 continue
             if is_lora_param_name(full):
@@ -527,7 +578,7 @@ def make_param_groups(
 
     head_named: List[Tuple[str, torch.nn.Parameter]] = []
     for n, p in mm.img_backbone.named_parameters():
-        if n.startswith("backbone_pt.") or n.startswith("backbone_ln."):
+        if any(n.startswith(pref) for pref in encoder_prefixes):
             continue
         head_named.append((f"img_backbone.{n}", p))
     for n, p in mm.fuse_projs.named_parameters():
@@ -776,6 +827,42 @@ def save_checkpoint(
     torch.save(state, path)
 
 
+def checkpoint_report_metric(path: Path) -> float:
+    if not path.is_file():
+        return float("-inf")
+    try:
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        metric = ck.get("report_metric", float("-inf"))
+        metric = float(metric)
+        return metric if np.isfinite(metric) else float("-inf")
+    except Exception:
+        return float("-inf")
+
+
+def load_model_state_only(path: Path, model: nn.Module) -> bool:
+    if not path.is_file():
+        return False
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    in_sd = ck.get("model_state", {})
+    if not isinstance(in_sd, dict):
+        return False
+
+    target_sd = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    filtered = {}
+    for k, v in in_sd.items():
+        if k in target_sd and tuple(target_sd[k].shape) == tuple(v.shape):
+            filtered[k] = v
+
+    if not filtered:
+        return False
+
+    if isinstance(model, nn.DataParallel):
+        model.module.load_state_dict(filtered, strict=False)
+    else:
+        model.load_state_dict(filtered, strict=False)
+    return True
+
+
 def load_checkpoint(
     path: Path,
     num_time_bins: int,
@@ -893,6 +980,70 @@ def _resolve_seg_ckpt_for_fold(args, fold: int, which: str) -> str:
     return ckpt
 
 
+def _resolve_existing_shared_ckpt_for_cfg(args) -> str:
+    ckpt = getattr(args, "shared_seg_pretrain_ckpt", "") or ""
+    if ckpt and os.path.isfile(ckpt):
+        return ckpt
+
+    d = getattr(args, "shared_seg_pretrain_dir", "") or ""
+    name = getattr(args, "shared_seg_pretrain_name", "seg_best.pt") or "seg_best.pt"
+    if d:
+        p_all = os.path.join(d, "all", name)
+        if os.path.isfile(p_all):
+            return p_all
+        for f in range(int(getattr(args, "cv_folds", 4))):
+            p = os.path.join(d, f"fold_{f:02d}", name)
+            if os.path.isfile(p):
+                return p
+    return ""
+
+
+def _resolve_shared_ckpt_for_fold(args, fold: int) -> str:
+    ckpt = getattr(args, "shared_seg_pretrain_ckpt", "") or ""
+    if ckpt and os.path.isfile(ckpt):
+        return ckpt
+
+    d = getattr(args, "shared_seg_pretrain_dir", "") or ""
+    name = getattr(args, "shared_seg_pretrain_name", "seg_best.pt") or "seg_best.pt"
+    if d:
+        p_all = os.path.join(d, "all", name)
+        if os.path.isfile(p_all):
+            return p_all
+        p_fold = os.path.join(d, f"fold_{int(fold):02d}", name)
+        if os.path.isfile(p_fold):
+            return p_fold
+    return ckpt
+
+
+def _image_encoder_mode(args) -> str:
+    return str(getattr(args, "image_encoder_mode", "dual_backbone")).strip().lower()
+
+
+def _iter_image_encoder_backbones(img_backbone):
+    if hasattr(img_backbone, "iter_encoder_backbones"):
+        return list(img_backbone.iter_encoder_backbones())
+    pairs = []
+    if hasattr(img_backbone, "backbone_pt"):
+        pairs.append(("backbone_pt", img_backbone.backbone_pt))
+    if hasattr(img_backbone, "backbone_ln"):
+        pairs.append(("backbone_ln", img_backbone.backbone_ln))
+    if hasattr(img_backbone, "backbone_shared"):
+        pairs.append(("backbone_shared", img_backbone.backbone_shared))
+    return pairs
+
+
+def _selected_image_encoder_backbones(img_backbone, scope: str):
+    pairs = _iter_image_encoder_backbones(img_backbone)
+    scope = str(scope).lower().strip()
+    if len(pairs) == 1:
+        return pairs
+    if scope == "pt":
+        return [pair for pair in pairs if pair[0].endswith("pt")]
+    if scope == "ln":
+        return [pair for pair in pairs if pair[0].endswith("ln")]
+    return pairs
+
+
 def _list_trainable_param_names(mod: nn.Module, prefix: str = "", limit: int = 80) -> List[str]:
     out = []
     for n, p in mod.named_parameters():
@@ -935,26 +1086,26 @@ def apply_lora_to_two_encoders(base_model: SwinUNETRTokenMoEDiscrete, args) -> i
     alpha = float(args.lora_alpha)
     drop = float(args.lora_dropout)
 
+    selected = _selected_image_encoder_backbones(base_model.img_backbone, scope)
+    if not selected:
+        raise RuntimeError(f"[LoRA] no encoder backbones selected for scope={scope}")
+
     n_total = 0
-    if scope in ("pt", "both"):
-        n_total += inject_lora_into_module(base_model.img_backbone.backbone_pt, target_keywords=targets, r=r, alpha=alpha, dropout=drop, verbose=True)
-    if scope in ("ln", "both"):
-        n_total += inject_lora_into_module(base_model.img_backbone.backbone_ln, target_keywords=targets, r=r, alpha=alpha, dropout=drop, verbose=True)
+    summaries = []
+    for prefix, bb in selected:
+        n_added = inject_lora_into_module(bb, target_keywords=targets, r=r, alpha=alpha, dropout=drop, verbose=True)
+        n_total += n_added
+        if not bool(args.train_mask_patch_embed):
+            mark_only_lora_trainable(bb)
+        a_cnt, t_cnt = count_trainable(bb)
+        summaries.append(f"{prefix} trainable {t_cnt:,}/{a_cnt:,}")
 
-    if not bool(args.train_mask_patch_embed):
-        if scope in ("pt", "both"):
-            mark_only_lora_trainable(base_model.img_backbone.backbone_pt)
-        if scope in ("ln", "both"):
-            mark_only_lora_trainable(base_model.img_backbone.backbone_ln)
-
-    a_pt, t_pt = count_trainable(base_model.img_backbone.backbone_pt)
-    a_ln, t_ln = count_trainable(base_model.img_backbone.backbone_ln)
-    print(f"[LoRA] backbone_pt trainable {t_pt:,}/{a_pt:,} | backbone_ln trainable {t_ln:,}/{a_ln:,} | injected_total={n_total}")
+    print(f"[LoRA] {' | '.join(summaries)} | injected_total={n_total}")
 
     if int(args.lora_min_replacements) > 0 and n_total < int(args.lora_min_replacements):
         raise RuntimeError(f"[LoRA] injected_total={n_total} < --lora_min_replacements={args.lora_min_replacements}. Check naming/targets.")
     if n_total == 0:
-        raise RuntimeError("[LoRA] --use_lora requested but injected_total=0. Check --lora_targets and encoder naming.")
+        raise RuntimeError("[LoRA] --use_lora requested but injected_total=0. Check encoder mode / naming / targets.")
 
     return n_total
 
@@ -998,6 +1149,8 @@ def run_one_fold(
     fold_dir.mkdir(parents=True, exist_ok=True)
     metrics_csv = fold_dir / "metrics.csv"
     ckpt_last = fold_dir / "last.pt"
+    ckpt_best = fold_dir / "best.pt"
+    best_report_metric = checkpoint_report_metric(ckpt_best)
 
     tr_df = select_df_by_ids(meta, split["train"], args.id_col, args.strict_splits, f"fold{fold:02d}/train")
     va_df = select_df_by_ids(meta, split["val"],   args.id_col, args.strict_splits, f"fold{fold:02d}/val")
@@ -1093,6 +1246,7 @@ def run_one_fold(
         dropout_path_rate=float(args.dropout_path_rate),
         normalize=True,
         use_checkpoint=bool(args.use_checkpoint),
+        image_encoder_mode=str(args.image_encoder_mode),
 
         token_dim=int(args.img_token_dim),
         token_mlp_dropout=float(args.token_mlp_dropout),
@@ -1147,48 +1301,67 @@ def run_one_fold(
         nan_guard=bool(args.nan_guard),
     ).to(device)
 
-    # ---- load PT/LN seg-pretrain ----
-    pt_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="pt")
-    ln_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="ln")
+    mode = _image_encoder_mode(args)
+    injected = 0
 
-    if pt_ckpt and os.path.isfile(pt_ckpt):
-        print(f"[SWIN][PT][fold {fold:02d}] loading seg-pretrain: {pt_ckpt}")
-        load_swinunetr_pretrained(base_model.img_backbone.backbone_pt, pt_ckpt, verbose=True, allow_inflate_patch_embed=True)
+    if mode == "shared_mask":
+        shared_ckpt = _resolve_shared_ckpt_for_fold(args, fold=int(fold))
+        if shared_ckpt and os.path.isfile(shared_ckpt):
+            print(f"[SWIN][SHARED][fold {fold:02d}] loading shared pretrain: {shared_ckpt}")
+            load_swinunetr_pretrained(base_model.img_backbone.backbone_shared, shared_ckpt, verbose=True, allow_inflate_patch_embed=True)
+        else:
+            print(f"[SWIN][SHARED][fold {fold:02d}] shared pretrain not found/disabled: {shared_ckpt}")
+
+        if bool(args.use_lora):
+            freeze_all_params(base_model.img_backbone.backbone_shared)
+            if bool(args.train_mask_patch_embed):
+                base_model.enable_mask_patch_embed_training(verbose=True)
+                print("[ENC] policy: shared backbone frozen + PT/LN mask patch-embed trainable + LoRA")
+            else:
+                print("[ENC] policy: shared backbone frozen + LoRA trainable")
+            injected = apply_lora_to_two_encoders(base_model, args)
+            for _, bb in _iter_image_encoder_backbones(base_model.img_backbone):
+                _assert_backbone_trainables(bb, allow_mask_patch_embed=bool(args.train_mask_patch_embed), allow_lora=True)
+        else:
+            if bool(args.train_mask_patch_embed):
+                print("[ENC][INFO] shared_mask mode uses full survival fine-tuning; ignoring --train_mask_patch_embed without LoRA-only freezing.")
+            print("[ENC] policy: shared backbone full fine-tune for survival")
     else:
-        print(f"[SWIN][PT][fold {fold:02d}] seg-pretrain not found/disabled: {pt_ckpt}")
+        pt_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="pt")
+        ln_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="ln")
 
-    if ln_ckpt and os.path.isfile(ln_ckpt):
-        print(f"[SWIN][LN][fold {fold:02d}] loading seg-pretrain: {ln_ckpt}")
-        load_swinunetr_pretrained(base_model.img_backbone.backbone_ln, ln_ckpt, verbose=True, allow_inflate_patch_embed=True)
-    else:
-        print(f"[SWIN][LN][fold {fold:02d}] seg-pretrain not found/disabled: {ln_ckpt}")
+        if pt_ckpt and os.path.isfile(pt_ckpt):
+            print(f"[SWIN][PT][fold {fold:02d}] loading seg-pretrain: {pt_ckpt}")
+            load_swinunetr_pretrained(base_model.img_backbone.backbone_pt, pt_ckpt, verbose=True, allow_inflate_patch_embed=True)
+        else:
+            print(f"[SWIN][PT][fold {fold:02d}] seg-pretrain not found/disabled: {pt_ckpt}")
 
-    # ---- EXPLICIT freeze policy (fixes accidental full finetune risk) ----
-    freeze_all_params(base_model.img_backbone.backbone_pt)
-    freeze_all_params(base_model.img_backbone.backbone_ln)
+        if ln_ckpt and os.path.isfile(ln_ckpt):
+            print(f"[SWIN][LN][fold {fold:02d}] loading seg-pretrain: {ln_ckpt}")
+            load_swinunetr_pretrained(base_model.img_backbone.backbone_ln, ln_ckpt, verbose=True, allow_inflate_patch_embed=True)
+        else:
+            print(f"[SWIN][LN][fold {fold:02d}] seg-pretrain not found/disabled: {ln_ckpt}")
 
-    if bool(args.train_mask_patch_embed):
-        base_model.enable_mask_patch_embed_training(verbose=True)
-        print("[ENC] policy: frozen backbones + mask patch-embed trainable (+ LoRA if enabled)")
-    else:
-        print("[ENC] policy: frozen backbones (mask patch-embed NOT trainable) (+ LoRA if enabled)")
+        freeze_all_params(base_model.img_backbone.backbone_pt)
+        freeze_all_params(base_model.img_backbone.backbone_ln)
 
-    # ---- inject LoRA (kept trainable) ----
-    injected = apply_lora_to_two_encoders(base_model, args) if args.use_lora else 0
+        if bool(args.train_mask_patch_embed):
+            base_model.enable_mask_patch_embed_training(verbose=True)
+            print("[ENC] policy: frozen backbones + mask patch-embed trainable (+ LoRA if enabled)")
+        else:
+            print("[ENC] policy: frozen backbones (mask patch-embed NOT trainable) (+ LoRA if enabled)")
 
-    # ---- policy assertions (strong) ----
-    allow_lora = bool(args.use_lora)
-    allow_mask = bool(args.train_mask_patch_embed)
-    _assert_backbone_trainables(base_model.img_backbone.backbone_pt, allow_mask_patch_embed=allow_mask, allow_lora=allow_lora)
-    _assert_backbone_trainables(base_model.img_backbone.backbone_ln, allow_mask_patch_embed=allow_mask, allow_lora=allow_lora)
+        injected = apply_lora_to_two_encoders(base_model, args) if args.use_lora else 0
+        allow_lora = bool(args.use_lora)
+        allow_mask = bool(args.train_mask_patch_embed)
+        for _, bb in _iter_image_encoder_backbones(base_model.img_backbone):
+            _assert_backbone_trainables(bb, allow_mask_patch_embed=allow_mask, allow_lora=allow_lora)
 
     if args.print_trainable_backbone_params:
-        print("[DBG] Trainable backbone_pt params:")
-        for s in _list_trainable_param_names(base_model.img_backbone.backbone_pt, prefix="pt."):
-            print("  ", s)
-        print("[DBG] Trainable backbone_ln params:")
-        for s in _list_trainable_param_names(base_model.img_backbone.backbone_ln, prefix="ln."):
-            print("  ", s)
+        for prefix, bb in _iter_image_encoder_backbones(base_model.img_backbone):
+            print(f"[DBG] Trainable {prefix} params:")
+            for s in _list_trainable_param_names(bb, prefix=f"{prefix}."):
+                print("  ", s)
 
     materialize_lazy_modules(base_model, tr_loader, device, autocast_ctx)
 
@@ -1300,6 +1473,22 @@ def run_one_fold(
             ema=ema,
             swa=swa,
         )
+        if np.isfinite(report_metric) and report_metric > best_report_metric:
+            save_checkpoint(
+                ckpt_best,
+                epoch=int(epoch),
+                num_time_bins=int(global_num_time_bins),
+                model=model,
+                args=args,
+                optimizer=optimizer,
+                scaler=scaler,
+                scheduler=scheduler,
+                report_metric=report_metric,
+                ema=ema,
+                swa=swa,
+            )
+            best_report_metric = float(report_metric)
+            print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
         scheduler.step()
 
     last_test = evaluate_model(
@@ -1340,9 +1529,25 @@ def run_one_fold(
             )
             risks_swa = predict_risk_scores(model, te_loader, device, risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
+    best_test = None
+    risks_best = None
+    if load_model_state_only(ckpt_best, model):
+        best_test = evaluate_model(
+            model, te_loader, device,
+            risk_horizon_days=float(args.risk_horizon_days),
+            time_bin_width_days=float(args.time_bin_width_days),
+            eval_times_days=args.auc_times_days,
+            dca_thresholds=args.dca_thresholds,
+            autocast_ctx=autocast_ctx,
+        )
+        risks_best = predict_risk_scores(model, te_loader, device, risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+
     export_suffix = "ema" if (risks_ema is not None) else "last"
     export_risks = risks_ema if (risks_ema is not None) else risks_last
     save_risk_dict_csv(export_risks, fold_dir / f"test_risks_{export_suffix}.csv", id_col=args.id_col)
+
+    if risks_best is not None:
+        save_risk_dict_csv(risks_best, fold_dir / "test_risks_best.csv", id_col=args.id_col)
 
     if args.export_extra_risks:
         save_risk_dict_csv(risks_last, fold_dir / "test_risks_last.csv", id_col=args.id_col)
@@ -1360,6 +1565,7 @@ def run_one_fold(
         "test_metrics_last": last_test,
         "test_metrics_ema": ema_test,
         "test_metrics_swa": swa_test,
+        "test_metrics_best": best_test,
         "n_test": int(len(te_df)),
     }
 
@@ -1487,6 +1693,7 @@ def parse_args():
     p.add_argument("--attn_drop_rate", type=float, default=0.0)
     p.add_argument("--dropout_path_rate", type=float, default=0.0)
     p.add_argument("--use_checkpoint", action="store_true")
+    p.add_argument("--image_encoder_mode", type=str, default="dual_backbone", choices=["dual_backbone", "shared_mask"], help="dual_backbone = legacy PT/LN checkpoint-transfer path; shared_mask = single shared CT/PT/LN encoder.")
 
     p.add_argument("--align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_seg_ckpt", action="store_true")
     p.add_argument("--no_align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_seg_ckpt", action="store_false")
@@ -1537,6 +1744,9 @@ def parse_args():
     p.add_argument("--seg_pretrain_ln_dir", type=str, default="")
     p.add_argument("--seg_pretrain_pt_name", type=str, default="seg_best.pt")
     p.add_argument("--seg_pretrain_ln_name", type=str, default="seg_best.pt")
+    p.add_argument("--shared_seg_pretrain_ckpt", type=str, default="")
+    p.add_argument("--shared_seg_pretrain_dir", type=str, default="")
+    p.add_argument("--shared_seg_pretrain_name", type=str, default="seg_best.pt")
 
     # mask patch embed training toggle
     p.add_argument("--train_mask_patch_embed", dest="train_mask_patch_embed", action="store_true")
@@ -1545,7 +1755,7 @@ def parse_args():
 
     # LoRA
     p.add_argument("--use_lora", action="store_true")
-    p.add_argument("--lora_scope", type=str, default="both", choices=["pt", "ln", "both"])
+    p.add_argument("--lora_scope", type=str, default="both", choices=["pt", "ln", "both", "shared"])
     p.add_argument("--lora_r", type=int, default=16)
     p.add_argument("--lora_alpha", type=float, default=32.0)
     p.add_argument("--lora_dropout", type=float, default=0.05)

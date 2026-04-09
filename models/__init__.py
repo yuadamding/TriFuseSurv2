@@ -9,6 +9,9 @@ from trifusesurv.models.swinunetr_backbone_utils import (
 from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
     SwinUNETRPTLNIntraPeriTokenBackbone,
 )
+from trifusesurv.models.swinunetr_shared_roi_token_backbone import (
+    SharedMaskROITokenBackbone,
+)
 from trifusesurv.models.survival_model import (
     SwinUNETRTokenMoEDiscrete,
     gate_entropy_penalty_presence,
@@ -26,6 +29,7 @@ from trifusesurv.models.lora import (
 
 __all__ = [
     "SwinUNETRPTLNIntraPeriTokenBackbone",
+    "SharedMaskROITokenBackbone",
     "SwinUNETRTokenMoEDiscrete",
     "build_swinunetr_backbone",
     "convert_swinvit_feats_to_channel_first",

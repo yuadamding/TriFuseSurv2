@@ -416,6 +416,10 @@ def ckpt_uses_split_patch(sd: Dict[str, torch.Tensor]) -> bool:
     for k in sd.keys():
         if "patch_embed.proj.conv_ct." in k or "patch_embed.proj.conv_mask." in k:
             return True
+        if "patch_embed.proj.conv_mask_pt." in k or "patch_embed.proj.conv_mask_ln." in k:
+            return True
+        if "img_backbone._patch_split." in k:
+            return True
     return False
 
 
@@ -447,6 +451,44 @@ def infer_backbone_runtime_overrides(ckpt: Any, sd: Dict[str, torch.Tensor]) -> 
             fallback_peri_to_intra=True,
         )
     return out
+
+
+def infer_image_encoder_mode(ckpt: Any, sd: Dict[str, torch.Tensor]) -> str:
+    ck_args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
+    if isinstance(ck_args, dict):
+        mode = str(ck_args.get("image_encoder_mode", "")).strip().lower()
+        if mode in ("shared_mask", "shared_roi"):
+            return "shared_mask"
+        if mode in ("dual_backbone", "legacy_dual"):
+            return "dual_backbone"
+
+    for k in sd.keys():
+        ks = str(k)
+        if ".backbone_shared." in ks or "img_backbone._patch_split." in ks:
+            return "shared_mask"
+    return "dual_backbone"
+
+
+def infer_lora_scope(ckpt: Any, sd: Dict[str, torch.Tensor]) -> str:
+    ck_args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
+    if isinstance(ck_args, dict):
+        scope = str(ck_args.get("lora_scope", "")).strip().lower()
+        if scope in ("pt", "ln", "both", "shared", "all", "auto"):
+            return scope
+
+    prefixes = [str(k) for k in sd.keys() if str(k).endswith(".lora_A.weight")]
+    has_shared = any(".backbone_shared." in k for k in prefixes)
+    has_pt = any(".backbone_pt." in k for k in prefixes)
+    has_ln = any(".backbone_ln." in k for k in prefixes)
+    if has_shared:
+        return "shared"
+    if has_pt and has_ln:
+        return "both"
+    if has_pt:
+        return "pt"
+    if has_ln:
+        return "ln"
+    return "auto"
 
 
 def infer_dims_from_sd(sd: Dict[str, torch.Tensor]) -> Dict[str, int]:
@@ -749,7 +791,7 @@ def parse_args():
 
     p.add_argument("--lora_alpha", type=float, default=32.0)
     p.add_argument("--lora_dropout", type=float, default=0.0)
-    p.add_argument("--lora_scope", type=str, default="both", choices=["pt", "ln", "both"])
+    p.add_argument("--lora_scope", type=str, default="auto", choices=["auto", "pt", "ln", "both", "shared"])
 
     p.add_argument("--export_group_values", dest="export_group_values", action="store_true")
     p.add_argument("--no_export_group_values", dest="export_group_values", action="store_false")
@@ -1003,9 +1045,13 @@ def main():
         if token_mlp_hidden_dim <= 0:
             token_mlp_hidden_dim = int(args.token_mlp_hidden_dim) if int(args.token_mlp_hidden_dim) > 0 else int(2 * img_token_dim)
 
+        image_encoder_mode = infer_image_encoder_mode(ck, sd_raw)
+        print(f"[ARCH][fold {fold:02d}] image_encoder_mode={image_encoder_mode}")
+
         backbone_cfg = {
             "img_size": tuple(args.img_size),
             "feature_size": int(args.feature_size),
+            "image_encoder_mode": image_encoder_mode,
             "depths": tuple(args.depths),
             "num_heads": tuple(args.num_heads),
             "drop_rate": float(args.drop_rate),
@@ -1060,12 +1106,14 @@ def main():
 
         n_lora = 0
         if sd_has_lora(sd_raw):
+            lora_scope = infer_lora_scope(ck, sd_raw) if str(args.lora_scope).lower().strip() == "auto" else str(args.lora_scope)
+            print(f"[LoRA][fold {fold:02d}] reconstruction scope={lora_scope}")
             n_lora = inject_lora_from_state_dict(
                 model,
                 sd_raw,
                 lora_alpha=float(args.lora_alpha),
                 lora_dropout=float(args.lora_dropout),
-                scope=str(args.lora_scope),
+                scope=str(lora_scope),
                 verbose=True,
             )
 

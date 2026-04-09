@@ -321,7 +321,11 @@ def ckpt_uses_split_patch_embed(sd: Dict[str, torch.Tensor]) -> bool:
         ks = str(k)
         if "patch_embed.proj.conv_ct." in ks or "patch_embed.proj.conv_mask." in ks:
             return True
+        if "patch_embed.proj.conv_mask_pt." in ks or "patch_embed.proj.conv_mask_ln." in ks:
+            return True
         if "img_backbone._pt_patch_split." in ks or "img_backbone._ln_patch_split." in ks:
+            return True
+        if "img_backbone._patch_split." in ks:
             return True
     return False
 
@@ -380,6 +384,22 @@ def infer_backbone_runtime_overrides(ck: Any) -> Dict[str, Any]:
     if "fallback_peri_to_intra" in ck_args:
         out["fallback_peri_to_intra"] = _coerce_bool(ck_args["fallback_peri_to_intra"])
     return out
+
+
+def infer_image_encoder_mode(ck: Any, sd: Dict[str, torch.Tensor]) -> str:
+    if isinstance(ck, dict):
+        ck_args = ck.get("args", {})
+        if isinstance(ck_args, dict):
+            mode = str(ck_args.get("image_encoder_mode", "")).strip().lower()
+            if mode in ("shared_mask", "shared_roi"):
+                return "shared_mask"
+            if mode in ("dual_backbone", "legacy_dual"):
+                return "dual_backbone"
+    for k in sd.keys():
+        ks = str(k)
+        if ".backbone_shared." in ks or "img_backbone._patch_split." in ks:
+            return "shared_mask"
+    return "dual_backbone"
 
 
 # =============================================================================
@@ -545,8 +565,11 @@ def compute_fold_shap(
     rad_hidden_dim = int(dims.get("rad_hidden_dim", max(512, 2 * fused_dim)))
 
     # build model (must match training)
+    image_encoder_mode = infer_image_encoder_mode(ck, sd)
+    print(f"[fold {fold:02d}] image_encoder_mode={image_encoder_mode}")
     backbone_cfg = dict(
         img_size=tuple(args.img_size),
+        image_encoder_mode=image_encoder_mode,
         feature_size=int(args.feature_size),
         depths=tuple(args.depths),
         num_heads=tuple(args.num_heads),

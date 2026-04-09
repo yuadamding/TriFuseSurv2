@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Shared-mask SwinUNETR ROI token backbone for contour-available survival training.
+
+Single shared encoder variant of the stage-2 image path:
+- one SwinUNETR backbone over x_img=(CT, PT_mask, LN_mask)
+- same 5-token output semantics as the legacy dual-backbone model:
+  GLOBAL, PT_INTRA, PT_PERI, LN_INTRA, LN_PERI
+- optional trainable mask-channel-only patch embed for PT/LN channels
+
+This keeps the ROI-tokenization boundary intact while removing the PT/LN
+checkpoint-transfer mismatch of the dual-backbone design.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Tuple, Union
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from trifusesurv.models.swinunetr_backbone_utils import (
+    _expected_channels,
+    build_swinunetr_backbone,
+    convert_swinvit_feats_to_channel_first,
+    swinvit_features,
+)
+from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
+    AttnPool3D,
+    binary_close,
+    binary_dilate,
+    ct_stats_global,
+    ct_stats_in_mask,
+    interp_mask,
+    masked_mean,
+)
+
+
+class SplitTwoMaskPatchEmbedConv3d(nn.Module):
+    """Train only PT/LN mask patch-embed channels for a 3-channel input conv."""
+
+    def __init__(self, conv3: nn.Conv3d):
+        super().__init__()
+        if not isinstance(conv3, nn.Conv3d):
+            raise TypeError("SplitTwoMaskPatchEmbedConv3d expects nn.Conv3d.")
+        if int(conv3.in_channels) != 3:
+            raise ValueError(f"Expected in_channels=3, got {conv3.in_channels}")
+        if int(conv3.groups) != 1:
+            raise ValueError(f"Expected groups=1 for patch embed conv, got {conv3.groups}")
+
+        bias = conv3.bias is not None
+        kwargs = dict(
+            out_channels=conv3.out_channels,
+            kernel_size=conv3.kernel_size,
+            stride=conv3.stride,
+            padding=conv3.padding,
+            dilation=conv3.dilation,
+            groups=1,
+        )
+        self.conv_ct = nn.Conv3d(in_channels=1, bias=bias, **kwargs)
+        self.conv_mask_pt = nn.Conv3d(in_channels=1, bias=False, **kwargs)
+        self.conv_mask_ln = nn.Conv3d(in_channels=1, bias=False, **kwargs)
+
+        with torch.no_grad():
+            self.conv_ct.weight.copy_(conv3.weight[:, 0:1].contiguous())
+            if bias:
+                self.conv_ct.bias.copy_(conv3.bias)
+            self.conv_mask_pt.weight.zero_()
+            self.conv_mask_ln.weight.zero_()
+
+        for p in self.conv_ct.parameters():
+            p.requires_grad = False
+        for p in self.conv_mask_pt.parameters():
+            p.requires_grad = True
+        for p in self.conv_mask_ln.parameters():
+            p.requires_grad = True
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 5 or x.size(1) != 3:
+            raise ValueError(f"Expected x (B,3,D,H,W), got {tuple(x.shape)}")
+        ct = x[:, 0:1]
+        pt = x[:, 1:2]
+        ln = x[:, 2:3]
+        return self.conv_ct(ct) + self.conv_mask_pt(pt) + self.conv_mask_ln(ln)
+
+
+def _replace_patch_embed_proj_with_split(backbone: nn.Module, verbose: bool = True) -> SplitTwoMaskPatchEmbedConv3d:
+    target_name = None
+    target_conv = None
+    for name, mod in backbone.named_modules():
+        if name.endswith("patch_embed.proj") and isinstance(mod, nn.Conv3d) and int(mod.in_channels) == 3:
+            target_name = name
+            target_conv = mod
+            break
+    if target_name is None or target_conv is None:
+        raise RuntimeError("Could not find patch_embed.proj Conv3d(in_ch=3) inside shared SwinUNETR backbone.")
+
+    parent_path, attr = target_name.rsplit(".", 1)
+    parent = backbone
+    for part in parent_path.split("."):
+        parent = getattr(parent, part)
+
+    split = SplitTwoMaskPatchEmbedConv3d(target_conv).to(device=target_conv.weight.device, dtype=target_conv.weight.dtype)
+    setattr(parent, attr, split)
+    if verbose:
+        print(f"[PATCH] Replaced {target_name} with SplitTwoMaskPatchEmbedConv3d (train PT/LN mask channels only).")
+    return split
+
+
+class SharedMaskROITokenBackbone(nn.Module):
+    def __init__(
+        self,
+        *,
+        img_size: Tuple[int, int, int],
+        feature_size: int = 48,
+        depths: Tuple[int, int, int, int] = (2, 2, 2, 2),
+        num_heads: Tuple[int, int, int, int] = (3, 6, 12, 24),
+        drop_rate: float = 0.10,
+        attn_drop_rate: float = 0.10,
+        dropout_path_rate: float = 0.20,
+        normalize: bool = True,
+        use_checkpoint: bool = False,
+        token_dim: int = 512,
+        token_mlp_dropout: float = 0.30,
+        token_mlp_hidden_dim: int = 0,
+        attn_mask_bias: float = 2.0,
+        use_multiscale: bool = True,
+        mask_interp: str = "nearest",
+        min_roi_frac: float = 1e-5,
+        min_roi_voxels_deep: int = 8,
+        token_dropout: float = 0.05,
+        pt_shell_radius: int = 3,
+        ln_shell_radius: int = 3,
+        shell_body_from_ct: bool = True,
+        body_ct_thr: Union[str, float] = "auto",
+        body_ct_thr_hu: float = -500.0,
+        body_close_r: int = 2,
+        body_max_frac: float = 0.995,
+        strict_swinvit_layout: bool = True,
+        debug_swinvit_layout: bool = False,
+        force_presence_from_raw_masks: bool = False,
+        raw_mask_threshold: float = 0.5,
+        fallback_peri_to_intra: bool = True,
+    ):
+        super().__init__()
+        self.normalize = bool(normalize)
+        self.use_multiscale = bool(use_multiscale)
+        self.mask_interp = str(mask_interp)
+        self.min_roi_frac = float(min_roi_frac)
+        self.min_roi_voxels_deep = int(max(min_roi_voxels_deep, 0))
+        self.token_dropout = float(max(token_dropout, 0.0))
+        self.pt_shell_radius = int(pt_shell_radius)
+        self.ln_shell_radius = int(ln_shell_radius)
+        self.shell_body_from_ct = bool(shell_body_from_ct)
+        self.body_ct_thr = body_ct_thr
+        self.body_ct_thr_hu = float(body_ct_thr_hu)
+        self.body_close_r = int(body_close_r)
+        self.body_max_frac = float(body_max_frac)
+        self.strict_swinvit_layout = bool(strict_swinvit_layout)
+        self.debug_swinvit_layout = bool(debug_swinvit_layout)
+        self._checked_layout = False
+        self._expected_c = _expected_channels(int(feature_size), max_pow=6)
+        self.force_presence_from_raw_masks = bool(force_presence_from_raw_masks)
+        self.raw_mask_threshold = float(raw_mask_threshold)
+        self.fallback_peri_to_intra = bool(fallback_peri_to_intra)
+
+        self.backbone_shared = build_swinunetr_backbone(
+            img_size=tuple(img_size),
+            in_channels=3,
+            out_channels=2,
+            feature_size=int(feature_size),
+            depths=tuple(depths),
+            num_heads=tuple(num_heads),
+            drop_rate=float(drop_rate),
+            attn_drop_rate=float(attn_drop_rate),
+            dropout_path_rate=float(dropout_path_rate),
+            normalize=self.normalize,
+            use_checkpoint=bool(use_checkpoint),
+            spatial_dims=3,
+        )
+
+        self.gap = nn.AdaptiveAvgPool3d(1)
+        self.attn_pool = AttnPool3D(mask_bias=float(attn_mask_bias))
+        self.max_tokens = 5
+        self.token_dim = int(token_dim)
+
+        token_mlp_hidden_dim = int(token_mlp_hidden_dim)
+        if token_mlp_hidden_dim > 0:
+            self.token_mlp = nn.ModuleList([
+                nn.Sequential(
+                    nn.LazyLinear(token_mlp_hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(float(token_mlp_dropout)),
+                    nn.Linear(token_mlp_hidden_dim, self.token_dim),
+                    nn.GELU(),
+                    nn.Dropout(float(token_mlp_dropout)),
+                    nn.LayerNorm(self.token_dim),
+                ) for _ in range(self.max_tokens)
+            ])
+        else:
+            self.token_mlp = nn.ModuleList([
+                nn.Sequential(
+                    nn.LazyLinear(self.token_dim),
+                    nn.GELU(),
+                    nn.Dropout(float(token_mlp_dropout)),
+                    nn.LayerNorm(self.token_dim),
+                ) for _ in range(self.max_tokens)
+            ])
+
+        self.token_type = nn.Parameter(torch.zeros(self.max_tokens, self.token_dim))
+        nn.init.normal_(self.token_type, std=0.02)
+        self._patch_split: Optional[SplitTwoMaskPatchEmbedConv3d] = None
+
+    @property
+    def out_dim(self) -> int:
+        return int(self.token_dim)
+
+    @property
+    def num_tokens(self) -> int:
+        return int(self.max_tokens)
+
+    def iter_encoder_backbones(self):
+        return [("backbone_shared", self.backbone_shared)]
+
+    def _ct_looks_hu(self, ct: torch.Tensor) -> bool:
+        cmin = float(ct.amin().item())
+        cmax = float(ct.amax().item())
+        return (cmax > 50.0) or (cmin < -50.0)
+
+    def _auto_body_thr(self, ct: torch.Tensor) -> float:
+        return float(self.body_ct_thr_hu) if self._ct_looks_hu(ct) else 0.02
+
+    def _deep_present(self, mask: torch.Tensor, deep_size: Tuple[int, int, int]) -> torch.Tensor:
+        if self.min_roi_voxels_deep <= 0:
+            return mask.new_ones((mask.shape[0],), dtype=torch.bool)
+        m_ds = interp_mask(mask, size=deep_size, mode=self.mask_interp).clamp(0, 1)
+        s = m_ds.sum(dim=(2, 3, 4)).squeeze(1)
+        return s >= float(self.min_roi_voxels_deep)
+
+    @staticmethod
+    def _raw_present(mask01: torch.Tensor, thr: float) -> torch.Tensor:
+        return (mask01 > float(thr)).flatten(1).any(dim=1)
+
+    def enable_mask_patch_embed_training(self, verbose: bool = True):
+        self._patch_split = _replace_patch_embed_proj_with_split(self.backbone_shared, verbose=verbose)
+        for p in self.backbone_shared.parameters():
+            p.requires_grad = False
+        for p in self._patch_split.conv_mask_pt.parameters():
+            p.requires_grad = True
+        for p in self._patch_split.conv_mask_ln.parameters():
+            p.requires_grad = True
+        self.backbone_shared.eval()
+        if verbose:
+            n_shared = sum(p.requires_grad for p in self.backbone_shared.parameters())
+            print(f"[PATCH] shared backbone trainable params: {n_shared} (should be small, PT/LN mask patch only)")
+
+    def _sync_backbone_eval(self):
+        self.backbone_shared.eval()
+
+    def forward(self, x_img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if x_img.ndim != 5 or x_img.size(1) < 3:
+            raise ValueError(f"Expected x_img (B,3,D,H,W), got {tuple(x_img.shape)}")
+
+        self._sync_backbone_eval()
+
+        B = x_img.size(0)
+        ct = x_img[:, 0:1]
+        pt = x_img[:, 1:2].clamp(0, 1)
+        ln = x_img[:, 2:3].clamp(0, 1)
+
+        pt_present_raw = self._raw_present(pt, self.raw_mask_threshold)
+        ln_present_raw = self._raw_present(ln, self.raw_mask_threshold)
+
+        body = None
+        if self.shell_body_from_ct:
+            thr = self._auto_body_thr(ct) if (isinstance(self.body_ct_thr, str) and self.body_ct_thr == "auto") else float(self.body_ct_thr)
+            body = (ct > thr).float()
+            if self.body_close_r > 0:
+                body = binary_close(body, self.body_close_r)
+            frac = body.mean(dim=(2, 3, 4)).squeeze(1)
+            bad = (frac < 0.02)
+            if 0.0 < self.body_max_frac < 1.0:
+                bad = bad | (frac > self.body_max_frac)
+            if bad.any():
+                body = body.clone()
+                body[bad] = 0.0
+                if float(bad.float().mean().item()) > 0.5:
+                    body = None
+
+        feats = swinvit_features(self.backbone_shared, x_img, self.normalize)
+        feats = convert_swinvit_feats_to_channel_first(
+            feats,
+            self._expected_c,
+            strict=self.strict_swinvit_layout,
+            print_shapes=(self.debug_swinvit_layout and (not self._checked_layout)),
+            tag="swinViT-SHARED",
+        )
+        self._checked_layout = True
+
+        use_feats = list(feats[-4:]) if (self.use_multiscale and len(feats) >= 4) else [feats[-1]]
+        fdeep = use_feats[-1]
+        deep_size = tuple(int(x) for x in fdeep.shape[2:])
+
+        pres_global = torch.ones(B, device=x_img.device, dtype=torch.bool)
+        pres_pt_intra = (pt.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(pt, deep_size)
+        pres_ln_intra = (ln.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(ln, deep_size)
+
+        pt_shell = (binary_dilate(pt, self.pt_shell_radius) - pt).clamp(0, 1)
+        ln_shell = (binary_dilate(ln, self.ln_shell_radius) - ln).clamp(0, 1)
+        if body is not None:
+            pt_shell = pt_shell * body
+            ln_shell = ln_shell * body
+
+        if self.force_presence_from_raw_masks and self.fallback_peri_to_intra:
+            pt_shell_sum = pt_shell.sum(dim=(2, 3, 4)).squeeze(1)
+            ln_shell_sum = ln_shell.sum(dim=(2, 3, 4)).squeeze(1)
+            bad_pt_peri = pt_present_raw & (pt_shell_sum <= 0.0)
+            bad_ln_peri = ln_present_raw & (ln_shell_sum <= 0.0)
+            if bad_pt_peri.any():
+                pt_shell = pt_shell.clone()
+                pt_shell[bad_pt_peri] = pt[bad_pt_peri]
+            if bad_ln_peri.any():
+                ln_shell = ln_shell.clone()
+                ln_shell[bad_ln_peri] = ln[bad_ln_peri]
+
+        pres_pt_peri = (pt_shell.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(pt_shell, deep_size)
+        pres_ln_peri = (ln_shell.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(ln_shell, deep_size)
+        pres = torch.stack([pres_global, pres_pt_intra, pres_pt_peri, pres_ln_intra, pres_ln_peri], dim=1)
+
+        if self.force_presence_from_raw_masks:
+            pres = pres.clone()
+            pres[:, 0] = True
+            pres[:, 1] = pt_present_raw
+            pres[:, 2] = pt_present_raw
+            pres[:, 3] = ln_present_raw
+            pres[:, 4] = ln_present_raw
+
+        token_inputs: List[torch.Tensor] = []
+
+        g_vecs = [self.gap(f).flatten(1) for f in use_feats]
+        g = torch.cat(g_vecs, dim=1)
+        g = torch.cat([g, ct_stats_global(ct, body=body)], dim=1)
+        if body is not None:
+            body_deep = interp_mask(body, size=fdeep.shape[2:], mode="nearest")
+            g = torch.cat([g, self.attn_pool(fdeep, body_deep)], dim=1)
+        else:
+            g = torch.cat([g, self.attn_pool(fdeep, None)], dim=1)
+        token_inputs.append(g)
+
+        vecs = [ct_stats_in_mask(ct, pt)]
+        for f in use_feats:
+            vecs.append(masked_mean(f, interp_mask(pt, size=f.shape[2:], mode=self.mask_interp)))
+        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+
+        vecs = [ct_stats_in_mask(ct, pt_shell)]
+        for f in use_feats:
+            vecs.append(masked_mean(f, interp_mask(pt_shell, size=f.shape[2:], mode=self.mask_interp)))
+        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt_shell, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+
+        vecs = [ct_stats_in_mask(ct, ln)]
+        for f in use_feats:
+            vecs.append(masked_mean(f, interp_mask(ln, size=f.shape[2:], mode=self.mask_interp)))
+        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+
+        vecs = [ct_stats_in_mask(ct, ln_shell)]
+        for f in use_feats:
+            vecs.append(masked_mean(f, interp_mask(ln_shell, size=f.shape[2:], mode=self.mask_interp)))
+        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln_shell, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+
+        hs: List[torch.Tensor] = []
+        for i in range(self.max_tokens):
+            h = self.token_mlp[i](token_inputs[i]) + self.token_type[i].unsqueeze(0)
+            if i > 0:
+                absent = ~pres[:, i]
+                if absent.any():
+                    h = h.masked_fill(absent.unsqueeze(1), 0.0)
+            hs.append(h)
+
+        tok_img = torch.stack(hs, dim=1)
+        tok_img = torch.nan_to_num(tok_img, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if self.training and self.token_dropout > 0:
+            pres2m = pres.clone()
+            tok2m = tok_img
+            for tok_i in (1, 2, 3, 4):
+                if pres2m[:, tok_i].any():
+                    drop = (torch.rand(B, device=x_img.device) < self.token_dropout) & pres2m[:, tok_i]
+                    if drop.any():
+                        pres2m[drop, tok_i] = False
+                        tok2m = tok2m.clone()
+                        tok2m[drop, tok_i, :] = 0.0
+            pres, tok_img = pres2m, tok2m
+
+        return tok_img, pres

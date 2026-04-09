@@ -416,6 +416,9 @@ class SwinUNETRPTLNIntraPeriTokenBackbone(nn.Module):
             print(f"[PATCH] PT backbone trainable params: {n_pt} (should be small, mask patch only)")
             print(f"[PATCH] LN backbone trainable params: {n_ln} (should be small, mask patch only)")
 
+    def iter_encoder_backbones(self):
+        return [("backbone_pt", self.backbone_pt), ("backbone_ln", self.backbone_ln)]
+
     def _sync_backbones_eval(self):
         self.backbone_pt.eval()
         self.backbone_ln.eval()
