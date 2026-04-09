@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Shared-mask SwinUNETR ROI token backbone for contour-available survival training.
+"""Contour-aware SwinUNETR ROI token backbone.
 
-Single shared encoder variant of the stage-2 image path:
-- one SwinUNETR backbone over x_img=(CT, PT_mask, LN_mask)
-- same 5-token output semantics as the legacy dual-backbone model:
-  GLOBAL, PT_INTRA, PT_PERI, LN_INTRA, LN_PERI
-- optional trainable mask-channel-only patch embed for PT/LN channels
+Recommended end-to-end survival image path:
+- CT-only shared SwinUNETR encoder
+- low-resolution PT/LN localization heads on deep encoder features
+- ROI tokenization from soft predicted PT/LN masks
+- optional teacher forcing with GT PT/LN masks during training
 
-This keeps the ROI-tokenization boundary intact while removing the PT/LN
-checkpoint-transfer mismatch of the dual-backbone design.
+Tokens (B,5,Dtok):
+  0: GLOBAL
+  1: PT_INTRA
+  2: PT_PERI
+  3: LN_INTRA
+  4: LN_PERI
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -107,7 +111,7 @@ def _replace_patch_embed_proj_with_split(backbone: nn.Module, verbose: bool = Tr
     return split
 
 
-class SharedMaskROITokenBackbone(nn.Module):
+class ContourAwareROITokenBackbone(nn.Module):
     def __init__(
         self,
         *,
@@ -166,7 +170,7 @@ class SharedMaskROITokenBackbone(nn.Module):
 
         self.backbone_shared = build_swinunetr_backbone(
             img_size=tuple(img_size),
-            in_channels=3,
+            in_channels=1,
             out_channels=2,
             feature_size=int(feature_size),
             depths=tuple(depths),
@@ -181,6 +185,15 @@ class SharedMaskROITokenBackbone(nn.Module):
 
         self.gap = nn.AdaptiveAvgPool3d(1)
         self.attn_pool = AttnPool3D(mask_bias=float(attn_mask_bias))
+        self.loc_pt_head = nn.LazyConv3d(1, kernel_size=1, bias=True)
+        self.loc_ln_head = nn.LazyConv3d(1, kernel_size=1, bias=True)
+        self.presence_head = nn.Sequential(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Flatten(),
+            nn.LazyLinear(64),
+            nn.GELU(),
+            nn.Linear(64, 2),
+        )
         self.max_tokens = 5
         self.token_dim = int(token_dim)
 
@@ -222,6 +235,13 @@ class SharedMaskROITokenBackbone(nn.Module):
     def iter_encoder_backbones(self):
         return [("backbone_shared", self.backbone_shared)]
 
+    def _soft_shell(self, mask: torch.Tensor, radius: int) -> torch.Tensor:
+        if int(radius) <= 0:
+            return mask.new_zeros(mask.shape)
+        k = 2 * int(radius) + 1
+        dil = F.max_pool3d(mask.clamp(0, 1), kernel_size=k, stride=1, padding=int(radius))
+        return (dil - mask).clamp(0, 1)
+
     def _ct_looks_hu(self, ct: torch.Tensor) -> bool:
         cmin = float(ct.amin().item())
         cmax = float(ct.amax().item())
@@ -241,35 +261,36 @@ class SharedMaskROITokenBackbone(nn.Module):
     def _raw_present(mask01: torch.Tensor, thr: float) -> torch.Tensor:
         return (mask01 > float(thr)).flatten(1).any(dim=1)
 
+    def _presence_from_mask(self, mask01: torch.Tensor, deep_size: Tuple[int, int, int]) -> torch.Tensor:
+        mean_present = mask01.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac
+        return mean_present & self._deep_present(mask01, deep_size)
+
     def enable_mask_patch_embed_training(self, verbose: bool = True):
-        self._patch_split = _replace_patch_embed_proj_with_split(self.backbone_shared, verbose=verbose)
-        for p in self.backbone_shared.parameters():
-            p.requires_grad = False
-        for p in self._patch_split.conv_mask_pt.parameters():
-            p.requires_grad = True
-        for p in self._patch_split.conv_mask_ln.parameters():
-            p.requires_grad = True
-        self.backbone_shared.eval()
         if verbose:
-            n_shared = sum(p.requires_grad for p in self.backbone_shared.parameters())
-            print(f"[PATCH] shared backbone trainable params: {n_shared} (should be small, PT/LN mask patch only)")
+            print("[PATCH][INFO] contour-aware CT-only encoder has no mask input channels; ignoring mask patch-embed training request.")
 
     def _sync_backbone_eval(self):
         self.backbone_shared.eval()
 
-    def forward(self, x_img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        if x_img.ndim != 5 or x_img.size(1) < 3:
-            raise ValueError(f"Expected x_img (B,3,D,H,W), got {tuple(x_img.shape)}")
-
-        self._sync_backbone_eval()
+    def forward(
+        self,
+        x_img: torch.Tensor,
+        *,
+        mask_pt: Optional[torch.Tensor] = None,
+        mask_ln: Optional[torch.Tensor] = None,
+        teacher_force_alpha: float = 0.0,
+        return_aux: bool = False,
+    ):
+        if x_img.ndim != 5 or x_img.size(1) != 1:
+            raise ValueError(f"Expected contour-aware x_img (B,1,D,H,W), got {tuple(x_img.shape)}")
 
         B = x_img.size(0)
         ct = x_img[:, 0:1]
-        pt = x_img[:, 1:2].clamp(0, 1)
-        ln = x_img[:, 2:3].clamp(0, 1)
 
-        pt_present_raw = self._raw_present(pt, self.raw_mask_threshold)
-        ln_present_raw = self._raw_present(ln, self.raw_mask_threshold)
+        if mask_pt is not None:
+            mask_pt = mask_pt.to(device=ct.device, dtype=ct.dtype).clamp(0, 1)
+        if mask_ln is not None:
+            mask_ln = mask_ln.to(device=ct.device, dtype=ct.dtype).clamp(0, 1)
 
         body = None
         if self.shell_body_from_ct:
@@ -287,7 +308,7 @@ class SharedMaskROITokenBackbone(nn.Module):
                 if float(bad.float().mean().item()) > 0.5:
                     body = None
 
-        feats = swinvit_features(self.backbone_shared, x_img, self.normalize)
+        feats = swinvit_features(self.backbone_shared, ct, self.normalize)
         feats = convert_swinvit_feats_to_channel_first(
             feats,
             self._expected_c,
@@ -301,30 +322,58 @@ class SharedMaskROITokenBackbone(nn.Module):
         fdeep = use_feats[-1]
         deep_size = tuple(int(x) for x in fdeep.shape[2:])
 
-        pres_global = torch.ones(B, device=x_img.device, dtype=torch.bool)
-        pres_pt_intra = (pt.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(pt, deep_size)
-        pres_ln_intra = (ln.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(ln, deep_size)
+        loc_pt_logits = self.loc_pt_head(fdeep)
+        loc_ln_logits = self.loc_ln_head(fdeep)
+        loc_pt_prob = torch.sigmoid(loc_pt_logits)
+        loc_ln_prob = torch.sigmoid(loc_ln_logits)
 
-        pt_shell = (binary_dilate(pt, self.pt_shell_radius) - pt).clamp(0, 1)
-        ln_shell = (binary_dilate(ln, self.ln_shell_radius) - ln).clamp(0, 1)
+        pt_prob = F.interpolate(loc_pt_prob, size=tuple(int(x) for x in ct.shape[2:]), mode="trilinear", align_corners=False).clamp(0, 1)
+        ln_prob = F.interpolate(loc_ln_prob, size=tuple(int(x) for x in ct.shape[2:]), mode="trilinear", align_corners=False).clamp(0, 1)
+
+        alpha = float(max(0.0, min(1.0, teacher_force_alpha)))
+        pt_used = pt_prob
+        ln_used = ln_prob
+        if alpha > 0.0 and mask_pt is not None and mask_ln is not None:
+            pt_used = (1.0 - alpha) * pt_prob + alpha * mask_pt
+            ln_used = (1.0 - alpha) * ln_prob + alpha * mask_ln
+        pt_used = pt_used.clamp(0, 1)
+        ln_used = ln_used.clamp(0, 1)
+
+        raw_pt_source = mask_pt if (mask_pt is not None and alpha > 0.0) else pt_used
+        raw_ln_source = mask_ln if (mask_ln is not None and alpha > 0.0) else ln_used
+        pt_present_raw = self._raw_present(raw_pt_source, self.raw_mask_threshold)
+        ln_present_raw = self._raw_present(raw_ln_source, self.raw_mask_threshold)
+
+        presence_logits = self.presence_head(fdeep)
+        pt_presence_logits = presence_logits[:, 0]
+        ln_presence_logits = presence_logits[:, 1]
+        pt_presence_pred = torch.sigmoid(pt_presence_logits) > 0.5
+        ln_presence_pred = torch.sigmoid(ln_presence_logits) > 0.5
+
+        pres_global = torch.ones(B, device=ct.device, dtype=torch.bool)
+        pres_pt_intra = self._presence_from_mask(pt_used, deep_size) | pt_presence_pred
+        pres_ln_intra = self._presence_from_mask(ln_used, deep_size) | ln_presence_pred
+
+        pt_shell = self._soft_shell(pt_used, self.pt_shell_radius)
+        ln_shell = self._soft_shell(ln_used, self.ln_shell_radius)
         if body is not None:
             pt_shell = pt_shell * body
             ln_shell = ln_shell * body
 
-        if self.force_presence_from_raw_masks and self.fallback_peri_to_intra:
+        if self.fallback_peri_to_intra:
             pt_shell_sum = pt_shell.sum(dim=(2, 3, 4)).squeeze(1)
             ln_shell_sum = ln_shell.sum(dim=(2, 3, 4)).squeeze(1)
             bad_pt_peri = pt_present_raw & (pt_shell_sum <= 0.0)
             bad_ln_peri = ln_present_raw & (ln_shell_sum <= 0.0)
             if bad_pt_peri.any():
                 pt_shell = pt_shell.clone()
-                pt_shell[bad_pt_peri] = pt[bad_pt_peri]
+                pt_shell[bad_pt_peri] = pt_used[bad_pt_peri]
             if bad_ln_peri.any():
                 ln_shell = ln_shell.clone()
-                ln_shell[bad_ln_peri] = ln[bad_ln_peri]
+                ln_shell[bad_ln_peri] = ln_used[bad_ln_peri]
 
-        pres_pt_peri = (pt_shell.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(pt_shell, deep_size)
-        pres_ln_peri = (ln_shell.mean(dim=(2, 3, 4)).squeeze(1) > self.min_roi_frac) & self._deep_present(ln_shell, deep_size)
+        pres_pt_peri = self._presence_from_mask(pt_shell, deep_size) | pt_presence_pred
+        pres_ln_peri = self._presence_from_mask(ln_shell, deep_size) | ln_presence_pred
         pres = torch.stack([pres_global, pres_pt_intra, pres_pt_peri, pres_ln_intra, pres_ln_peri], dim=1)
 
         if self.force_presence_from_raw_masks:
@@ -347,20 +396,20 @@ class SharedMaskROITokenBackbone(nn.Module):
             g = torch.cat([g, self.attn_pool(fdeep, None)], dim=1)
         token_inputs.append(g)
 
-        vecs = [ct_stats_in_mask(ct, pt)]
+        vecs = [ct_stats_in_mask(ct, pt_used)]
         for f in use_feats:
-            vecs.append(masked_mean(f, interp_mask(pt, size=f.shape[2:], mode=self.mask_interp)))
-        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+            vecs.append(masked_mean(f, interp_mask(pt_used, size=f.shape[2:], mode=self.mask_interp)))
+        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt_used, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
 
         vecs = [ct_stats_in_mask(ct, pt_shell)]
         for f in use_feats:
             vecs.append(masked_mean(f, interp_mask(pt_shell, size=f.shape[2:], mode=self.mask_interp)))
         token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt_shell, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
 
-        vecs = [ct_stats_in_mask(ct, ln)]
+        vecs = [ct_stats_in_mask(ct, ln_used)]
         for f in use_feats:
-            vecs.append(masked_mean(f, interp_mask(ln, size=f.shape[2:], mode=self.mask_interp)))
-        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+            vecs.append(masked_mean(f, interp_mask(ln_used, size=f.shape[2:], mode=self.mask_interp)))
+        token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln_used, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
 
         vecs = [ct_stats_in_mask(ct, ln_shell)]
         for f in use_feats:
@@ -391,4 +440,20 @@ class SharedMaskROITokenBackbone(nn.Module):
                         tok2m[drop, tok_i, :] = 0.0
             pres, tok_img = pres2m, tok2m
 
-        return tok_img, pres
+        if not return_aux:
+            return tok_img, pres
+
+        aux: Dict[str, torch.Tensor] = {
+            "loc_pt_logits": loc_pt_logits,
+            "loc_ln_logits": loc_ln_logits,
+            "pt_prob": pt_prob,
+            "ln_prob": ln_prob,
+            "pt_used": pt_used,
+            "ln_used": ln_used,
+            "pt_presence_logits": pt_presence_logits,
+            "ln_presence_logits": ln_presence_logits,
+        }
+        return tok_img, pres, aux
+
+
+SharedMaskROITokenBackbone = ContourAwareROITokenBackbone

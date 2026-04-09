@@ -330,6 +330,7 @@ class PreprocessedMoEDataset(Dataset):
         use_radiomics: bool,
         strict_files: bool,
         expected_dhw: Optional[Tuple[int,int,int]] = None,
+        image_encoder_mode: str = "dual_backbone",
     ):
         self.df = df.reset_index(drop=True)
         self.id_col = id_col
@@ -343,6 +344,7 @@ class PreprocessedMoEDataset(Dataset):
         self.use_radiomics = bool(use_radiomics)
         self.strict_files = bool(strict_files)
         self.expected_dhw = tuple(expected_dhw) if expected_dhw is not None else None
+        self.image_encoder_mode = str(image_encoder_mode).strip().lower()
 
     def __len__(self) -> int:
         return len(self.df)
@@ -378,7 +380,10 @@ class PreprocessedMoEDataset(Dataset):
         pt_mask_present = bool(float(pt.sum()) > 0.0)
         ln_mask_present = bool(float(ln.sum()) > 0.0)
 
-        x = torch.from_numpy(np.stack([ct, pt, ln], axis=0).astype(np.float32))  # (3,D,H,W)
+        if self.image_encoder_mode == "contour_aware":
+            x = torch.from_numpy(ct[None, ...].astype(np.float32))  # (1,D,H,W)
+        else:
+            x = torch.from_numpy(np.stack([ct, pt, ln], axis=0).astype(np.float32))  # (3,D,H,W)
         t = torch.tensor(float(row[self.time_col]), dtype=torch.float32)
         e = torch.tensor(float(row[self.event_col]), dtype=torch.float32)
 
@@ -444,7 +449,7 @@ def infer_backbone_runtime_overrides(ckpt: Any, sd: Dict[str, torch.Tensor]) -> 
         if "fallback_peri_to_intra" in ck_args:
             out["fallback_peri_to_intra"] = _coerce_bool(ck_args["fallback_peri_to_intra"])
 
-    if not out and sd_has_lora(sd):
+    if (not out) and sd_has_lora(sd) and infer_image_encoder_mode(ckpt, sd) != "contour_aware":
         out.update(
             force_presence_from_raw_masks=True,
             raw_mask_threshold=0.5,
@@ -457,15 +462,15 @@ def infer_image_encoder_mode(ckpt: Any, sd: Dict[str, torch.Tensor]) -> str:
     ck_args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
     if isinstance(ck_args, dict):
         mode = str(ck_args.get("image_encoder_mode", "")).strip().lower()
-        if mode in ("shared_mask", "shared_roi"):
-            return "shared_mask"
+        if mode in ("contour_aware", "contour_available", "shared_mask", "shared_roi"):
+            return "contour_aware"
         if mode in ("dual_backbone", "legacy_dual"):
             return "dual_backbone"
 
     for k in sd.keys():
         ks = str(k)
         if ".backbone_shared." in ks or "img_backbone._patch_split." in ks:
-            return "shared_mask"
+            return "contour_aware"
     return "dual_backbone"
 
 
@@ -959,6 +964,7 @@ def main():
 
         sd_raw = strip_prefixes(extract_state_dict(ck))
         dims = infer_dims_from_sd(sd_raw)
+        image_encoder_mode = infer_image_encoder_mode(ck, sd_raw)
 
         # ---- clinical encoder matched to ckpt dim (if clinical branch exists) ----
         clin_dim_ckpt = int(dims.get("clinical_dim_ckpt", 0))
@@ -1008,6 +1014,7 @@ def main():
             clinical_encoder=clin_enc, radiomics_encoder=rad_enc,
             use_radiomics=args.use_radiomics, strict_files=True,
             expected_dhw=expected_dhw,
+            image_encoder_mode=image_encoder_mode,
         )
         te_ds = PreprocessedMoEDataset(
             te_df,
@@ -1016,6 +1023,7 @@ def main():
             clinical_encoder=clin_enc, radiomics_encoder=rad_enc,
             use_radiomics=args.use_radiomics, strict_files=True,
             expected_dhw=expected_dhw,
+            image_encoder_mode=image_encoder_mode,
         )
 
         tr_loader = DataLoader(tr_ds, batch_size=1, shuffle=False, num_workers=int(args.workers),
@@ -1045,7 +1053,6 @@ def main():
         if token_mlp_hidden_dim <= 0:
             token_mlp_hidden_dim = int(args.token_mlp_hidden_dim) if int(args.token_mlp_hidden_dim) > 0 else int(2 * img_token_dim)
 
-        image_encoder_mode = infer_image_encoder_mode(ck, sd_raw)
         print(f"[ARCH][fold {fold:02d}] image_encoder_mode={image_encoder_mode}")
 
         backbone_cfg = {

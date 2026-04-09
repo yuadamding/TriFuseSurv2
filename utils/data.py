@@ -1,4 +1,4 @@
-"""Shared dataset and augmentation for TriFuseSurv multimodal survival."""
+"""Shared datasets and augmentation for TriFuseSurv multimodal survival."""
 
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ def rand_intensity(ct: np.ndarray, p: float = 0.3):
     return np.clip(ct, 0.0, 1.0).astype(np.float32)
 
 
-class PreprocessedMoEDataset(Dataset):
-    """Dataset for multimodal survival training and evaluation."""
+class _BasePreprocessedSurvivalDataset(Dataset):
+    """Shared NIfTI loading and tabular encoding for survival datasets."""
 
     def __init__(
         self,
@@ -75,10 +75,7 @@ class PreprocessedMoEDataset(Dataset):
         self.strict_files = bool(strict_files)
         self.expected_dhw = tuple(expected_dhw) if expected_dhw is not None else None
         self.mode = mode
-        self.track_mask_presence = track_mask_presence
-
-    def __len__(self):
-        return len(self.meta)
+        self.track_mask_presence = bool(track_mask_presence)
 
     def _load_nii(self, path: str) -> np.ndarray:
         img = sitk.ReadImage(str(path))
@@ -88,7 +85,10 @@ class PreprocessedMoEDataset(Dataset):
         shape = self.expected_dhw if self.expected_dhw is not None else (128, 256, 256)
         return np.zeros(shape, dtype=np.float32)
 
-    def __getitem__(self, idx):
+    def __len__(self):
+        return len(self.meta)
+
+    def _load_case(self, idx: int):
         row = self.meta.iloc[idx]
         pid = str(row[self.id_col])
 
@@ -121,7 +121,6 @@ class PreprocessedMoEDataset(Dataset):
             ct, pt, ln = rand_flip_3d(ct, pt, ln)
             ct = rand_intensity(ct)
 
-        x = np.stack([ct, pt, ln], axis=0)
         t = float(row[self.time_col])
         e = float(row[self.event_col])
 
@@ -134,6 +133,16 @@ class PreprocessedMoEDataset(Dataset):
             rad_t = torch.tensor(self.radiomics_encoder.encode_patient(pid), dtype=torch.float32)
         else:
             rad_t = torch.zeros(0, dtype=torch.float32)
+
+        return ct, pt, ln, t, e, clin_t, rad_t, pid
+
+
+class PreprocessedMoEDataset(_BasePreprocessedSurvivalDataset):
+    """Legacy dataset that exposes CT and contour masks as a 3-channel image input."""
+
+    def __getitem__(self, idx):
+        ct, pt, ln, t, e, clin_t, rad_t, pid = self._load_case(idx)
+        x = np.stack([ct, pt, ln], axis=0)
 
         result = (
             torch.tensor(x, dtype=torch.float32),
@@ -150,3 +159,20 @@ class PreprocessedMoEDataset(Dataset):
             return result + (pt_present, ln_present)
 
         return result
+
+
+class PreprocessedContourAwareDataset(_BasePreprocessedSurvivalDataset):
+    """CT-only dataset with PT/LN masks kept as localization labels."""
+
+    def __getitem__(self, idx):
+        ct, pt, ln, t, e, clin_t, rad_t, pid = self._load_case(idx)
+        return (
+            torch.tensor(ct[None, ...], dtype=torch.float32),
+            torch.tensor(pt[None, ...], dtype=torch.float32),
+            torch.tensor(ln[None, ...], dtype=torch.float32),
+            torch.tensor(t, dtype=torch.float32),
+            torch.tensor(e, dtype=torch.float32),
+            clin_t,
+            rad_t,
+            pid,
+        )

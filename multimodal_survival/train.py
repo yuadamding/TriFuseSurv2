@@ -1,133 +1,13 @@
 #!/usr/bin/env python3
-"""
-trifusesurv.multimodal_survival.train
+"""Joint multimodal survival training for TriFuseSurv.
 
-Joint deep learning survival model for OPSCC:
-- 3D CT + (PT mask, LN mask) -> SwinUNETR token backbone (PT+LN encoders) -> MoE gating
-- Clinical tabular encoder (numeric/ordinal + categorical one-hot)
-- Radiomics encoder (group-wise mean/std -> PCA on TRAIN only)
-- Discrete-time hazards head, exports risk scores
+Recommended contour-aware mode:
+- CT-only shared SwinUNETR encoder
+- internal PT/LN localization heads
+- ROI tokens built from soft predicted masks
+- survival plus localization losses in one graph
 
-This revision addresses major correctness/stability concerns:
-1) Explicit backbone freezing policy (no accidental full fine-tune at lr_backbone)
-2) MultiheadAttention NaN guard when all tokens are masked for a sample
-3) Resume + metrics logging hygiene (prevents mixed histories)
-4) Strong LoRA injection checks (min replacements, trainable assertions)
-5) Param group disjointness checks
-6) Radiomics schema picked from TRAIN only (reduces peeking)
-7) Event column validation (must be {0,1})
-8) Optional hard NaN traps for early failure
-
-
-OUT=runs/moe_runs
-mkdir -p "$OUT"
-
-CUDA_VISIBLE_DEVICES=0 \
-python -m trifusesurv.multimodal_survival.train \
-  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
-  --splits_dir runs/opscc_splits_os_seed1 \
-  --cv_folds 4 --debug_fold 0 --strict_splits \
-  --endpoint OS \
-  --ct_col ct_out_path \
-  --mask_pt_col mask_primary_out_path \
-  --mask_ln_col mask_nodal_out_path \
-  --seg_pretrain_pt_ckpt runs/seg_overfit_pt_big_stable/all/seg_best.pt \
-  --seg_pretrain_ln_ckpt runs/seg_overfit_ln_big_stable/all/seg_best.pt \
-  --out_dir "$OUT" \
-  --exp_name cv4_fold00_lora96_perfTune_gateRelax_SWA30_ep80_scratch \
-  --img_size 128 256 256 \
-  --epochs 80 --batch_size 1 --workers 8 --amp --use_checkpoint \
-  --min_lr 1e-5 \
-  --device cuda:0 \
-  --no_resume \
-  --use_radiomics --use_ema --use_swa --export_extra_risks \
-  --clinical_cols NSTAGE AGE SEX T N M KFCF SMOKE ALCOHOL HPV \
-  --lr_backbone 8e-4 --wd_backbone 0 \
-  --lr_lora 3e-4 --wd_lora 0 \
-  --lr_head 8e-5 --wd_head 1e-3 --wd_clin 5e-4 --wd_rad 2e-3 \
-  --pt_shell_radius 5 --ln_shell_radius 5 \
-  --radiomics_root cohort_radiomics_patient_wide.csv \
-  --radiomics_pca_total_components 100 \
-  --shell_body_from_ct \
-  --use_lora --lora_scope both --lora_r 16 --lora_alpha 32 --lora_dropout 0.10 \
-  --lora_targets qkv proj fc1 fc2 linear1 linear2 \
-  --lora_min_replacements 1 \
-  --train_mask_patch_embed \
-  --nan_guard \
-  --modality_dropout_clin_p 0.0 \
-  --modality_dropout_rad_p 0.0 \
-  --proj_dropout_p 0.60 \
-  --attn_dropout_p 0.35 \
-  --gate_dropout_p 0.40 \
-  --surv_dropout_p 0.65 \
-  --token_mlp_dropout 0.65 \
-  --token_dropout 0.25 \
-  --expert_dropout_p 0.35 \
-  --rad_proj_dropout_p 0.80 \
-  --clinical_noise_std 0.03 \
-  --radiomics_noise_std 0.03 \
-  --swa_start_epoch 30 \
-  --swa_update_freq_epochs 1 \
-  --gate_entropy_lambda 0.002 \
-  --gate_loadbal_lambda 0.002 \
-  --hazard_smooth_lambda 0.005 \
-  --logit_l2_lambda 0.0 \
-  --use_lora
-
-OUT=runs/moe_runs
-mkdir -p "$OUT"
-
-CUDA_VISIBLE_DEVICES=1 \
-python -m trifusesurv.multimodal_survival.train \
-  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
-  --splits_dir runs/opscc_splits_os_seed1 \
-  --cv_folds 4 --debug_fold 1 --strict_splits \
-  --endpoint OS \
-  --ct_col ct_out_path \
-  --mask_pt_col mask_primary_out_path \
-  --mask_ln_col mask_nodal_out_path \
-  --seg_pretrain_pt_ckpt runs/seg_overfit_pt_big_stable/all/seg_best.pt \
-  --seg_pretrain_ln_ckpt runs/seg_overfit_ln_big_stable/all/seg_best.pt \
-  --out_dir "$OUT" \
-  --exp_name cv4_fold01_lora96_perfTune_gateRelax_SWA30_ep80_scratch \
-  --img_size 128 256 256 \
-  --epochs 80 --batch_size 1 --workers 8 --amp --use_checkpoint \
-  --min_lr 1e-5 \
-  --device cuda:0 \
-  --no_resume \
-  --use_radiomics --use_ema --use_swa --export_extra_risks \
-  --clinical_cols NSTAGE AGE SEX T N M KFCF SMOKE ALCOHOL HPV \
-  --lr_backbone 8e-4 --wd_backbone 0 \
-  --lr_lora 3e-4 --wd_lora 0 \
-  --lr_head 8e-5 --wd_head 1e-3 --wd_clin 5e-4 --wd_rad 2e-3 \
-  --pt_shell_radius 5 --ln_shell_radius 5 \
-  --radiomics_root cohort_radiomics_patient_wide.csv \
-  --radiomics_pca_total_components 100 \
-  --shell_body_from_ct \
-  --use_lora --lora_scope both --lora_r 16 --lora_alpha 32 --lora_dropout 0.10 \
-  --lora_targets qkv proj fc1 fc2 linear1 linear2 \
-  --lora_min_replacements 1 \
-  --train_mask_patch_embed \
-  --nan_guard \
-  --modality_dropout_clin_p 0.0 \
-  --modality_dropout_rad_p 0.0 \
-  --proj_dropout_p 0.60 \
-  --attn_dropout_p 0.35 \
-  --gate_dropout_p 0.40 \
-  --surv_dropout_p 0.65 \
-  --token_mlp_dropout 0.65 \
-  --token_dropout 0.25 \
-  --expert_dropout_p 0.35 \
-  --rad_proj_dropout_p 0.80 \
-  --clinical_noise_std 0.03 \
-  --radiomics_noise_std 0.03 \
-  --swa_start_epoch 30 \
-  --swa_update_freq_epochs 1 \
-  --gate_entropy_lambda 0.002 \
-  --gate_loadbal_lambda 0.002 \
-  --hazard_smooth_lambda 0.005 \
-  --logit_l2_lambda 0.0 \
-  --use_lora
+Legacy dual-backbone mode is retained for comparison only.
 """
 
 from __future__ import annotations
@@ -144,9 +24,11 @@ from typing import Tuple, Dict, List, Optional, Any, Sequence
 
 import numpy as np
 import pandas as pd
+import SimpleITK as sitk
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.nn.parameter import UninitializedParameter
 from torch.nn.utils import clip_grad_norm_
@@ -172,7 +54,7 @@ from trifusesurv.utils.clinical import (
     ENDPOINT_MAP,
 )
 from trifusesurv.utils.radiomics import RadiomicsEncoder
-from trifusesurv.utils.data import PreprocessedMoEDataset
+from trifusesurv.utils.data import PreprocessedContourAwareDataset, PreprocessedMoEDataset
 
 
 # =============================================================================
@@ -214,6 +96,45 @@ def make_amp(device: torch.device, enabled: bool):
         scaler = torch.cuda.amp.GradScaler(enabled=True)
         autocast_ctx = lambda: torch.cuda.amp.autocast(enabled=True)
         return scaler, autocast_ctx
+
+
+def _find_first_existing_path(meta: pd.DataFrame, col: str) -> Optional[str]:
+    if col not in meta.columns:
+        return None
+    for p in meta[col].astype(str).tolist():
+        if p and os.path.isfile(p):
+            return p
+    return None
+
+
+def _read_nii_shape(path: str) -> Tuple[int, int, int]:
+    img = sitk.ReadImage(str(path))
+    arr = sitk.GetArrayFromImage(img)
+    return tuple(int(x) for x in arr.shape)
+
+
+def resolve_img_size_against_data(meta: pd.DataFrame, ct_col: str, img_size_arg: Sequence[int]) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+    arg = tuple(int(x) for x in img_size_arg)
+    p0 = _find_first_existing_path(meta, ct_col)
+    if p0 is None:
+        print(f"[IMGCFG][WARN] Could not find any existing CT path to validate --img_size. Using as-is: {arg}")
+        return arg, arg
+
+    shp = _read_nii_shape(p0)  # (D,H,W)
+    if shp == arg:
+        return arg, shp
+    if shp == tuple(reversed(arg)):
+        print(
+            f"[IMGCFG][WARN] Data shape is {shp} (D,H,W) but --img_size={arg}. "
+            f"Interpreting --img_size as (H,W,D) and flipping to (D,H,W)={shp}."
+        )
+        return shp, shp
+
+    print(
+        f"[IMGCFG][WARN] Data CT shape is {shp} (D,H,W) but --img_size={arg}. "
+        f"Overriding to the data shape for stage-2 training."
+    )
+    return shp, shp
 
 
 # LoRA classes/functions imported from trifusesurv.models.lora
@@ -269,11 +190,11 @@ def read_seg_pretrain_backbone_cfg(ckpt_path: str) -> Dict[str, Any]:
 
 def align_backbone_cfg_to_seg_pretrain(args):
     mode = _image_encoder_mode(args)
-    if mode == "shared_mask":
+    if mode == "contour_aware":
         shared_ckpt = _resolve_existing_shared_ckpt_for_cfg(args)
         cfg = read_seg_pretrain_backbone_cfg(shared_ckpt) if (shared_ckpt and os.path.isfile(shared_ckpt)) else None
         if cfg is None:
-            print("[SWINCFG] No shared pretrain ckpt found for cfg alignment; using CLI Swin cfg.")
+            print("[SWINCFG] No contour-aware warm-start ckpt found for cfg alignment; using CLI Swin cfg.")
             return args
 
         want_img = tuple(int(x) for x in cfg["img_size"])
@@ -287,10 +208,10 @@ def align_backbone_cfg_to_seg_pretrain(args):
         cur_heads = tuple(int(x) for x in args.num_heads)
 
         if cur_img != want_img:
-            print(f"[SWINCFG][WARN] CLI --img_size {cur_img} != shared pretrain {want_img}. Overriding to shared pretrain.")
+            print(f"[SWINCFG][WARN] CLI --img_size {cur_img} != contour-aware warm-start {want_img}. Overriding to warm-start cfg.")
             args.img_size = list(want_img)
         if (cur_fs, cur_depths, cur_heads) != (want_fs, want_depths, want_heads):
-            print("[SWINCFG][WARN] CLI Swin cfg != shared pretrain cfg. Overriding to match shared pretrain.")
+            print("[SWINCFG][WARN] CLI Swin cfg != contour-aware warm-start cfg. Overriding to match warm-start.")
             print(f"  CLI : feature_size={cur_fs} depths={cur_depths} num_heads={cur_heads}")
             print(f"  CKPT: feature_size={want_fs} depths={want_depths} num_heads={want_heads}")
 
@@ -303,7 +224,7 @@ def align_backbone_cfg_to_seg_pretrain(args):
         if bool(cfg.get("use_checkpoint", True)) and (not bool(args.use_checkpoint)):
             args.use_checkpoint = True
 
-        print("[SWINCFG] aligned to shared pretrain:")
+        print("[SWINCFG] aligned to contour-aware warm-start:")
         print(
             f"  img_size={tuple(args.img_size)} feature_size={args.feature_size} "
             f"depths={tuple(args.depths)} heads={tuple(args.num_heads)}"
@@ -313,7 +234,7 @@ def align_backbone_cfg_to_seg_pretrain(args):
             f"drop_path={args.dropout_path_rate} use_checkpoint={args.use_checkpoint}"
         )
         if shared_ckpt:
-            print(f"  shared_ckpt_for_cfg={shared_ckpt}")
+            print(f"  contour_warmstart_ckpt_for_cfg={shared_ckpt}")
         return args
 
     pt_ckpt = _resolve_existing_seg_ckpt_for_cfg(args, "pt")
@@ -481,6 +402,59 @@ def read_nii(path: str, dtype=np.float32) -> np.ndarray:
 # =============================================================================
 # Lazy materialization
 # =============================================================================
+def _unpack_surv_batch(batch):
+    if len(batch) == 6:
+        x, t, e, clin, rad, pid = batch
+        return dict(x=x, mask_pt=None, mask_ln=None, t=t, e=e, clin=clin, rad=rad, pid=pid)
+    if len(batch) == 8:
+        x, mask_pt, mask_ln, t, e, clin, rad, pid = batch
+        return dict(x=x, mask_pt=mask_pt, mask_ln=mask_ln, t=t, e=e, clin=clin, rad=rad, pid=pid)
+    raise RuntimeError(f"[BATCH] Unexpected batch structure of length {len(batch)}")
+
+
+def _to_optional_device_tensor(x: Optional[torch.Tensor], device: torch.device):
+    if x is None:
+        return None
+    return x.to(device, non_blocking=True)
+
+
+def _teacher_force_alpha_for_epoch(epoch: int, args) -> float:
+    epochs = int(max(0, getattr(args, "teacher_force_epochs", 0)))
+    start = float(getattr(args, "teacher_force_start", 1.0))
+    end = float(getattr(args, "teacher_force_end", 0.0))
+    if epochs <= 0:
+        return 0.0
+    if epochs == 1:
+        return float(start)
+    if int(epoch) > epochs:
+        return float(end)
+    frac = float(max(0.0, min(1.0, (int(epoch) - 1) / float(epochs - 1))))
+    return float(start + frac * (end - start))
+
+
+def _resize_mask_target(mask: torch.Tensor, size: Tuple[int, int, int]) -> torch.Tensor:
+    if tuple(int(x) for x in mask.shape[2:]) == tuple(int(x) for x in size):
+        return mask.clamp(0, 1)
+    return F.interpolate(mask.float(), size=size, mode="nearest").clamp(0, 1)
+
+
+def _soft_dice_loss_from_logits(logits: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    probs = torch.sigmoid(logits)
+    numer = 2.0 * (probs * target).sum(dim=(1, 2, 3, 4))
+    denom = probs.sum(dim=(1, 2, 3, 4)) + target.sum(dim=(1, 2, 3, 4))
+    dice = (numer + eps) / (denom + eps)
+    return 1.0 - dice.mean()
+
+
+def _localization_loss_from_logits(logits: torch.Tensor, target: torch.Tensor, bce_weight: float, dice_weight: float) -> torch.Tensor:
+    loss = logits.new_tensor(0.0)
+    if float(bce_weight) > 0.0:
+        loss = loss + float(bce_weight) * F.binary_cross_entropy_with_logits(logits, target)
+    if float(dice_weight) > 0.0:
+        loss = loss + float(dice_weight) * _soft_dice_loss_from_logits(logits, target)
+    return loss
+
+
 def materialize_lazy_modules(model: nn.Module, loader: DataLoader, device: torch.device, autocast_ctx):
     has_lazy = any(isinstance(p, UninitializedParameter) for p in model.parameters())
     if not has_lazy:
@@ -488,14 +462,16 @@ def materialize_lazy_modules(model: nn.Module, loader: DataLoader, device: torch
     batch = next(iter(loader), None)
     if batch is None:
         return
-    x, _, _, clin, rad, _ = batch
-    x = x.to(device, non_blocking=True)
-    clin = clin.to(device) if (clin is not None and clin.numel() > 0) else None
-    rad = rad.to(device) if (rad is not None and rad.numel() > 0) else None
+    payload = _unpack_surv_batch(batch)
+    x = payload["x"].to(device, non_blocking=True)
+    clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
+    rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
+    mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
+    mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
     model.eval()
     with torch.no_grad():
         with autocast_ctx():
-            _ = model(x, clin, rad, return_gate=False)
+            _ = model(x, clin, rad, mask_pt=mask_pt, mask_ln=mask_ln, teacher_force_alpha=0.0, return_gate=False)
 
 
 # =============================================================================
@@ -648,16 +624,19 @@ def evaluate_model(
     nll_sum = 0.0
     nll_n = 0
 
-    for x, t, e, clin, rad, _ in loader:
-        x = x.to(device, non_blocking=True)
+    for batch in loader:
+        payload = _unpack_surv_batch(batch)
+        x = payload["x"].to(device, non_blocking=True)
+        t = payload["t"]
+        e = payload["e"]
         t_dev = t.to(device, non_blocking=True)
         e_dev = e.to(device, non_blocking=True)
 
-        clin = clin.to(device) if (clin is not None and clin.numel() > 0) else None
-        rad  = rad.to(device)  if (rad  is not None and rad.numel()  > 0) else None
+        clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
+        rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
 
         with autocast_ctx():
-            logits = model(x, clin, rad, return_gate=False)
+            logits = model(x, clin, rad, teacher_force_alpha=0.0, return_gate=False)
 
         lf = logits.float()
         K = int(lf.shape[1])
@@ -710,14 +689,15 @@ def predict_risk_scores(
     mm = model.module if isinstance(model, nn.DataParallel) else model
     out: Dict[str, float] = {}
 
-    for x, _, _, clin, rad, pid in loader:
-        x = x.to(device, non_blocking=True)
-        clin = clin.to(device) if (clin is not None and clin.numel() > 0) else None
-        rad = rad.to(device) if (rad is not None and rad.numel() > 0) else None
+    for batch in loader:
+        payload = _unpack_surv_batch(batch)
+        x = payload["x"].to(device, non_blocking=True)
+        clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
+        rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
         with autocast_ctx():
-            logits = model(x, clin, rad, return_gate=False)
+            logits = model(x, clin, rad, teacher_force_alpha=0.0, return_gate=False)
         risks = mm.hazards_to_risk(logits, horizon_days=float(risk_horizon_days)).detach().cpu().numpy()
-        for i, p in enumerate(pid):
+        for i, p in enumerate(payload["pid"]):
             out[str(p)] = float(risks[i])
     return out
 
@@ -744,24 +724,56 @@ def train_one_epoch(
     logit_l2_lambda: float,
     gate_entropy_lambda: float,
     gate_loadbal_lambda: float,
+    teacher_force_alpha: float,
+    loc_loss_pt_lambda: float,
+    loc_loss_ln_lambda: float,
+    loc_presence_lambda: float,
+    loc_bce_weight: float,
+    loc_dice_weight: float,
     ema: Optional[H.EMAWeights],
     autocast_ctx,
 ) -> float:
     model.train()
     mm = model.module if isinstance(model, nn.DataParallel) else model
+    request_aux = str(getattr(mm, "image_encoder_mode", "")).strip().lower() == "contour_aware"
 
     losses = []
-    for x, t, e, clin, rad, _ in loader:
-        x = x.to(device, non_blocking=True)
-        t = t.to(device, non_blocking=True)
-        e = e.to(device, non_blocking=True)
-        clin = clin.to(device) if (clin is not None and clin.numel() > 0) else None
-        rad = rad.to(device) if (rad is not None and rad.numel() > 0) else None
+    for batch in loader:
+        payload = _unpack_surv_batch(batch)
+        x = payload["x"].to(device, non_blocking=True)
+        t = payload["t"].to(device, non_blocking=True)
+        e = payload["e"].to(device, non_blocking=True)
+        clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
+        rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
+        mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
+        mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
 
         optimizer.zero_grad(set_to_none=True)
 
         with autocast_ctx():
-            logits, gate, pres = model(x, clin, rad, return_gate=True)
+            if request_aux:
+                logits, gate, pres, aux = model(
+                    x,
+                    clin,
+                    rad,
+                    mask_pt=mask_pt,
+                    mask_ln=mask_ln,
+                    teacher_force_alpha=float(teacher_force_alpha),
+                    return_gate=True,
+                    return_aux=True,
+                )
+            else:
+                logits, gate, pres = model(
+                    x,
+                    clin,
+                    rad,
+                    mask_pt=mask_pt,
+                    mask_ln=mask_ln,
+                    teacher_force_alpha=float(teacher_force_alpha),
+                    return_gate=True,
+                    return_aux=False,
+                )
+                aux = None
             lf = logits.float()
 
             loss = H.discrete_time_nll_loss(lf, t, e, float(time_bin_width_days), int(num_time_bins))
@@ -773,6 +785,30 @@ def train_one_epoch(
                 loss = loss + float(gate_entropy_lambda) * gate_entropy_penalty_presence(gate, pres)
             if gate_loadbal_lambda > 0:
                 loss = loss + float(gate_loadbal_lambda) * gate_load_balance_penalty_presence(gate, pres)
+
+            if aux is not None and mask_pt is not None and mask_ln is not None:
+                loc_pt_target = _resize_mask_target(mask_pt, tuple(int(x) for x in aux["loc_pt_logits"].shape[2:]))
+                loc_ln_target = _resize_mask_target(mask_ln, tuple(int(x) for x in aux["loc_ln_logits"].shape[2:]))
+                if float(loc_loss_pt_lambda) > 0.0:
+                    loss = loss + float(loc_loss_pt_lambda) * _localization_loss_from_logits(
+                        aux["loc_pt_logits"].float(),
+                        loc_pt_target.float(),
+                        bce_weight=float(loc_bce_weight),
+                        dice_weight=float(loc_dice_weight),
+                    )
+                if float(loc_loss_ln_lambda) > 0.0:
+                    loss = loss + float(loc_loss_ln_lambda) * _localization_loss_from_logits(
+                        aux["loc_ln_logits"].float(),
+                        loc_ln_target.float(),
+                        bce_weight=float(loc_bce_weight),
+                        dice_weight=float(loc_dice_weight),
+                    )
+                if float(loc_presence_lambda) > 0.0 and ("pt_presence_logits" in aux) and ("ln_presence_logits" in aux):
+                    pt_present_target = (mask_pt.flatten(1).sum(dim=1) > 0.0).float()
+                    ln_present_target = (mask_ln.flatten(1).sum(dim=1) > 0.0).float()
+                    pres_loss = F.binary_cross_entropy_with_logits(aux["pt_presence_logits"].float(), pt_present_target)
+                    pres_loss = pres_loss + F.binary_cross_entropy_with_logits(aux["ln_presence_logits"].float(), ln_present_target)
+                    loss = loss + float(loc_presence_lambda) * pres_loss
 
         if not torch.isfinite(loss).item():
             continue
@@ -1016,7 +1052,12 @@ def _resolve_shared_ckpt_for_fold(args, fold: int) -> str:
 
 
 def _image_encoder_mode(args) -> str:
-    return str(getattr(args, "image_encoder_mode", "dual_backbone")).strip().lower()
+    mode = str(getattr(args, "image_encoder_mode", "contour_aware")).strip().lower()
+    if mode in ("contour_aware", "contour_available", "shared_mask", "shared_roi"):
+        return "contour_aware"
+    if mode in ("dual_backbone", "legacy_dual"):
+        return "dual_backbone"
+    return mode
 
 
 def _iter_image_encoder_backbones(img_backbone):
@@ -1178,8 +1219,10 @@ def run_one_fold(
         print(f"[RAD] radiomics_dim={rad_dim}")
 
     expected_dhw = tuple(int(x) for x in args.img_size)
+    mode = _image_encoder_mode(args)
+    ds_cls = PreprocessedContourAwareDataset if mode == "contour_aware" else PreprocessedMoEDataset
 
-    tr_ds = PreprocessedMoEDataset(
+    tr_ds = ds_cls(
         tr_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1189,7 +1232,7 @@ def run_one_fold(
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
     )
-    tr_eval_ds = PreprocessedMoEDataset(
+    tr_eval_ds = ds_cls(
         tr_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1199,7 +1242,7 @@ def run_one_fold(
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
     )
-    va_ds = PreprocessedMoEDataset(
+    va_ds = ds_cls(
         va_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1209,7 +1252,7 @@ def run_one_fold(
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
     )
-    te_ds = PreprocessedMoEDataset(
+    te_ds = ds_cls(
         te_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1269,11 +1312,18 @@ def run_one_fold(
         strict_swinvit_layout=bool(args.strict_swinvit_layout),
         debug_swinvit_layout=bool(args.debug_swinvit_layout),
     )
-    backbone_cfg.update(dict(
-        force_presence_from_raw_masks=True,
-        raw_mask_threshold=0.5,
-        fallback_peri_to_intra=True,
-    ))
+    if mode == "contour_aware":
+        backbone_cfg.update(dict(
+            force_presence_from_raw_masks=False,
+            raw_mask_threshold=0.5,
+            fallback_peri_to_intra=True,
+        ))
+    else:
+        backbone_cfg.update(dict(
+            force_presence_from_raw_masks=True,
+            raw_mask_threshold=0.5,
+            fallback_peri_to_intra=True,
+        ))
 
     base_model = SwinUNETRTokenMoEDiscrete(
         num_time_bins=int(global_num_time_bins),
@@ -1301,31 +1351,28 @@ def run_one_fold(
         nan_guard=bool(args.nan_guard),
     ).to(device)
 
-    mode = _image_encoder_mode(args)
     injected = 0
 
-    if mode == "shared_mask":
+    if mode == "contour_aware":
         shared_ckpt = _resolve_shared_ckpt_for_fold(args, fold=int(fold))
         if shared_ckpt and os.path.isfile(shared_ckpt):
-            print(f"[SWIN][SHARED][fold {fold:02d}] loading shared pretrain: {shared_ckpt}")
+            print(f"[SWIN][CONTOUR][fold {fold:02d}] loading contour-aware warm-start: {shared_ckpt}")
             load_swinunetr_pretrained(base_model.img_backbone.backbone_shared, shared_ckpt, verbose=True, allow_inflate_patch_embed=True)
         else:
-            print(f"[SWIN][SHARED][fold {fold:02d}] shared pretrain not found/disabled: {shared_ckpt}")
+            print(f"[SWIN][CONTOUR][fold {fold:02d}] contour-aware warm-start not found/disabled: {shared_ckpt}")
 
         if bool(args.use_lora):
             freeze_all_params(base_model.img_backbone.backbone_shared)
             if bool(args.train_mask_patch_embed):
-                base_model.enable_mask_patch_embed_training(verbose=True)
-                print("[ENC] policy: shared backbone frozen + PT/LN mask patch-embed trainable + LoRA")
-            else:
-                print("[ENC] policy: shared backbone frozen + LoRA trainable")
+                print("[ENC][INFO] contour_aware mode is CT-only; ignoring --train_mask_patch_embed.")
+            print("[ENC] policy: contour-aware backbone frozen + LoRA trainable")
             injected = apply_lora_to_two_encoders(base_model, args)
             for _, bb in _iter_image_encoder_backbones(base_model.img_backbone):
-                _assert_backbone_trainables(bb, allow_mask_patch_embed=bool(args.train_mask_patch_embed), allow_lora=True)
+                _assert_backbone_trainables(bb, allow_mask_patch_embed=False, allow_lora=True)
         else:
             if bool(args.train_mask_patch_embed):
-                print("[ENC][INFO] shared_mask mode uses full survival fine-tuning; ignoring --train_mask_patch_embed without LoRA-only freezing.")
-            print("[ENC] policy: shared backbone full fine-tune for survival")
+                print("[ENC][INFO] contour_aware mode is CT-only; ignoring --train_mask_patch_embed.")
+            print("[ENC] policy: contour-aware backbone full fine-tune for survival")
     else:
         pt_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="pt")
         ln_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="ln")
@@ -1401,6 +1448,7 @@ def run_one_fold(
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
+        teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args) if mode == "contour_aware" else 0.0
         train_loss = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
             num_time_bins=int(global_num_time_bins),
@@ -1409,6 +1457,12 @@ def run_one_fold(
             logit_l2_lambda=float(args.logit_l2_lambda),
             gate_entropy_lambda=float(args.gate_entropy_lambda),
             gate_loadbal_lambda=float(args.gate_loadbal_lambda),
+            teacher_force_alpha=float(teacher_force_alpha),
+            loc_loss_pt_lambda=float(args.loc_loss_pt_lambda),
+            loc_loss_ln_lambda=float(args.loc_loss_ln_lambda),
+            loc_presence_lambda=float(args.loc_presence_lambda),
+            loc_bce_weight=float(args.loc_bce_weight),
+            loc_dice_weight=float(args.loc_dice_weight),
             ema=ema,
             autocast_ctx=autocast_ctx,
         )
@@ -1439,7 +1493,8 @@ def run_one_fold(
             f"[fold {fold:02d}] epoch {epoch:03d} | "
             f"loss={train_loss:.4f} | val_nll={val_met.get('nll', float('nan')):.4f} | "
             f"train_c={train_met.get('c_index', float('nan')):.3f} val_c={val_met.get('c_index', float('nan')):.3f} "
-            f"val_{args.report_metric}={report_metric:.3f}"
+            f"val_{args.report_metric}={report_metric:.3f} "
+            f"teacher_force={teacher_force_alpha:.2f}"
         )
 
         row = {
@@ -1693,7 +1748,7 @@ def parse_args():
     p.add_argument("--attn_drop_rate", type=float, default=0.0)
     p.add_argument("--dropout_path_rate", type=float, default=0.0)
     p.add_argument("--use_checkpoint", action="store_true")
-    p.add_argument("--image_encoder_mode", type=str, default="dual_backbone", choices=["dual_backbone", "shared_mask"], help="dual_backbone = legacy PT/LN checkpoint-transfer path; shared_mask = single shared CT/PT/LN encoder.")
+    p.add_argument("--image_encoder_mode", type=str, default="contour_aware", choices=["contour_aware", "shared_mask", "dual_backbone"], help="contour_aware = recommended CT-only encoder with internal PT/LN localization heads and soft-mask ROI tokenization; shared_mask = compatibility alias; dual_backbone = legacy PT/LN checkpoint-transfer path.")
 
     p.add_argument("--align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_seg_ckpt", action="store_true")
     p.add_argument("--no_align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_seg_ckpt", action="store_false")
@@ -1725,6 +1780,14 @@ def parse_args():
 
     p.add_argument("--pt_shell_radius", type=int, default=3)
     p.add_argument("--ln_shell_radius", type=int, default=3)
+    p.add_argument("--teacher_force_epochs", type=int, default=12)
+    p.add_argument("--teacher_force_start", type=float, default=1.0)
+    p.add_argument("--teacher_force_end", type=float, default=0.0)
+    p.add_argument("--loc_loss_pt_lambda", type=float, default=0.25)
+    p.add_argument("--loc_loss_ln_lambda", type=float, default=0.25)
+    p.add_argument("--loc_presence_lambda", type=float, default=0.05)
+    p.add_argument("--loc_bce_weight", type=float, default=0.5)
+    p.add_argument("--loc_dice_weight", type=float, default=0.5)
 
     p.add_argument("--shell_body_from_ct", action="store_true")
     p.add_argument("--body_ct_thr", type=str, default="auto")
@@ -1751,7 +1814,7 @@ def parse_args():
     # mask patch embed training toggle
     p.add_argument("--train_mask_patch_embed", dest="train_mask_patch_embed", action="store_true")
     p.add_argument("--no_train_mask_patch_embed", dest="train_mask_patch_embed", action="store_false")
-    p.set_defaults(train_mask_patch_embed=True)
+    p.set_defaults(train_mask_patch_embed=False)
 
     # LoRA
     p.add_argument("--use_lora", action="store_true")
@@ -1844,6 +1907,10 @@ def main():
     _validate_event_column(meta, args.event_col)
     meta[args.event_col] = meta[args.event_col].astype(int)
 
+    resolved_img_size, data_shape = resolve_img_size_against_data(meta, args.ct_col, args.img_size)
+    args.img_size = list(resolved_img_size)
+    print(f"[IMGCFG] data_shape(D,H,W)={data_shape} | using img_size(D,H,W)={tuple(args.img_size)}")
+
     splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
     folds = [int(args.debug_fold)] if int(args.debug_fold) >= 0 else list(range(int(args.cv_folds)))
 
@@ -1900,7 +1967,13 @@ def main():
         "lora_alpha": float(args.lora_alpha),
         "lora_dropout": float(args.lora_dropout),
         "lora_targets": list(args.lora_targets or []),
-        "train_mask_patch_embed": bool(args.train_mask_patch_embed),
+        "train_mask_patch_embed": bool(args.train_mask_patch_embed and _image_encoder_mode(args) != "contour_aware"),
+        "teacher_force_epochs": int(args.teacher_force_epochs),
+        "teacher_force_start": float(args.teacher_force_start),
+        "teacher_force_end": float(args.teacher_force_end),
+        "loc_loss_pt_lambda": float(args.loc_loss_pt_lambda),
+        "loc_loss_ln_lambda": float(args.loc_loss_ln_lambda),
+        "loc_presence_lambda": float(args.loc_presence_lambda),
         "nan_guard": bool(args.nan_guard),
     }
     with open(out_root / "cv_summary.json", "w") as f:

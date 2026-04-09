@@ -12,7 +12,7 @@ from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
     SwinUNETRPTLNIntraPeriTokenBackbone,
 )
 from trifusesurv.models.swinunetr_shared_roi_token_backbone import (
-    SharedMaskROITokenBackbone,
+    ContourAwareROITokenBackbone,
 )
 
 
@@ -94,13 +94,13 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         self.nan_guard = bool(nan_guard)
 
         backbone_cfg = dict(backbone_cfg)
-        self.image_encoder_mode = str(backbone_cfg.pop("image_encoder_mode", "dual_backbone")).strip().lower()
+        self.image_encoder_mode = str(backbone_cfg.pop("image_encoder_mode", "contour_aware")).strip().lower()
         if self.image_encoder_mode in ("dual_backbone", "legacy_dual"):
             self.img_backbone = SwinUNETRPTLNIntraPeriTokenBackbone(**backbone_cfg)
             self.image_encoder_mode = "dual_backbone"
-        elif self.image_encoder_mode in ("shared_mask", "shared_roi"):
-            self.img_backbone = SharedMaskROITokenBackbone(**backbone_cfg)
-            self.image_encoder_mode = "shared_mask"
+        elif self.image_encoder_mode in ("contour_aware", "contour_available", "shared_mask", "shared_roi"):
+            self.img_backbone = ContourAwareROITokenBackbone(**backbone_cfg)
+            self.image_encoder_mode = "contour_aware"
         else:
             raise ValueError(f"Unknown image_encoder_mode: {self.image_encoder_mode}")
         self.num_experts = int(self.img_backbone.num_tokens)
@@ -246,9 +246,29 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         x_img: torch.Tensor,
         clinical: Optional[torch.Tensor],
         radiomics: Optional[torch.Tensor],
+        mask_pt: Optional[torch.Tensor] = None,
+        mask_ln: Optional[torch.Tensor] = None,
+        teacher_force_alpha: float = 0.0,
         return_gate: bool = False,
+        return_aux: bool = False,
     ):
-        tok, pres = self.img_backbone(x_img)  # tok (B,E,Dtok), pres (B,E bool)
+        aux = None
+        can_return_aux = bool(return_aux and self.image_encoder_mode == "contour_aware")
+        if self.image_encoder_mode == "contour_aware":
+            bb_out = self.img_backbone(
+                x_img,
+                mask_pt=mask_pt,
+                mask_ln=mask_ln,
+                teacher_force_alpha=float(teacher_force_alpha),
+                return_aux=can_return_aux,
+            )
+        else:
+            bb_out = self.img_backbone(x_img)
+
+        if can_return_aux:
+            tok, pres, aux = bb_out
+        else:
+            tok, pres = bb_out
         B = tok.size(0)
         pres_bool = pres.to(torch.bool)
 
@@ -324,6 +344,10 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         self._nan_check(logits, "logits_pre_nan_to_num")
         logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
 
+        if return_gate and can_return_aux:
+            return logits, gate.float(), pres_eff, aux
         if return_gate:
             return logits, gate.float(), pres_eff
+        if can_return_aux:
+            return logits, aux
         return logits

@@ -10,6 +10,7 @@ from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
     SwinUNETRPTLNIntraPeriTokenBackbone,
 )
 from trifusesurv.models.swinunetr_shared_roi_token_backbone import (
+    ContourAwareROITokenBackbone,
     SharedMaskROITokenBackbone,
 )
 from trifusesurv.models.survival_model import (
@@ -29,6 +30,7 @@ from trifusesurv.models.lora import (
 
 __all__ = [
     "SwinUNETRPTLNIntraPeriTokenBackbone",
+    "ContourAwareROITokenBackbone",
     "SharedMaskROITokenBackbone",
     "SwinUNETRTokenMoEDiscrete",
     "build_swinunetr_backbone",

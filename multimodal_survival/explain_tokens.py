@@ -391,14 +391,14 @@ def infer_image_encoder_mode(ck: Any, sd: Dict[str, torch.Tensor]) -> str:
         ck_args = ck.get("args", {})
         if isinstance(ck_args, dict):
             mode = str(ck_args.get("image_encoder_mode", "")).strip().lower()
-            if mode in ("shared_mask", "shared_roi"):
-                return "shared_mask"
+            if mode in ("contour_aware", "contour_available", "shared_mask", "shared_roi"):
+                return "contour_aware"
             if mode in ("dual_backbone", "legacy_dual"):
                 return "dual_backbone"
     for k in sd.keys():
         ks = str(k)
         if ".backbone_shared." in ks or "img_backbone._patch_split." in ks:
-            return "shared_mask"
+            return "contour_aware"
     return "dual_backbone"
 
 
@@ -414,9 +414,16 @@ def extract_tok_pres_clin_rad(full_model, loader, device, autocast_ctx, max_n: i
     clin_list, rad_list = [], []
     ids: List[str] = []
 
-    for x, _, _, clin, rad, pid in loader:
+    for batch in loader:
         if max_n > 0 and len(ids) >= max_n:
             break
+
+        if len(batch) == 6:
+            x, _, _, clin, rad, pid = batch
+        elif len(batch) == 8:
+            x, _, _, _, _, clin, rad, pid = batch
+        else:
+            raise RuntimeError(f"[BATCH] Unexpected batch length in explain_tokens: {len(batch)}")
 
         x = x.to(device, non_blocking=True)
         with autocast_ctx():
@@ -509,7 +516,19 @@ def compute_fold_shap(
         time_col = tcol if time_col == "" else time_col
         event_col = ecol if event_col == "" else event_col
 
-    bg_ds = train_mod.PreprocessedMoEDataset(
+    ck = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    sd = extract_model_state(ck)
+    if sd_has_lora(sd):
+        raise RuntimeError(
+            "LoRA checkpoint detected in shap_joint_model_tokens.py. "
+            "This token-level SHAP entry point reconstructs the standard survival model only; "
+            "use the grouped SHAP export scripts for LoRA checkpoints."
+        )
+    image_encoder_mode = infer_image_encoder_mode(ck, sd)
+
+    ds_cls = train_mod.PreprocessedContourAwareDataset if image_encoder_mode == "contour_aware" else train_mod.PreprocessedMoEDataset
+
+    bg_ds = ds_cls(
         bg_df,
         id_col=args.id_col, time_col=time_col, event_col=event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -519,7 +538,7 @@ def compute_fold_shap(
         strict_files=bool(args.strict_files),
         expected_dhw=expected_dhw,
     )
-    ex_ds = train_mod.PreprocessedMoEDataset(
+    ex_ds = ds_cls(
         ex_df,
         id_col=args.id_col, time_col=time_col, event_col=event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -534,16 +553,6 @@ def compute_fold_shap(
                                            pin_memory=(device.type == "cuda"))
     ex_loader = torch.utils.data.DataLoader(ex_ds, batch_size=1, shuffle=False, num_workers=int(args.workers),
                                            pin_memory=(device.type == "cuda"))
-
-    # load checkpoint
-    ck = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-    sd = extract_model_state(ck)
-    if sd_has_lora(sd):
-        raise RuntimeError(
-            "LoRA checkpoint detected in shap_joint_model_tokens.py. "
-            "This token-level SHAP entry point reconstructs the standard survival model only; "
-            "use the grouped SHAP export scripts for LoRA checkpoints."
-        )
 
     num_time_bins = int(ck.get("num_time_bins", -1)) if isinstance(ck, dict) else -1
     if num_time_bins <= 0:
@@ -565,7 +574,6 @@ def compute_fold_shap(
     rad_hidden_dim = int(dims.get("rad_hidden_dim", max(512, 2 * fused_dim)))
 
     # build model (must match training)
-    image_encoder_mode = infer_image_encoder_mode(ck, sd)
     print(f"[fold {fold:02d}] image_encoder_mode={image_encoder_mode}")
     backbone_cfg = dict(
         img_size=tuple(args.img_size),
