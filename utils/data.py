@@ -1,4 +1,4 @@
-"""Shared datasets and augmentation for TriFuseSurv multimodal survival."""
+"""Shared datasets and augmentation for contour-aware TriFuseSurv survival."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import SimpleITK as sitk
 import torch
 from torch.utils.data import Dataset
 
-from trifusesurv.utils.clinical import ClinicalEncoder, ClinicalEncoderCompact
+from trifusesurv.utils.clinical import ClinicalEncoder
 from trifusesurv.utils.radiomics import RadiomicsEncoder
 
 
@@ -54,13 +54,12 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         ct_col: str,
         mask_pt_col: str,
         mask_ln_col: str,
-        clinical_encoder: Optional[ClinicalEncoder | ClinicalEncoderCompact],
+        clinical_encoder: Optional[ClinicalEncoder],
         radiomics_encoder: Optional[RadiomicsEncoder],
         use_radiomics: bool = True,
         strict_files: bool = True,
         expected_dhw: Optional[Tuple[int, int, int]] = None,
         mode: str = "eval",
-        track_mask_presence: bool = False,
     ):
         self.meta = meta.reset_index(drop=True)
         self.id_col = id_col
@@ -75,7 +74,6 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         self.strict_files = bool(strict_files)
         self.expected_dhw = tuple(expected_dhw) if expected_dhw is not None else None
         self.mode = mode
-        self.track_mask_presence = bool(track_mask_presence)
 
     def _load_nii(self, path: str) -> np.ndarray:
         img = sitk.ReadImage(str(path))
@@ -135,31 +133,6 @@ class _BasePreprocessedSurvivalDataset(Dataset):
             rad_t = torch.zeros(0, dtype=torch.float32)
 
         return ct, pt, ln, t, e, clin_t, rad_t, pid
-
-
-class PreprocessedMoEDataset(_BasePreprocessedSurvivalDataset):
-    """Legacy dataset that exposes CT and contour masks as a 3-channel image input."""
-
-    def __getitem__(self, idx):
-        ct, pt, ln, t, e, clin_t, rad_t, pid = self._load_case(idx)
-        x = np.stack([ct, pt, ln], axis=0)
-
-        result = (
-            torch.tensor(x, dtype=torch.float32),
-            torch.tensor(t, dtype=torch.float32),
-            torch.tensor(e, dtype=torch.float32),
-            clin_t,
-            rad_t,
-            pid,
-        )
-
-        if self.track_mask_presence:
-            pt_present = bool(float(pt.sum()) > 0.0)
-            ln_present = bool(float(ln.sum()) > 0.0)
-            return result + (pt_present, ln_present)
-
-        return result
-
 
 class PreprocessedContourAwareDataset(_BasePreprocessedSurvivalDataset):
     """CT-only dataset with PT/LN masks kept as localization labels."""

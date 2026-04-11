@@ -8,9 +8,6 @@ from typing import Any, Dict, Optional
 import torch
 import torch.nn as nn
 
-from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
-    SwinUNETRPTLNIntraPeriTokenBackbone,
-)
 from trifusesurv.models.swinunetr_shared_roi_token_backbone import (
     ContourAwareROITokenBackbone,
 )
@@ -52,13 +49,7 @@ def gate_load_balance_penalty_presence(
 # Model
 # ---------------------------------------------------------------------------
 class SwinUNETRTokenMoEDiscrete(nn.Module):
-    """Multimodal discrete-time survival model.
-
-    Image: dual SwinUNETR backbones -> 5 tokens (GLOBAL + PT_intra/peri + LN_intra/peri)
-    Clinical: tabular features -> FC projection
-    Radiomics: PCA features -> FC projection
-    Survival: discrete-time hazards head
-    """
+    """Multimodal discrete-time survival model."""
 
     def __init__(
         self,
@@ -95,14 +86,9 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
 
         backbone_cfg = dict(backbone_cfg)
         self.image_encoder_mode = str(backbone_cfg.pop("image_encoder_mode", "contour_aware")).strip().lower()
-        if self.image_encoder_mode in ("dual_backbone", "legacy_dual"):
-            self.img_backbone = SwinUNETRPTLNIntraPeriTokenBackbone(**backbone_cfg)
-            self.image_encoder_mode = "dual_backbone"
-        elif self.image_encoder_mode in ("contour_aware", "contour_available", "shared_mask", "shared_roi"):
-            self.img_backbone = ContourAwareROITokenBackbone(**backbone_cfg)
-            self.image_encoder_mode = "contour_aware"
-        else:
-            raise ValueError(f"Unknown image_encoder_mode: {self.image_encoder_mode}")
+        if self.image_encoder_mode != "contour_aware":
+            raise ValueError(f"Unsupported image_encoder_mode for compact package: {self.image_encoder_mode}")
+        self.img_backbone = ContourAwareROITokenBackbone(**backbone_cfg)
         self.num_experts = int(self.img_backbone.num_tokens)
 
         self.expert_dropout_p = float(expert_dropout_p)
@@ -253,17 +239,14 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         return_aux: bool = False,
     ):
         aux = None
-        can_return_aux = bool(return_aux and self.image_encoder_mode == "contour_aware")
-        if self.image_encoder_mode == "contour_aware":
-            bb_out = self.img_backbone(
-                x_img,
-                mask_pt=mask_pt,
-                mask_ln=mask_ln,
-                teacher_force_alpha=float(teacher_force_alpha),
-                return_aux=can_return_aux,
-            )
-        else:
-            bb_out = self.img_backbone(x_img)
+        can_return_aux = bool(return_aux)
+        bb_out = self.img_backbone(
+            x_img,
+            mask_pt=mask_pt,
+            mask_ln=mask_ln,
+            teacher_force_alpha=float(teacher_force_alpha),
+            return_aux=can_return_aux,
+        )
 
         if can_return_aux:
             tok, pres, aux = bb_out

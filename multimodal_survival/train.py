@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
-"""Joint multimodal survival training for TriFuseSurv.
+"""Joint contour-aware multimodal survival training for TriFuseSurv.
 
-Recommended contour-aware mode:
+Recommended workflow:
 - CT-only shared SwinUNETR encoder
 - internal PT/LN localization heads
 - ROI tokens built from soft predicted masks
 - survival plus localization losses in one graph
-
-Legacy dual-backbone mode is retained for comparison only.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import math
 import json
-import random
 import contextlib
 import argparse
 from typing import Tuple, Dict, List, Optional, Any, Sequence
@@ -54,7 +50,7 @@ from trifusesurv.utils.clinical import (
     ENDPOINT_MAP,
 )
 from trifusesurv.utils.radiomics import RadiomicsEncoder
-from trifusesurv.utils.data import PreprocessedContourAwareDataset, PreprocessedMoEDataset
+from trifusesurv.utils.data import PreprocessedContourAwareDataset
 
 
 # =============================================================================
@@ -141,31 +137,9 @@ def resolve_img_size_against_data(meta: pd.DataFrame, ct_col: str, img_size_arg:
 
 
 # =============================================================================
-# SEG-pretrain cfg alignment
+# Contour-warmstart cfg alignment
 # =============================================================================
-def _resolve_existing_seg_ckpt_for_cfg(args, which: str) -> str:
-    which = str(which).lower().strip()
-    if which not in ("pt", "ln"):
-        raise ValueError(which)
-
-    ckpt = getattr(args, f"seg_pretrain_{which}_ckpt", "") or ""
-    if ckpt and os.path.isfile(ckpt):
-        return ckpt
-
-    d = getattr(args, f"seg_pretrain_{which}_dir", "") or ""
-    name = getattr(args, f"seg_pretrain_{which}_name", "seg_best.pt") or "seg_best.pt"
-    if d:
-        p_all = os.path.join(d, "all", name)
-        if os.path.isfile(p_all):
-            return p_all
-        for f in range(int(getattr(args, "cv_folds", 4))):
-            p = os.path.join(d, f"fold_{f:02d}", name)
-            if os.path.isfile(p):
-                return p
-    return ""
-
-
-def read_seg_pretrain_backbone_cfg(ckpt_path: str) -> Dict[str, Any]:
+def read_contour_warmstart_backbone_cfg(ckpt_path: str) -> Dict[str, Any]:
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     ck_args = ck.get("args", {}) if isinstance(ck.get("args", {}), dict) else {}
 
@@ -188,87 +162,12 @@ def read_seg_pretrain_backbone_cfg(ckpt_path: str) -> Dict[str, Any]:
     return cfg
 
 
-def align_backbone_cfg_to_seg_pretrain(args):
-    mode = _image_encoder_mode(args)
-    if mode == "contour_aware":
-        shared_ckpt = _resolve_existing_shared_ckpt_for_cfg(args)
-        cfg = read_seg_pretrain_backbone_cfg(shared_ckpt) if (shared_ckpt and os.path.isfile(shared_ckpt)) else None
-        if cfg is None:
-            print("[SWINCFG] No contour-aware warm-start ckpt found for cfg alignment; using CLI Swin cfg.")
-            return args
-
-        want_img = tuple(int(x) for x in cfg["img_size"])
-        want_fs = int(cfg["feature_size"])
-        want_depths = tuple(int(x) for x in cfg["depths"])
-        want_heads = tuple(int(x) for x in cfg["num_heads"])
-
-        cur_img = tuple(int(x) for x in args.img_size)
-        cur_fs = int(args.feature_size)
-        cur_depths = tuple(int(x) for x in args.depths)
-        cur_heads = tuple(int(x) for x in args.num_heads)
-
-        if cur_img != want_img:
-            print(f"[SWINCFG][WARN] CLI --img_size {cur_img} != contour-aware warm-start {want_img}. Overriding to warm-start cfg.")
-            args.img_size = list(want_img)
-        if (cur_fs, cur_depths, cur_heads) != (want_fs, want_depths, want_heads):
-            print("[SWINCFG][WARN] CLI Swin cfg != contour-aware warm-start cfg. Overriding to match warm-start.")
-            print(f"  CLI : feature_size={cur_fs} depths={cur_depths} num_heads={cur_heads}")
-            print(f"  CKPT: feature_size={want_fs} depths={want_depths} num_heads={want_heads}")
-
-        args.feature_size = want_fs
-        args.depths = list(want_depths)
-        args.num_heads = list(want_heads)
-        args.drop_rate = float(cfg.get("drop_rate", args.drop_rate))
-        args.attn_drop_rate = float(cfg.get("attn_drop_rate", args.attn_drop_rate))
-        args.dropout_path_rate = float(cfg.get("dropout_path_rate", args.dropout_path_rate))
-        if bool(cfg.get("use_checkpoint", True)) and (not bool(args.use_checkpoint)):
-            args.use_checkpoint = True
-
-        print("[SWINCFG] aligned to contour-aware warm-start:")
-        print(
-            f"  img_size={tuple(args.img_size)} feature_size={args.feature_size} "
-            f"depths={tuple(args.depths)} heads={tuple(args.num_heads)}"
-        )
-        print(
-            f"  drop_rate={args.drop_rate} attn_drop_rate={args.attn_drop_rate} "
-            f"drop_path={args.dropout_path_rate} use_checkpoint={args.use_checkpoint}"
-        )
-        if shared_ckpt:
-            print(f"  contour_warmstart_ckpt_for_cfg={shared_ckpt}")
-        return args
-
-    pt_ckpt = _resolve_existing_seg_ckpt_for_cfg(args, "pt")
-    ln_ckpt = _resolve_existing_seg_ckpt_for_cfg(args, "ln")
-
-    cfg_pt = read_seg_pretrain_backbone_cfg(pt_ckpt) if (pt_ckpt and os.path.isfile(pt_ckpt)) else None
-    cfg_ln = read_seg_pretrain_backbone_cfg(ln_ckpt) if (ln_ckpt and os.path.isfile(ln_ckpt)) else None
-    cfg = cfg_pt or cfg_ln
-
+def align_backbone_cfg_to_contour_warmstart(args):
+    contour_ckpt = _resolve_existing_contour_warmstart_ckpt_for_cfg(args)
+    cfg = read_contour_warmstart_backbone_cfg(contour_ckpt) if (contour_ckpt and os.path.isfile(contour_ckpt)) else None
     if cfg is None:
-        print("[SWINCFG] No seg-pretrain ckpt found for cfg alignment; using CLI Swin cfg.")
+        print("[SWINCFG] No contour-aware warm-start ckpt found for cfg alignment; using CLI Swin cfg.")
         return args
-
-    if cfg_pt is not None and cfg_ln is not None:
-        keys = ("img_size", "feature_size", "depths", "num_heads")
-
-        def _norm(v):
-            if isinstance(v, (list, tuple)):
-                return tuple(v)
-            try:
-                import numpy as _np
-                if isinstance(v, (_np.integer,)):
-                    return int(v)
-            except Exception:
-                pass
-            return v
-
-        for k in keys:
-            if _norm(cfg_pt.get(k)) != _norm(cfg_ln.get(k)):
-                raise RuntimeError(
-                    f"[SWINCFG] PT/LN seg-pretrain cfg mismatch for {k}: "
-                    f"pt={cfg_pt.get(k)} ln={cfg_ln.get(k)}\n"
-                    f"pt_ckpt={pt_ckpt}\nln_ckpt={ln_ckpt}"
-                )
 
     want_img = tuple(int(x) for x in cfg["img_size"])
     want_fs = int(cfg["feature_size"])
@@ -281,11 +180,10 @@ def align_backbone_cfg_to_seg_pretrain(args):
     cur_heads = tuple(int(x) for x in args.num_heads)
 
     if cur_img != want_img:
-        print(f"[SWINCFG][WARN] CLI --img_size {cur_img} != seg-pretrain {want_img}. Overriding to seg-pretrain.")
+        print(f"[SWINCFG][WARN] CLI --img_size {cur_img} != contour-aware warm-start {want_img}. Overriding to warm-start cfg.")
         args.img_size = list(want_img)
-
     if (cur_fs, cur_depths, cur_heads) != (want_fs, want_depths, want_heads):
-        print("[SWINCFG][WARN] CLI Swin cfg != seg-pretrain cfg. Overriding to match seg-pretrain.")
+        print("[SWINCFG][WARN] CLI Swin cfg != contour-aware warm-start cfg. Overriding to match warm-start.")
         print(f"  CLI : feature_size={cur_fs} depths={cur_depths} num_heads={cur_heads}")
         print(f"  CKPT: feature_size={want_fs} depths={want_depths} num_heads={want_heads}")
 
@@ -300,7 +198,7 @@ def align_backbone_cfg_to_seg_pretrain(args):
     if bool(cfg.get("use_checkpoint", True)) and (not bool(args.use_checkpoint)):
         args.use_checkpoint = True
 
-    print("[SWINCFG] aligned to seg-pretrain:")
+    print("[SWINCFG] aligned to contour-aware warm-start:")
     print(
         f"  img_size={tuple(args.img_size)} feature_size={args.feature_size} "
         f"depths={tuple(args.depths)} heads={tuple(args.num_heads)}"
@@ -309,11 +207,8 @@ def align_backbone_cfg_to_seg_pretrain(args):
         f"  drop_rate={args.drop_rate} attn_drop_rate={args.attn_drop_rate} "
         f"drop_path={args.dropout_path_rate} use_checkpoint={args.use_checkpoint}"
     )
-    if pt_ckpt:
-        print(f"  pt_ckpt_for_cfg={pt_ckpt}")
-    if ln_ckpt:
-        print(f"  ln_ckpt_for_cfg={ln_ckpt}")
-
+    if contour_ckpt:
+        print(f"  contour_warmstart_ckpt_for_cfg={contour_ckpt}")
     return args
 
 
@@ -388,9 +283,6 @@ def read_nii(path: str, dtype=np.float32) -> np.ndarray:
 
 
 # _pad_or_trunc_1d and RadiomicsEncoder are now imported from utils.radiomics
-
-
-# PreprocessedMoEDataset is now imported from utils.data
 
 
 # gate_entropy_penalty_presence and gate_load_balance_penalty_presence are now imported from models.survival_model
@@ -995,93 +887,72 @@ def select_df_by_ids(meta: pd.DataFrame, ids: List[str], id_col: str, strict: bo
     return meta[meta[id_col].astype(str).isin(set(ids))].copy().reset_index(drop=True)
 
 
-def _resolve_seg_ckpt_for_fold(args, fold: int, which: str) -> str:
-    which = str(which).lower().strip()
-    if which not in ("pt", "ln"):
-        raise ValueError(which)
+def _candidate_contour_warmstart_names(args) -> List[str]:
+    names: List[str] = []
+    for value in [
+        getattr(args, "contour_warmstart_name", "best.pt"),
+        getattr(args, "shared_seg_pretrain_name", "best.pt"),
+        "best.pt",
+        "seg_best.pt",
+    ]:
+        name = str(value or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
 
-    ckpt = getattr(args, f"seg_pretrain_{which}_ckpt", "") or ""
+
+def _resolve_existing_contour_warmstart_ckpt_for_cfg(args) -> str:
+    ckpt = getattr(args, "contour_warmstart_ckpt", "") or getattr(args, "shared_seg_pretrain_ckpt", "") or ""
     if ckpt and os.path.isfile(ckpt):
         return ckpt
 
-    d = getattr(args, f"seg_pretrain_{which}_dir", "") or ""
-    name = getattr(args, f"seg_pretrain_{which}_name", "seg_best.pt") or "seg_best.pt"
+    d = getattr(args, "contour_warmstart_dir", "") or getattr(args, "shared_seg_pretrain_dir", "") or ""
     if d:
-        p_all = os.path.join(d, "all", name)
-        if os.path.isfile(p_all):
-            return p_all
-        p_fold = os.path.join(d, f"fold_{int(fold):02d}", name)
-        if os.path.isfile(p_fold):
-            return p_fold
-    return ckpt
-
-
-def _resolve_existing_shared_ckpt_for_cfg(args) -> str:
-    ckpt = getattr(args, "shared_seg_pretrain_ckpt", "") or ""
-    if ckpt and os.path.isfile(ckpt):
-        return ckpt
-
-    d = getattr(args, "shared_seg_pretrain_dir", "") or ""
-    name = getattr(args, "shared_seg_pretrain_name", "seg_best.pt") or "seg_best.pt"
-    if d:
-        p_all = os.path.join(d, "all", name)
-        if os.path.isfile(p_all):
-            return p_all
-        for f in range(int(getattr(args, "cv_folds", 4))):
-            p = os.path.join(d, f"fold_{f:02d}", name)
-            if os.path.isfile(p):
-                return p
+        for name in _candidate_contour_warmstart_names(args):
+            p_all = os.path.join(d, "all", name)
+            if os.path.isfile(p_all):
+                return p_all
+            for f in range(int(getattr(args, "cv_folds", 4))):
+                p = os.path.join(d, f"fold_{f:02d}", name)
+                if os.path.isfile(p):
+                    return p
     return ""
 
 
-def _resolve_shared_ckpt_for_fold(args, fold: int) -> str:
-    ckpt = getattr(args, "shared_seg_pretrain_ckpt", "") or ""
+def _resolve_contour_warmstart_ckpt_for_fold(args, fold: int) -> str:
+    ckpt = getattr(args, "contour_warmstart_ckpt", "") or getattr(args, "shared_seg_pretrain_ckpt", "") or ""
     if ckpt and os.path.isfile(ckpt):
         return ckpt
 
-    d = getattr(args, "shared_seg_pretrain_dir", "") or ""
-    name = getattr(args, "shared_seg_pretrain_name", "seg_best.pt") or "seg_best.pt"
+    d = getattr(args, "contour_warmstart_dir", "") or getattr(args, "shared_seg_pretrain_dir", "") or ""
     if d:
-        p_all = os.path.join(d, "all", name)
-        if os.path.isfile(p_all):
-            return p_all
-        p_fold = os.path.join(d, f"fold_{int(fold):02d}", name)
-        if os.path.isfile(p_fold):
-            return p_fold
+        for name in _candidate_contour_warmstart_names(args):
+            p_all = os.path.join(d, "all", name)
+            if os.path.isfile(p_all):
+                return p_all
+            p_fold = os.path.join(d, f"fold_{int(fold):02d}", name)
+            if os.path.isfile(p_fold):
+                return p_fold
     return ckpt
 
 
 def _image_encoder_mode(args) -> str:
     mode = str(getattr(args, "image_encoder_mode", "contour_aware")).strip().lower()
-    if mode in ("contour_aware", "contour_available", "shared_mask", "shared_roi"):
-        return "contour_aware"
-    if mode in ("dual_backbone", "legacy_dual"):
-        return "dual_backbone"
+    if mode != "contour_aware":
+        raise ValueError(f"Unsupported image_encoder_mode for compact package: {mode}")
     return mode
 
 
 def _iter_image_encoder_backbones(img_backbone):
     if hasattr(img_backbone, "iter_encoder_backbones"):
         return list(img_backbone.iter_encoder_backbones())
-    pairs = []
-    if hasattr(img_backbone, "backbone_pt"):
-        pairs.append(("backbone_pt", img_backbone.backbone_pt))
-    if hasattr(img_backbone, "backbone_ln"):
-        pairs.append(("backbone_ln", img_backbone.backbone_ln))
     if hasattr(img_backbone, "backbone_shared"):
-        pairs.append(("backbone_shared", img_backbone.backbone_shared))
-    return pairs
+        return [("backbone_shared", img_backbone.backbone_shared)]
+    return []
 
 
 def _selected_image_encoder_backbones(img_backbone, scope: str):
     pairs = _iter_image_encoder_backbones(img_backbone)
-    scope = str(scope).lower().strip()
-    if len(pairs) == 1:
-        return pairs
-    if scope == "pt":
-        return [pair for pair in pairs if pair[0].endswith("pt")]
-    if scope == "ln":
-        return [pair for pair in pairs if pair[0].endswith("ln")]
     return pairs
 
 
@@ -1096,9 +967,9 @@ def _list_trainable_param_names(mod: nn.Module, prefix: str = "", limit: int = 8
     return out
 
 
-def _assert_backbone_trainables(backbone: nn.Module, allow_mask_patch_embed: bool, allow_lora: bool):
+def _assert_backbone_trainables(backbone: nn.Module, allow_lora: bool):
     """
-    Strong sanity check: ensure trainable params under backbone are only LoRA and optionally mask patch embed.
+    Strong sanity check: ensure trainable params under backbone are only LoRA.
     This is conservative but prevents accidental full fine-tuning.
     """
     for n, p in backbone.named_parameters():
@@ -1106,18 +977,15 @@ def _assert_backbone_trainables(backbone: nn.Module, allow_mask_patch_embed: boo
             continue
         ln = n.lower()
         is_lora = (".lora_a." in ln) or (".lora_b." in ln)
-        is_mask_pe = ("patch_embed" in ln) and ("mask" in ln or "mask_" in ln or "maskpatch" in ln)
         if is_lora and allow_lora:
-            continue
-        if is_mask_pe and allow_mask_patch_embed:
             continue
         raise RuntimeError(
             f"[POLICY] Unexpected trainable backbone param: {n} shape={tuple(p.shape)} "
-            f"(allow_mask_patch_embed={allow_mask_patch_embed}, allow_lora={allow_lora})"
+            f"(allow_lora={allow_lora})"
         )
 
 
-def apply_lora_to_two_encoders(base_model: SwinUNETRTokenMoEDiscrete, args) -> int:
+def apply_lora_to_image_encoder(base_model: SwinUNETRTokenMoEDiscrete, args) -> int:
     if not bool(args.use_lora):
         return 0
 
@@ -1136,8 +1004,7 @@ def apply_lora_to_two_encoders(base_model: SwinUNETRTokenMoEDiscrete, args) -> i
     for prefix, bb in selected:
         n_added = inject_lora_into_module(bb, target_keywords=targets, r=r, alpha=alpha, dropout=drop, verbose=True)
         n_total += n_added
-        if not bool(args.train_mask_patch_embed):
-            mark_only_lora_trainable(bb)
+        mark_only_lora_trainable(bb)
         a_cnt, t_cnt = count_trainable(bb)
         summaries.append(f"{prefix} trainable {t_cnt:,}/{a_cnt:,}")
 
@@ -1220,9 +1087,8 @@ def run_one_fold(
 
     expected_dhw = tuple(int(x) for x in args.img_size)
     mode = _image_encoder_mode(args)
-    ds_cls = PreprocessedContourAwareDataset if mode == "contour_aware" else PreprocessedMoEDataset
 
-    tr_ds = ds_cls(
+    tr_ds = PreprocessedContourAwareDataset(
         tr_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1232,7 +1098,7 @@ def run_one_fold(
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
     )
-    tr_eval_ds = ds_cls(
+    tr_eval_ds = PreprocessedContourAwareDataset(
         tr_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1242,7 +1108,7 @@ def run_one_fold(
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
     )
-    va_ds = ds_cls(
+    va_ds = PreprocessedContourAwareDataset(
         va_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1252,7 +1118,7 @@ def run_one_fold(
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
     )
-    te_ds = ds_cls(
+    te_ds = PreprocessedContourAwareDataset(
         te_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1289,7 +1155,7 @@ def run_one_fold(
         dropout_path_rate=float(args.dropout_path_rate),
         normalize=True,
         use_checkpoint=bool(args.use_checkpoint),
-        image_encoder_mode=str(args.image_encoder_mode),
+        image_encoder_mode=mode,
 
         token_dim=int(args.img_token_dim),
         token_mlp_dropout=float(args.token_mlp_dropout),
@@ -1312,18 +1178,11 @@ def run_one_fold(
         strict_swinvit_layout=bool(args.strict_swinvit_layout),
         debug_swinvit_layout=bool(args.debug_swinvit_layout),
     )
-    if mode == "contour_aware":
-        backbone_cfg.update(dict(
-            force_presence_from_raw_masks=False,
-            raw_mask_threshold=0.5,
-            fallback_peri_to_intra=True,
-        ))
-    else:
-        backbone_cfg.update(dict(
-            force_presence_from_raw_masks=True,
-            raw_mask_threshold=0.5,
-            fallback_peri_to_intra=True,
-        ))
+    backbone_cfg.update(dict(
+        force_presence_from_raw_masks=False,
+        raw_mask_threshold=0.5,
+        fallback_peri_to_intra=True,
+    ))
 
     base_model = SwinUNETRTokenMoEDiscrete(
         num_time_bins=int(global_num_time_bins),
@@ -1353,56 +1212,21 @@ def run_one_fold(
 
     injected = 0
 
-    if mode == "contour_aware":
-        shared_ckpt = _resolve_shared_ckpt_for_fold(args, fold=int(fold))
-        if shared_ckpt and os.path.isfile(shared_ckpt):
-            print(f"[SWIN][CONTOUR][fold {fold:02d}] loading contour-aware warm-start: {shared_ckpt}")
-            load_swinunetr_pretrained(base_model.img_backbone.backbone_shared, shared_ckpt, verbose=True, allow_inflate_patch_embed=True)
-        else:
-            print(f"[SWIN][CONTOUR][fold {fold:02d}] contour-aware warm-start not found/disabled: {shared_ckpt}")
-
-        if bool(args.use_lora):
-            freeze_all_params(base_model.img_backbone.backbone_shared)
-            if bool(args.train_mask_patch_embed):
-                print("[ENC][INFO] contour_aware mode is CT-only; ignoring --train_mask_patch_embed.")
-            print("[ENC] policy: contour-aware backbone frozen + LoRA trainable")
-            injected = apply_lora_to_two_encoders(base_model, args)
-            for _, bb in _iter_image_encoder_backbones(base_model.img_backbone):
-                _assert_backbone_trainables(bb, allow_mask_patch_embed=False, allow_lora=True)
-        else:
-            if bool(args.train_mask_patch_embed):
-                print("[ENC][INFO] contour_aware mode is CT-only; ignoring --train_mask_patch_embed.")
-            print("[ENC] policy: contour-aware backbone full fine-tune for survival")
+    contour_ckpt = _resolve_contour_warmstart_ckpt_for_fold(args, fold=int(fold))
+    if contour_ckpt and os.path.isfile(contour_ckpt):
+        print(f"[SWIN][CONTOUR][fold {fold:02d}] loading contour-aware warm-start: {contour_ckpt}")
+        load_swinunetr_pretrained(base_model.img_backbone.backbone_shared, contour_ckpt, verbose=True, allow_inflate_patch_embed=True)
     else:
-        pt_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="pt")
-        ln_ckpt = _resolve_seg_ckpt_for_fold(args, fold=int(fold), which="ln")
+        print(f"[SWIN][CONTOUR][fold {fold:02d}] contour-aware warm-start not found/disabled: {contour_ckpt}")
 
-        if pt_ckpt and os.path.isfile(pt_ckpt):
-            print(f"[SWIN][PT][fold {fold:02d}] loading seg-pretrain: {pt_ckpt}")
-            load_swinunetr_pretrained(base_model.img_backbone.backbone_pt, pt_ckpt, verbose=True, allow_inflate_patch_embed=True)
-        else:
-            print(f"[SWIN][PT][fold {fold:02d}] seg-pretrain not found/disabled: {pt_ckpt}")
-
-        if ln_ckpt and os.path.isfile(ln_ckpt):
-            print(f"[SWIN][LN][fold {fold:02d}] loading seg-pretrain: {ln_ckpt}")
-            load_swinunetr_pretrained(base_model.img_backbone.backbone_ln, ln_ckpt, verbose=True, allow_inflate_patch_embed=True)
-        else:
-            print(f"[SWIN][LN][fold {fold:02d}] seg-pretrain not found/disabled: {ln_ckpt}")
-
-        freeze_all_params(base_model.img_backbone.backbone_pt)
-        freeze_all_params(base_model.img_backbone.backbone_ln)
-
-        if bool(args.train_mask_patch_embed):
-            base_model.enable_mask_patch_embed_training(verbose=True)
-            print("[ENC] policy: frozen backbones + mask patch-embed trainable (+ LoRA if enabled)")
-        else:
-            print("[ENC] policy: frozen backbones (mask patch-embed NOT trainable) (+ LoRA if enabled)")
-
-        injected = apply_lora_to_two_encoders(base_model, args) if args.use_lora else 0
-        allow_lora = bool(args.use_lora)
-        allow_mask = bool(args.train_mask_patch_embed)
+    if bool(args.use_lora):
+        freeze_all_params(base_model.img_backbone.backbone_shared)
+        print("[ENC] policy: contour-aware backbone frozen + LoRA trainable")
+        injected = apply_lora_to_image_encoder(base_model, args)
         for _, bb in _iter_image_encoder_backbones(base_model.img_backbone):
-            _assert_backbone_trainables(bb, allow_mask_patch_embed=allow_mask, allow_lora=allow_lora)
+            _assert_backbone_trainables(bb, allow_lora=True)
+    else:
+        print("[ENC] policy: contour-aware backbone full fine-tune for survival")
 
     if args.print_trainable_backbone_params:
         for prefix, bb in _iter_image_encoder_backbones(base_model.img_backbone):
@@ -1448,7 +1272,7 @@ def run_one_fold(
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
-        teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args) if mode == "contour_aware" else 0.0
+        teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args)
         train_loss = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
             num_time_bins=int(global_num_time_bins),
@@ -1651,8 +1475,8 @@ def parse_args():
     p.add_argument("--debug_fold", type=int, default=-1)
     p.add_argument("--strict_splits", action="store_true")
 
-    p.add_argument("--out_dir", type=str, default="runs/moe_discrete_swinunetr")
-    p.add_argument("--exp_name", type=str, default="moe_discrete_swinunetr_lora")
+    p.add_argument("--out_dir", type=str, default="runs/contour_aware_survival")
+    p.add_argument("--exp_name", type=str, default="contour_aware_survival")
 
     p.add_argument("--device", type=str, default="")
     p.add_argument("--data_parallel", action="store_true")
@@ -1747,12 +1571,16 @@ def parse_args():
     p.add_argument("--drop_rate", type=float, default=0.0)
     p.add_argument("--attn_drop_rate", type=float, default=0.0)
     p.add_argument("--dropout_path_rate", type=float, default=0.0)
-    p.add_argument("--use_checkpoint", action="store_true")
-    p.add_argument("--image_encoder_mode", type=str, default="contour_aware", choices=["contour_aware", "shared_mask", "dual_backbone"], help="contour_aware = recommended CT-only encoder with internal PT/LN localization heads and soft-mask ROI tokenization; shared_mask = compatibility alias; dual_backbone = legacy PT/LN checkpoint-transfer path.")
+    p.add_argument("--use_checkpoint", dest="use_checkpoint", action="store_true")
+    p.add_argument("--no_use_checkpoint", dest="use_checkpoint", action="store_false")
+    p.set_defaults(use_checkpoint=False)
+    p.add_argument("--image_encoder_mode", type=str, default="contour_aware", choices=["contour_aware"], help="CT-only shared encoder with internal PT/LN localization heads and soft-mask ROI tokenization.")
 
-    p.add_argument("--align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_seg_ckpt", action="store_true")
-    p.add_argument("--no_align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_seg_ckpt", action="store_false")
-    p.set_defaults(align_swin_cfg_from_seg_ckpt=True)
+    p.add_argument("--align_swin_cfg_from_contour_warmstart", dest="align_swin_cfg_from_contour_warmstart", action="store_true")
+    p.add_argument("--no_align_swin_cfg_from_contour_warmstart", dest="align_swin_cfg_from_contour_warmstart", action="store_false")
+    p.add_argument("--align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_contour_warmstart", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--no_align_swin_cfg_from_seg_ckpt", dest="align_swin_cfg_from_contour_warmstart", action="store_false", help=argparse.SUPPRESS)
+    p.set_defaults(align_swin_cfg_from_contour_warmstart=True)
 
     # fusion dims
     p.add_argument("--fused_dim", type=int, default=512)
@@ -1800,25 +1628,16 @@ def parse_args():
     p.set_defaults(strict_swinvit_layout=True)
     p.add_argument("--debug_swinvit_layout", action="store_true")
 
-    # seg-pretrain ckpts
-    p.add_argument("--seg_pretrain_pt_ckpt", type=str, default="runs/seg_overfit_pt_big/all/seg_best.pt")
-    p.add_argument("--seg_pretrain_ln_ckpt", type=str, default="runs/seg_overfit_ln_big/all/seg_best.pt")
-    p.add_argument("--seg_pretrain_pt_dir", type=str, default="")
-    p.add_argument("--seg_pretrain_ln_dir", type=str, default="")
-    p.add_argument("--seg_pretrain_pt_name", type=str, default="seg_best.pt")
-    p.add_argument("--seg_pretrain_ln_name", type=str, default="seg_best.pt")
-    p.add_argument("--shared_seg_pretrain_ckpt", type=str, default="")
-    p.add_argument("--shared_seg_pretrain_dir", type=str, default="")
-    p.add_argument("--shared_seg_pretrain_name", type=str, default="seg_best.pt")
-
-    # mask patch embed training toggle
-    p.add_argument("--train_mask_patch_embed", dest="train_mask_patch_embed", action="store_true")
-    p.add_argument("--no_train_mask_patch_embed", dest="train_mask_patch_embed", action="store_false")
-    p.set_defaults(train_mask_patch_embed=False)
+    p.add_argument("--contour_warmstart_ckpt", type=str, default="")
+    p.add_argument("--contour_warmstart_dir", type=str, default="")
+    p.add_argument("--contour_warmstart_name", type=str, default="best.pt")
+    p.add_argument("--shared_seg_pretrain_ckpt", dest="contour_warmstart_ckpt", type=str, default="", help=argparse.SUPPRESS)
+    p.add_argument("--shared_seg_pretrain_dir", dest="contour_warmstart_dir", type=str, default="", help=argparse.SUPPRESS)
+    p.add_argument("--shared_seg_pretrain_name", dest="contour_warmstart_name", type=str, default="best.pt", help=argparse.SUPPRESS)
 
     # LoRA
     p.add_argument("--use_lora", action="store_true")
-    p.add_argument("--lora_scope", type=str, default="both", choices=["pt", "ln", "both", "shared"])
+    p.add_argument("--lora_scope", type=str, default="shared", choices=["shared"])
     p.add_argument("--lora_r", type=int, default=16)
     p.add_argument("--lora_alpha", type=float, default=32.0)
     p.add_argument("--lora_dropout", type=float, default=0.05)
@@ -1861,8 +1680,8 @@ def parse_args():
     args.auc_times_days = [float(x) for x in (args.auc_times_days or [])]
     args.dca_thresholds = [float(x) for x in (args.dca_thresholds or [])]
 
-    if bool(args.align_swin_cfg_from_seg_ckpt):
-        args = align_backbone_cfg_to_seg_pretrain(args)
+    if bool(args.align_swin_cfg_from_contour_warmstart):
+        args = align_backbone_cfg_to_contour_warmstart(args)
 
     return args
 
@@ -1967,7 +1786,6 @@ def main():
         "lora_alpha": float(args.lora_alpha),
         "lora_dropout": float(args.lora_dropout),
         "lora_targets": list(args.lora_targets or []),
-        "train_mask_patch_embed": bool(args.train_mask_patch_embed and _image_encoder_mode(args) != "contour_aware"),
         "teacher_force_epochs": int(args.teacher_force_epochs),
         "teacher_force_start": float(args.teacher_force_start),
         "teacher_force_end": float(args.teacher_force_end),

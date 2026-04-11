@@ -1,3 +1,3 @@
-"""Preprocessing utilities for cohort export and CV split generation."""
+"""Preprocessing utilities for cohort export, tabular merge, and CV splits."""
 
-__all__ = ["export_swinunetr", "make_cv_splits"]
+__all__ = ["export_swinunetr", "prepare_opscc_tabular", "make_cv_splits"]

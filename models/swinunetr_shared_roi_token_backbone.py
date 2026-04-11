@@ -29,86 +29,72 @@ from trifusesurv.models.swinunetr_backbone_utils import (
     convert_swinvit_feats_to_channel_first,
     swinvit_features,
 )
-from trifusesurv.models.swinunetr_ptln_intra_peri_token_backbone import (
-    AttnPool3D,
-    binary_close,
-    binary_dilate,
-    ct_stats_global,
-    ct_stats_in_mask,
-    interp_mask,
-    masked_mean,
-)
+def masked_mean(feat: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    w = mask.clamp(0, 1)
+    denom = w.sum(dim=(2, 3, 4)).clamp_min(eps)
+    num = (feat * w).sum(dim=(2, 3, 4))
+    return num / denom
 
 
-class SplitTwoMaskPatchEmbedConv3d(nn.Module):
-    """Train only PT/LN mask patch-embed channels for a 3-channel input conv."""
+def ct_stats_in_mask(ct: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    w = mask.clamp(0, 1)
+    denom = w.sum(dim=(2, 3, 4)).clamp_min(eps)
+    mu = (ct * w).sum(dim=(2, 3, 4)) / denom
+    second = ((ct * ct) * w).sum(dim=(2, 3, 4)) / denom
+    var = (second - mu * mu).clamp_min(0.0)
+    sd = torch.sqrt(var + 1e-8)
+    vol = w.mean(dim=(2, 3, 4))
+    return torch.cat([mu, sd, vol], dim=1)
 
-    def __init__(self, conv3: nn.Conv3d):
+
+def ct_stats_global(ct: torch.Tensor, body: Optional[torch.Tensor] = None, eps: float = 1e-6) -> torch.Tensor:
+    if body is None:
+        mu = ct.mean(dim=(2, 3, 4))
+        sd = ct.std(dim=(2, 3, 4)).clamp_min(1e-8)
+        frac = ct.new_ones((ct.shape[0], 1))
+        return torch.cat([mu, sd, frac], dim=1)
+
+    w = body.clamp(0, 1)
+    denom = w.sum(dim=(2, 3, 4)).clamp_min(eps)
+    mu = (ct * w).sum(dim=(2, 3, 4)) / denom
+    second = ((ct * ct) * w).sum(dim=(2, 3, 4)) / denom
+    var = (second - mu * mu).clamp_min(0.0)
+    sd = torch.sqrt(var + 1e-8)
+    frac = w.mean(dim=(2, 3, 4))
+    return torch.cat([mu, sd, frac], dim=1)
+
+
+class AttnPool3D(nn.Module):
+    def __init__(self, mask_bias: float = 2.0, temperature: float = 1.0):
         super().__init__()
-        if not isinstance(conv3, nn.Conv3d):
-            raise TypeError("SplitTwoMaskPatchEmbedConv3d expects nn.Conv3d.")
-        if int(conv3.in_channels) != 3:
-            raise ValueError(f"Expected in_channels=3, got {conv3.in_channels}")
-        if int(conv3.groups) != 1:
-            raise ValueError(f"Expected groups=1 for patch embed conv, got {conv3.groups}")
+        self.attn = nn.LazyConv3d(1, kernel_size=1, bias=False)
+        self.mask_bias = float(mask_bias)
+        self.temperature = float(temperature)
 
-        bias = conv3.bias is not None
-        kwargs = dict(
-            out_channels=conv3.out_channels,
-            kernel_size=conv3.kernel_size,
-            stride=conv3.stride,
-            padding=conv3.padding,
-            dilation=conv3.dilation,
-            groups=1,
-        )
-        self.conv_ct = nn.Conv3d(in_channels=1, bias=bias, **kwargs)
-        self.conv_mask_pt = nn.Conv3d(in_channels=1, bias=False, **kwargs)
-        self.conv_mask_ln = nn.Conv3d(in_channels=1, bias=False, **kwargs)
-
-        with torch.no_grad():
-            self.conv_ct.weight.copy_(conv3.weight[:, 0:1].contiguous())
-            if bias:
-                self.conv_ct.bias.copy_(conv3.bias)
-            self.conv_mask_pt.weight.zero_()
-            self.conv_mask_ln.weight.zero_()
-
-        for p in self.conv_ct.parameters():
-            p.requires_grad = False
-        for p in self.conv_mask_pt.parameters():
-            p.requires_grad = True
-        for p in self.conv_mask_ln.parameters():
-            p.requires_grad = True
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.ndim != 5 or x.size(1) != 3:
-            raise ValueError(f"Expected x (B,3,D,H,W), got {tuple(x.shape)}")
-        ct = x[:, 0:1]
-        pt = x[:, 1:2]
-        ln = x[:, 2:3]
-        return self.conv_ct(ct) + self.conv_mask_pt(pt) + self.conv_mask_ln(ln)
+    def forward(self, feat: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        logits = self.attn(feat)
+        if mask is not None:
+            logits = logits + self.mask_bias * mask.clamp(0, 1)
+        w = torch.softmax((logits / self.temperature).flatten(2), dim=-1)
+        feat_flat = feat.flatten(2)
+        return (feat_flat * w).sum(dim=-1)
 
 
-def _replace_patch_embed_proj_with_split(backbone: nn.Module, verbose: bool = True) -> SplitTwoMaskPatchEmbedConv3d:
-    target_name = None
-    target_conv = None
-    for name, mod in backbone.named_modules():
-        if name.endswith("patch_embed.proj") and isinstance(mod, nn.Conv3d) and int(mod.in_channels) == 3:
-            target_name = name
-            target_conv = mod
-            break
-    if target_name is None or target_conv is None:
-        raise RuntimeError("Could not find patch_embed.proj Conv3d(in_ch=3) inside shared SwinUNETR backbone.")
+def interp_mask(mask: torch.Tensor, size: Tuple[int, int, int], mode: str) -> torch.Tensor:
+    if mode == "nearest":
+        return F.interpolate(mask, size=size, mode="nearest")
+    if mode == "trilinear":
+        return F.interpolate(mask, size=size, mode="trilinear", align_corners=False)
+    raise ValueError(f"Unknown mask_interp mode: {mode}")
 
-    parent_path, attr = target_name.rsplit(".", 1)
-    parent = backbone
-    for part in parent_path.split("."):
-        parent = getattr(parent, part)
 
-    split = SplitTwoMaskPatchEmbedConv3d(target_conv).to(device=target_conv.weight.device, dtype=target_conv.weight.dtype)
-    setattr(parent, attr, split)
-    if verbose:
-        print(f"[PATCH] Replaced {target_name} with SplitTwoMaskPatchEmbedConv3d (train PT/LN mask channels only).")
-    return split
+def binary_close(m: torch.Tensor, r: int) -> torch.Tensor:
+    if r <= 0:
+        return m
+    k = 2 * r + 1
+    d = (F.max_pool3d(m, kernel_size=k, stride=1, padding=r) > 0).float()
+    e = 1.0 - (F.max_pool3d((1.0 - d).clamp(0, 1), kernel_size=k, stride=1, padding=r) > 0).float()
+    return e
 
 
 class ContourAwareROITokenBackbone(nn.Module):
@@ -222,8 +208,6 @@ class ContourAwareROITokenBackbone(nn.Module):
 
         self.token_type = nn.Parameter(torch.zeros(self.max_tokens, self.token_dim))
         nn.init.normal_(self.token_type, std=0.02)
-        self._patch_split: Optional[SplitTwoMaskPatchEmbedConv3d] = None
-
     @property
     def out_dim(self) -> int:
         return int(self.token_dim)
@@ -454,6 +438,3 @@ class ContourAwareROITokenBackbone(nn.Module):
             "ln_presence_logits": ln_presence_logits,
         }
         return tok_img, pres, aux
-
-
-SharedMaskROITokenBackbone = ContourAwareROITokenBackbone
