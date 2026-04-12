@@ -33,6 +33,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from trifusesurv.models.swinunetr_backbone_utils import load_swinunetr_pretrained
 from trifusesurv.models.survival_model import (
     SwinUNETRTokenMoEDiscrete,
+    SURVIVAL_ENDPOINTS,
     gate_entropy_penalty_presence,
     gate_load_balance_penalty_presence,
 )
@@ -51,6 +52,7 @@ from trifusesurv.utils.clinical import (
 )
 from trifusesurv.utils.radiomics import RadiomicsEncoder
 from trifusesurv.utils.data import PreprocessedContourAwareDataset
+from trifusesurv.utils.data import resolve_preprocessed_case_path
 
 
 # =============================================================================
@@ -58,6 +60,10 @@ from trifusesurv.utils.data import PreprocessedContourAwareDataset
 # =============================================================================
 set_seed = H.set_seed
 seed_worker = H.seed_worker
+
+ENDPOINT_TO_INDEX = {name: idx for idx, name in enumerate(SURVIVAL_ENDPOINTS)}
+MULTITASK_TIME_COLS = tuple(ENDPOINT_MAP[name][0] for name in SURVIVAL_ENDPOINTS)
+MULTITASK_EVENT_COLS = tuple(ENDPOINT_MAP[name][1] for name in SURVIVAL_ENDPOINTS)
 
 
 def parse_device(device_str: str) -> torch.device:
@@ -94,12 +100,14 @@ def make_amp(device: torch.device, enabled: bool):
         return scaler, autocast_ctx
 
 
-def _find_first_existing_path(meta: pd.DataFrame, col: str) -> Optional[str]:
+def _find_first_existing_path(meta: pd.DataFrame, col: str, *, id_col: str = "patient_id", data_root: str = "") -> Optional[str]:
     if col not in meta.columns:
         return None
-    for p in meta[col].astype(str).tolist():
-        if p and os.path.isfile(p):
-            return p
+    ids = meta[id_col].astype(str).tolist() if id_col in meta.columns else [""] * len(meta)
+    for pid, p in zip(ids, meta[col].astype(str).tolist()):
+        p_resolved = resolve_preprocessed_case_path(p, data_root=data_root, patient_id=pid)
+        if p_resolved and os.path.isfile(p_resolved):
+            return p_resolved
     return None
 
 
@@ -109,9 +117,16 @@ def _read_nii_shape(path: str) -> Tuple[int, int, int]:
     return tuple(int(x) for x in arr.shape)
 
 
-def resolve_img_size_against_data(meta: pd.DataFrame, ct_col: str, img_size_arg: Sequence[int]) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
+def resolve_img_size_against_data(
+    meta: pd.DataFrame,
+    ct_col: str,
+    img_size_arg: Sequence[int],
+    *,
+    id_col: str = "patient_id",
+    data_root: str = "",
+) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
     arg = tuple(int(x) for x in img_size_arg)
-    p0 = _find_first_existing_path(meta, ct_col)
+    p0 = _find_first_existing_path(meta, ct_col, id_col=id_col, data_root=data_root)
     if p0 is None:
         print(f"[IMGCFG][WARN] Could not find any existing CT path to validate --img_size. Using as-is: {arg}")
         return arg, arg
@@ -297,10 +312,13 @@ def read_nii(path: str, dtype=np.float32) -> np.ndarray:
 def _unpack_surv_batch(batch):
     if len(batch) == 6:
         x, t, e, clin, rad, pid = batch
-        return dict(x=x, mask_pt=None, mask_ln=None, t=t, e=e, clin=clin, rad=rad, pid=pid)
+        return dict(x=x, mask_pt=None, mask_ln=None, t=t, e=e, t_all=t[:, None], e_all=e[:, None], clin=clin, rad=rad, pid=pid)
     if len(batch) == 8:
         x, mask_pt, mask_ln, t, e, clin, rad, pid = batch
-        return dict(x=x, mask_pt=mask_pt, mask_ln=mask_ln, t=t, e=e, clin=clin, rad=rad, pid=pid)
+        return dict(x=x, mask_pt=mask_pt, mask_ln=mask_ln, t=t, e=e, t_all=t[:, None], e_all=e[:, None], clin=clin, rad=rad, pid=pid)
+    if len(batch) == 10:
+        x, mask_pt, mask_ln, t, e, t_all, e_all, clin, rad, pid = batch
+        return dict(x=x, mask_pt=mask_pt, mask_ln=mask_ln, t=t, e=e, t_all=t_all, e_all=e_all, clin=clin, rad=rad, pid=pid)
     raise RuntimeError(f"[BATCH] Unexpected batch structure of length {len(batch)}")
 
 
@@ -322,6 +340,98 @@ def _teacher_force_alpha_for_epoch(epoch: int, args) -> float:
         return float(end)
     frac = float(max(0.0, min(1.0, (int(epoch) - 1) / float(epochs - 1))))
     return float(start + frac * (end - start))
+
+
+def _primary_endpoint_index(endpoint: str) -> int:
+    endpoint = str(endpoint).strip().upper()
+    if endpoint not in ENDPOINT_TO_INDEX:
+        raise KeyError(f"Unknown endpoint: {endpoint}")
+    return int(ENDPOINT_TO_INDEX[endpoint])
+
+
+def _extract_endpoint_logits(logits_by_endpoint, endpoint: str) -> torch.Tensor:
+    if isinstance(logits_by_endpoint, dict):
+        key = str(endpoint).strip().upper()
+        if key not in logits_by_endpoint:
+            raise KeyError(f"Missing logits for endpoint {key}. Available: {sorted(logits_by_endpoint.keys())}")
+        return logits_by_endpoint[key]
+    return logits_by_endpoint
+
+
+def _valid_survival_mask(times: torch.Tensor, events: torch.Tensor) -> torch.Tensor:
+    t = times.float()
+    e = events.float()
+    return torch.isfinite(t) & torch.isfinite(e) & (t > 0.0) & ((e == 0.0) | (e == 1.0))
+
+
+def _endpoint_survival_losses(
+    logits_by_endpoint,
+    t_all: torch.Tensor,
+    e_all: torch.Tensor,
+    *,
+    time_bin_width_days: float,
+    num_time_bins: int,
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, int]]:
+    losses: Dict[str, torch.Tensor] = {}
+    counts: Dict[str, int] = {}
+    available_heads = int(t_all.shape[1]) if t_all.ndim >= 2 else 1
+
+    for idx, endpoint in enumerate(SURVIVAL_ENDPOINTS):
+        if idx >= available_heads:
+            continue
+        logits = _extract_endpoint_logits(logits_by_endpoint, endpoint).float()
+        if logits.ndim != 2:
+            raise RuntimeError(f"[MTL] Expected 2D logits for {endpoint}, got shape={tuple(logits.shape)}")
+        t_ep = t_all[:, idx].to(logits.device)
+        e_ep = e_all[:, idx].to(logits.device)
+        valid = _valid_survival_mask(t_ep, e_ep)
+        counts[endpoint] = int(valid.sum().item())
+        if not bool(valid.any().item()):
+            continue
+        losses[endpoint] = H.discrete_time_nll_loss(
+            logits[valid],
+            t_ep[valid],
+            e_ep[valid],
+            float(time_bin_width_days),
+            int(num_time_bins),
+        )
+
+    return losses, counts
+
+
+def _multitask_survival_loss(
+    logits_by_endpoint,
+    t_all: torch.Tensor,
+    e_all: torch.Tensor,
+    *,
+    primary_endpoint: str,
+    primary_surv_loss_weight: float,
+    aux_surv_loss_weight: float,
+    time_bin_width_days: float,
+    num_time_bins: int,
+) -> torch.Tensor:
+    total = None
+    total_weight = 0.0
+    primary_key = str(primary_endpoint).strip().upper()
+    endpoint_losses, _ = _endpoint_survival_losses(
+        logits_by_endpoint,
+        t_all=t_all,
+        e_all=e_all,
+        time_bin_width_days=float(time_bin_width_days),
+        num_time_bins=int(num_time_bins),
+    )
+
+    for endpoint, loss_ep in endpoint_losses.items():
+        weight = float(primary_surv_loss_weight if endpoint == primary_key else aux_surv_loss_weight)
+        if weight <= 0.0:
+            continue
+        total = (loss_ep * weight) if total is None else (total + (loss_ep * weight))
+        total_weight += weight
+
+    if total is None or total_weight <= 0.0:
+        ref = _extract_endpoint_logits(logits_by_endpoint, primary_key)
+        return ref.new_tensor(float("nan"))
+    return total / float(total_weight)
 
 
 def _resize_mask_target(mask: torch.Tensor, size: Tuple[int, int, int]) -> torch.Tensor:
@@ -461,8 +571,8 @@ def make_param_groups(
         head_named.append((f"img_post_mlp.{n}", p))
     for n, p in mm.gate_mlp.named_parameters():
         head_named.append((f"gate_mlp.{n}", p))
-    for n, p in mm.surv_head.named_parameters():
-        head_named.append((f"surv_head.{n}", p))
+    for n, p in mm.surv_heads.named_parameters():
+        head_named.append((f"surv_heads.{n}", p))
 
     head_d, head_n = _split_decay_no_decay(head_named)
     if head_d:
@@ -502,6 +612,7 @@ def evaluate_model(
     loader: DataLoader,
     device: torch.device,
     *,
+    endpoint: str,
     risk_horizon_days: float,
     time_bin_width_days: float,
     eval_times_days: Sequence[float],
@@ -529,6 +640,7 @@ def evaluate_model(
 
         with autocast_ctx():
             logits = model(x, clin, rad, teacher_force_alpha=0.0, return_gate=False)
+            logits = _extract_endpoint_logits(logits, endpoint)
 
         lf = logits.float()
         K = int(lf.shape[1])
@@ -574,6 +686,7 @@ def predict_risk_scores(
     loader: DataLoader,
     device: torch.device,
     *,
+    endpoint: str,
     risk_horizon_days: float,
     autocast_ctx,
 ) -> Dict[str, float]:
@@ -588,6 +701,7 @@ def predict_risk_scores(
         rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
         with autocast_ctx():
             logits = model(x, clin, rad, teacher_force_alpha=0.0, return_gate=False)
+            logits = _extract_endpoint_logits(logits, endpoint)
         risks = mm.hazards_to_risk(logits, horizon_days=float(risk_horizon_days)).detach().cpu().numpy()
         for i, p in enumerate(payload["pid"]):
             out[str(p)] = float(risks[i])
@@ -610,8 +724,11 @@ def train_one_epoch(
     scaler,
     device: torch.device,
     *,
+    primary_endpoint: str,
     num_time_bins: int,
     time_bin_width_days: float,
+    primary_surv_loss_weight: float,
+    aux_surv_loss_weight: float,
     hazard_smooth_lambda: float,
     logit_l2_lambda: float,
     gate_entropy_lambda: float,
@@ -624,17 +741,34 @@ def train_one_epoch(
     loc_dice_weight: float,
     ema: Optional[H.EMAWeights],
     autocast_ctx,
-) -> float:
+) -> Dict[str, float]:
     model.train()
     mm = model.module if isinstance(model, nn.DataParallel) else model
     request_aux = str(getattr(mm, "image_encoder_mode", "")).strip().lower() == "contour_aware"
 
-    losses = []
+    stats_sum: Dict[str, float] = {
+        "loss_total": 0.0,
+        "loss_surv_total": 0.0,
+        "loss_surv_primary": 0.0,
+        "loss_surv_aux": 0.0,
+        "loss_loc_pt": 0.0,
+        "loss_loc_ln": 0.0,
+        "loss_loc_presence": 0.0,
+        "loss_gate_entropy": 0.0,
+        "loss_gate_loadbal": 0.0,
+        "loss_hazard_smooth": 0.0,
+        "loss_logit_l2": 0.0,
+    }
+    for endpoint in SURVIVAL_ENDPOINTS:
+        stats_sum[f"surv_{endpoint.lower()}_nll"] = 0.0
+        stats_sum[f"surv_{endpoint.lower()}_count"] = 0.0
+    n_batches = 0
+
     for batch in loader:
         payload = _unpack_surv_batch(batch)
         x = payload["x"].to(device, non_blocking=True)
-        t = payload["t"].to(device, non_blocking=True)
-        e = payload["e"].to(device, non_blocking=True)
+        t_all = payload["t_all"].to(device, non_blocking=True)
+        e_all = payload["e_all"].to(device, non_blocking=True)
         clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
         rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
         mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
@@ -666,41 +800,83 @@ def train_one_epoch(
                     return_aux=False,
                 )
                 aux = None
-            lf = logits.float()
+            primary_logits = _extract_endpoint_logits(logits, primary_endpoint).float()
+            endpoint_losses, endpoint_counts = _endpoint_survival_losses(
+                logits,
+                t_all=t_all,
+                e_all=e_all,
+                time_bin_width_days=float(time_bin_width_days),
+                num_time_bins=int(num_time_bins),
+            )
 
-            loss = H.discrete_time_nll_loss(lf, t, e, float(time_bin_width_days), int(num_time_bins))
+            loss_surv = _multitask_survival_loss(
+                logits,
+                t_all=t_all,
+                e_all=e_all,
+                primary_endpoint=primary_endpoint,
+                primary_surv_loss_weight=float(primary_surv_loss_weight),
+                aux_surv_loss_weight=float(aux_surv_loss_weight),
+                time_bin_width_days=float(time_bin_width_days),
+                num_time_bins=int(num_time_bins),
+            )
+            loss = loss_surv
+            primary_key = str(primary_endpoint).strip().upper()
+            primary_surv_unweighted = endpoint_losses.get(primary_key, primary_logits.new_tensor(0.0))
+            aux_surv_unweighted = primary_logits.new_tensor(0.0)
+            aux_terms = 0
+            for endpoint, loss_ep in endpoint_losses.items():
+                if endpoint == primary_key:
+                    continue
+                aux_surv_unweighted = aux_surv_unweighted + loss_ep
+                aux_terms += 1
+            if aux_terms > 0:
+                aux_surv_unweighted = aux_surv_unweighted / float(aux_terms)
+            loss_hazard_smooth = primary_logits.new_tensor(0.0)
+            loss_logit_l2 = primary_logits.new_tensor(0.0)
+            loss_gate_entropy = primary_logits.new_tensor(0.0)
+            loss_gate_loadbal = primary_logits.new_tensor(0.0)
+            loss_loc_pt = primary_logits.new_tensor(0.0)
+            loss_loc_ln = primary_logits.new_tensor(0.0)
+            loss_loc_presence = primary_logits.new_tensor(0.0)
             if hazard_smooth_lambda > 0:
-                loss = loss + float(hazard_smooth_lambda) * H.hazard_smoothness_penalty(lf)
+                loss_hazard_smooth = float(hazard_smooth_lambda) * H.hazard_smoothness_penalty(primary_logits)
+                loss = loss + loss_hazard_smooth
             if logit_l2_lambda > 0:
-                loss = loss + float(logit_l2_lambda) * (lf ** 2).mean()
+                loss_logit_l2 = float(logit_l2_lambda) * (primary_logits ** 2).mean()
+                loss = loss + loss_logit_l2
             if gate_entropy_lambda > 0:
-                loss = loss + float(gate_entropy_lambda) * gate_entropy_penalty_presence(gate, pres)
+                loss_gate_entropy = float(gate_entropy_lambda) * gate_entropy_penalty_presence(gate, pres)
+                loss = loss + loss_gate_entropy
             if gate_loadbal_lambda > 0:
-                loss = loss + float(gate_loadbal_lambda) * gate_load_balance_penalty_presence(gate, pres)
+                loss_gate_loadbal = float(gate_loadbal_lambda) * gate_load_balance_penalty_presence(gate, pres)
+                loss = loss + loss_gate_loadbal
 
             if aux is not None and mask_pt is not None and mask_ln is not None:
                 loc_pt_target = _resize_mask_target(mask_pt, tuple(int(x) for x in aux["loc_pt_logits"].shape[2:]))
                 loc_ln_target = _resize_mask_target(mask_ln, tuple(int(x) for x in aux["loc_ln_logits"].shape[2:]))
                 if float(loc_loss_pt_lambda) > 0.0:
-                    loss = loss + float(loc_loss_pt_lambda) * _localization_loss_from_logits(
+                    loss_loc_pt = float(loc_loss_pt_lambda) * _localization_loss_from_logits(
                         aux["loc_pt_logits"].float(),
                         loc_pt_target.float(),
                         bce_weight=float(loc_bce_weight),
                         dice_weight=float(loc_dice_weight),
                     )
+                    loss = loss + loss_loc_pt
                 if float(loc_loss_ln_lambda) > 0.0:
-                    loss = loss + float(loc_loss_ln_lambda) * _localization_loss_from_logits(
+                    loss_loc_ln = float(loc_loss_ln_lambda) * _localization_loss_from_logits(
                         aux["loc_ln_logits"].float(),
                         loc_ln_target.float(),
                         bce_weight=float(loc_bce_weight),
                         dice_weight=float(loc_dice_weight),
                     )
+                    loss = loss + loss_loc_ln
                 if float(loc_presence_lambda) > 0.0 and ("pt_presence_logits" in aux) and ("ln_presence_logits" in aux):
                     pt_present_target = (mask_pt.flatten(1).sum(dim=1) > 0.0).float()
                     ln_present_target = (mask_ln.flatten(1).sum(dim=1) > 0.0).float()
                     pres_loss = F.binary_cross_entropy_with_logits(aux["pt_presence_logits"].float(), pt_present_target)
                     pres_loss = pres_loss + F.binary_cross_entropy_with_logits(aux["ln_presence_logits"].float(), ln_present_target)
-                    loss = loss + float(loc_presence_lambda) * pres_loss
+                    loss_loc_presence = float(loc_presence_lambda) * pres_loss
+                    loss = loss + loss_loc_presence
 
         if not torch.isfinite(loss).item():
             continue
@@ -719,9 +895,33 @@ def train_one_epoch(
         if ema is not None:
             ema.update(mm)
 
-        losses.append(float(loss.detach().cpu().item()))
+        n_batches += 1
+        stats_sum["loss_total"] += float(loss.detach().cpu().item())
+        stats_sum["loss_surv_total"] += float(loss_surv.detach().cpu().item())
+        stats_sum["loss_surv_primary"] += float(primary_surv_unweighted.detach().cpu().item())
+        stats_sum["loss_surv_aux"] += float(aux_surv_unweighted.detach().cpu().item()) if aux_terms > 0 else 0.0
+        stats_sum["loss_loc_pt"] += float(loss_loc_pt.detach().cpu().item())
+        stats_sum["loss_loc_ln"] += float(loss_loc_ln.detach().cpu().item())
+        stats_sum["loss_loc_presence"] += float(loss_loc_presence.detach().cpu().item())
+        stats_sum["loss_gate_entropy"] += float(loss_gate_entropy.detach().cpu().item())
+        stats_sum["loss_gate_loadbal"] += float(loss_gate_loadbal.detach().cpu().item())
+        stats_sum["loss_hazard_smooth"] += float(loss_hazard_smooth.detach().cpu().item())
+        stats_sum["loss_logit_l2"] += float(loss_logit_l2.detach().cpu().item())
+        for endpoint in SURVIVAL_ENDPOINTS:
+            if endpoint in endpoint_losses:
+                stats_sum[f"surv_{endpoint.lower()}_nll"] += float(endpoint_losses[endpoint].detach().cpu().item())
+            stats_sum[f"surv_{endpoint.lower()}_count"] += float(endpoint_counts.get(endpoint, 0))
 
-    return float(np.mean(losses)) if losses else float("nan")
+    if n_batches == 0:
+        return {k: float("nan") for k in stats_sum}
+
+    stats_mean: Dict[str, float] = {}
+    for key, value in stats_sum.items():
+        if key.endswith("_count"):
+            stats_mean[key] = float(value / n_batches)
+        else:
+            stats_mean[key] = float(value / n_batches)
+    return stats_mean
 
 
 # =============================================================================
@@ -1052,6 +1252,7 @@ def run_one_fold(
 ) -> Dict[str, Any]:
     set_seed(args.seed + 100 * int(fold))
     _assert_split_disjoint(int(fold), split)
+    data_root = str(Path(args.meta_csv).resolve().parent)
 
     fold_dir = out_root / f"fold_{fold:02d}"
     fold_dir.mkdir(parents=True, exist_ok=True)
@@ -1091,42 +1292,50 @@ def run_one_fold(
     tr_ds = PreprocessedContourAwareDataset(
         tr_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
+        multi_time_cols=MULTITASK_TIME_COLS, multi_event_cols=MULTITASK_EVENT_COLS,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
         mode="train",
         clinical_encoder=clin_enc, radiomics_encoder=rad_enc,
         use_radiomics=args.use_radiomics,
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
+        data_root=data_root,
     )
     tr_eval_ds = PreprocessedContourAwareDataset(
         tr_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
+        multi_time_cols=MULTITASK_TIME_COLS, multi_event_cols=MULTITASK_EVENT_COLS,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
         mode="eval",
         clinical_encoder=clin_enc, radiomics_encoder=rad_enc,
         use_radiomics=args.use_radiomics,
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
+        data_root=data_root,
     )
     va_ds = PreprocessedContourAwareDataset(
         va_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
+        multi_time_cols=MULTITASK_TIME_COLS, multi_event_cols=MULTITASK_EVENT_COLS,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
         mode="eval",
         clinical_encoder=clin_enc, radiomics_encoder=rad_enc,
         use_radiomics=args.use_radiomics,
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
+        data_root=data_root,
     )
     te_ds = PreprocessedContourAwareDataset(
         te_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
+        multi_time_cols=MULTITASK_TIME_COLS, multi_event_cols=MULTITASK_EVENT_COLS,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
         mode="eval",
         clinical_encoder=clin_enc, radiomics_encoder=rad_enc,
         use_radiomics=args.use_radiomics,
         strict_files=args.strict_files,
         expected_dhw=expected_dhw,
+        data_root=data_root,
     )
 
     g = torch.Generator()
@@ -1273,10 +1482,13 @@ def run_one_fold(
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
         teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args)
-        train_loss = train_one_epoch(
+        train_stats = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
+            primary_endpoint=str(args.endpoint),
             num_time_bins=int(global_num_time_bins),
             time_bin_width_days=float(args.time_bin_width_days),
+            primary_surv_loss_weight=float(args.primary_surv_loss_weight),
+            aux_surv_loss_weight=float(args.aux_surv_loss_weight),
             hazard_smooth_lambda=float(args.hazard_smooth_lambda),
             logit_l2_lambda=float(args.logit_l2_lambda),
             gate_entropy_lambda=float(args.gate_entropy_lambda),
@@ -1293,6 +1505,7 @@ def run_one_fold(
 
         train_met = evaluate_model(
             model, tr_eval_loader, device,
+            endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
             time_bin_width_days=float(args.time_bin_width_days),
             eval_times_days=args.auc_times_days,
@@ -1301,6 +1514,7 @@ def run_one_fold(
         )
         val_met = evaluate_model(
             model, va_loader, device,
+            endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
             time_bin_width_days=float(args.time_bin_width_days),
             eval_times_days=args.auc_times_days,
@@ -1315,7 +1529,18 @@ def run_one_fold(
         report_metric = float(val_met.get(args.report_metric, float("nan")))
         print(
             f"[fold {fold:02d}] epoch {epoch:03d} | "
-            f"loss={train_loss:.4f} | val_nll={val_met.get('nll', float('nan')):.4f} | "
+            f"primary={str(args.endpoint).upper()} | "
+            f"loss={train_stats.get('loss_total', float('nan')):.4f} "
+            f"surv={train_stats.get('loss_surv_total', float('nan')):.4f} "
+            f"prim={train_stats.get('loss_surv_primary', float('nan')):.4f} "
+            f"aux={train_stats.get('loss_surv_aux', float('nan')):.4f} "
+            f"os={train_stats.get('surv_os_nll', float('nan')):.4f} "
+            f"dss={train_stats.get('surv_dss_nll', float('nan')):.4f} "
+            f"dfs={train_stats.get('surv_dfs_nll', float('nan')):.4f} | "
+            f"loc_pt={train_stats.get('loss_loc_pt', float('nan')):.4f} "
+            f"loc_ln={train_stats.get('loss_loc_ln', float('nan')):.4f} "
+            f"loc_pres={train_stats.get('loss_loc_presence', float('nan')):.4f} | "
+            f"val_nll={val_met.get('nll', float('nan')):.4f} | "
             f"train_c={train_met.get('c_index', float('nan')):.3f} val_c={val_met.get('c_index', float('nan')):.3f} "
             f"val_{args.report_metric}={report_metric:.3f} "
             f"teacher_force={teacher_force_alpha:.2f}"
@@ -1323,7 +1548,23 @@ def run_one_fold(
 
         row = {
             "epoch": int(epoch),
-            "train_loss": float(train_loss),
+            "train_loss": float(train_stats.get("loss_total", float("nan"))),
+            "train_surv_loss": float(train_stats.get("loss_surv_total", float("nan"))),
+            "train_surv_primary_loss": float(train_stats.get("loss_surv_primary", float("nan"))),
+            "train_surv_aux_loss": float(train_stats.get("loss_surv_aux", float("nan"))),
+            "train_surv_os_nll": float(train_stats.get("surv_os_nll", float("nan"))),
+            "train_surv_dss_nll": float(train_stats.get("surv_dss_nll", float("nan"))),
+            "train_surv_dfs_nll": float(train_stats.get("surv_dfs_nll", float("nan"))),
+            "train_surv_os_valid_per_batch": float(train_stats.get("surv_os_count", float("nan"))),
+            "train_surv_dss_valid_per_batch": float(train_stats.get("surv_dss_count", float("nan"))),
+            "train_surv_dfs_valid_per_batch": float(train_stats.get("surv_dfs_count", float("nan"))),
+            "train_loc_pt_loss": float(train_stats.get("loss_loc_pt", float("nan"))),
+            "train_loc_ln_loss": float(train_stats.get("loss_loc_ln", float("nan"))),
+            "train_loc_presence_loss": float(train_stats.get("loss_loc_presence", float("nan"))),
+            "train_gate_entropy_loss": float(train_stats.get("loss_gate_entropy", float("nan"))),
+            "train_gate_loadbal_loss": float(train_stats.get("loss_gate_loadbal", float("nan"))),
+            "train_hazard_smooth_loss": float(train_stats.get("loss_hazard_smooth", float("nan"))),
+            "train_logit_l2_loss": float(train_stats.get("loss_logit_l2", float("nan"))),
             "train_c_index": float(train_met.get("c_index", float("nan"))),
             "val_c_index": float(val_met.get("c_index", float("nan"))),
             "train_ibs": float(train_met.get("ibs", float("nan"))),
@@ -1372,13 +1613,14 @@ def run_one_fold(
 
     last_test = evaluate_model(
         model, te_loader, device,
+        endpoint=str(args.endpoint),
         risk_horizon_days=float(args.risk_horizon_days),
         time_bin_width_days=float(args.time_bin_width_days),
         eval_times_days=args.auc_times_days,
         dca_thresholds=args.dca_thresholds,
         autocast_ctx=autocast_ctx,
     )
-    risks_last = predict_risk_scores(model, te_loader, device, risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+    risks_last = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     ema_test = None
     risks_ema = None
@@ -1386,13 +1628,14 @@ def run_one_fold(
         with ema.apply_to(mm):
             ema_test = evaluate_model(
                 model, te_loader, device,
+                endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
                 time_bin_width_days=float(args.time_bin_width_days),
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
             )
-            risks_ema = predict_risk_scores(model, te_loader, device, risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+            risks_ema = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     swa_test = None
     risks_swa = None
@@ -1400,26 +1643,28 @@ def run_one_fold(
         with swa.apply_to(mm):
             swa_test = evaluate_model(
                 model, te_loader, device,
+                endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
                 time_bin_width_days=float(args.time_bin_width_days),
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
             )
-            risks_swa = predict_risk_scores(model, te_loader, device, risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+            risks_swa = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     best_test = None
     risks_best = None
     if load_model_state_only(ckpt_best, model):
         best_test = evaluate_model(
             model, te_loader, device,
+            endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
             time_bin_width_days=float(args.time_bin_width_days),
             eval_times_days=args.auc_times_days,
             dca_thresholds=args.dca_thresholds,
             autocast_ctx=autocast_ctx,
         )
-        risks_best = predict_risk_scores(model, te_loader, device, risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+        risks_best = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     export_suffix = "ema" if (risks_ema is not None) else "last"
     export_risks = risks_ema if (risks_ema is not None) else risks_last
@@ -1534,6 +1779,8 @@ def parse_args():
     p.add_argument("--auc_times_days", type=float, nargs="*", default=[365.0, 3 * 365.0, 5 * 365.0])
     p.add_argument("--dca_thresholds", type=float, nargs="*", default=[0.1, 0.2, 0.3])
     p.add_argument("--report_metric", type=str, default="auc_1095d")
+    p.add_argument("--primary_surv_loss_weight", type=float, default=1.0)
+    p.add_argument("--aux_surv_loss_weight", type=float, default=0.35)
 
     p.add_argument("--use_ema", dest="use_ema", action="store_true")
     p.add_argument("--no_ema", dest="use_ema", action="store_false")
@@ -1676,6 +1923,8 @@ def parse_args():
         args.gate_hidden_dim = int(args.fused_dim)
     if int(args.rad_hidden_dim) <= 0:
         args.rad_hidden_dim = int(max(512, 2 * int(args.fused_dim)))
+    if float(args.primary_surv_loss_weight) < 0.0 or float(args.aux_surv_loss_weight) < 0.0:
+        raise ValueError("--primary_surv_loss_weight and --aux_surv_loss_weight must be >= 0.")
 
     args.auc_times_days = [float(x) for x in (args.auc_times_days or [])]
     args.dca_thresholds = [float(x) for x in (args.dca_thresholds or [])]
@@ -1693,6 +1942,24 @@ def _validate_event_column(meta: pd.DataFrame, event_col: str):
         raise RuntimeError(f"[DATA] {event_col} must be binary {{0,1}}. Found other values: {bad[:20]}")
 
 
+def compute_multitask_num_time_bins(meta: pd.DataFrame, args) -> Tuple[int, float]:
+    max_bins = 1
+    max_time = 0.0
+    for time_col in MULTITASK_TIME_COLS:
+        if time_col not in meta.columns:
+            continue
+        bins, col_max_time = H.compute_global_num_time_bins(
+            meta,
+            time_col=time_col,
+            time_bin_width_days=float(args.time_bin_width_days),
+            max_time_bins=int(args.max_time_bins),
+            risk_horizon_days=float(args.risk_horizon_days),
+            auc_times_days=args.auc_times_days,
+        )
+        max_bins = max(max_bins, int(bins))
+        max_time = max(max_time, float(col_max_time))
+    return int(max_bins), float(max_time)
+
 def main():
     args = parse_args()
     set_seed(args.seed)
@@ -1702,45 +1969,54 @@ def main():
 
     scaler, autocast_ctx = make_amp(device, enabled=bool(args.amp))
     print(f"[info] device={device} amp={bool(args.amp and device.type=='cuda')} use_lora={bool(args.use_lora)}")
+    print(
+        "[mtl] survival_heads="
+        f"{'/'.join(SURVIVAL_ENDPOINTS)} "
+        f"primary={str(args.endpoint).upper()} "
+        f"primary_w={float(args.primary_surv_loss_weight):.2f} "
+        f"aux_w={float(args.aux_surv_loss_weight):.2f}"
+    )
 
     out_root = Path(args.out_dir) / args.exp_name
     out_root.mkdir(parents=True, exist_ok=True)
 
     meta = pd.read_csv(args.meta_csv, dtype={args.id_col: str})
     meta[args.id_col] = meta[args.id_col].astype(str)
+    data_root = str(Path(args.meta_csv).resolve().parent)
 
     if (not args.keep_bad_status) and ("status" in meta.columns):
         meta = meta[meta["status"].astype(str).str.lower() == "ok"].copy()
-    if (not args.keep_unmatched_survival) and ("survival_matched" in meta.columns):
-        sm = meta["survival_matched"]
-        if sm.dtype == bool:
-            meta = meta[sm].copy()
-        else:
-            meta = meta[sm.astype(str).str.lower().isin(["true", "1", "t", "yes"])].copy()
-
-    meta[args.time_col] = pd.to_numeric(meta[args.time_col], errors="coerce")
-    meta[args.event_col] = pd.to_numeric(meta[args.event_col], errors="coerce")
+    for time_col in MULTITASK_TIME_COLS:
+        if time_col in meta.columns:
+            meta[time_col] = pd.to_numeric(meta[time_col], errors="coerce")
+    for event_col in MULTITASK_EVENT_COLS:
+        if event_col in meta.columns:
+            meta[event_col] = pd.to_numeric(meta[event_col], errors="coerce")
     meta = meta.dropna(subset=[args.time_col, args.event_col]).copy()
     meta = meta[meta[args.time_col] > 0].copy()
 
-    _validate_event_column(meta, args.event_col)
-    meta[args.event_col] = meta[args.event_col].astype(int)
+    for event_col in MULTITASK_EVENT_COLS:
+        if event_col not in meta.columns:
+            continue
+        valid_ep = meta[event_col].notna()
+        if bool(valid_ep.any()):
+            _validate_event_column(meta.loc[valid_ep].copy(), event_col)
+            meta.loc[valid_ep, event_col] = meta.loc[valid_ep, event_col].astype(int)
 
-    resolved_img_size, data_shape = resolve_img_size_against_data(meta, args.ct_col, args.img_size)
+    resolved_img_size, data_shape = resolve_img_size_against_data(
+        meta,
+        args.ct_col,
+        args.img_size,
+        id_col=args.id_col,
+        data_root=data_root,
+    )
     args.img_size = list(resolved_img_size)
     print(f"[IMGCFG] data_shape(D,H,W)={data_shape} | using img_size(D,H,W)={tuple(args.img_size)}")
 
     splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
     folds = [int(args.debug_fold)] if int(args.debug_fold) >= 0 else list(range(int(args.cv_folds)))
 
-    global_bins, global_max_time = H.compute_global_num_time_bins(
-        meta,
-        time_col=args.time_col,
-        time_bin_width_days=float(args.time_bin_width_days),
-        max_time_bins=int(args.max_time_bins),
-        risk_horizon_days=float(args.risk_horizon_days),
-        auc_times_days=args.auc_times_days,
-    )
+    global_bins, global_max_time = compute_multitask_num_time_bins(meta, args)
     print(f"[TIME] global num_time_bins={global_bins} global_max_time={global_max_time:.1f}d")
 
     fold_results: List[Dict[str, Any]] = []
@@ -1779,6 +2055,10 @@ def main():
         "global_max_time_days": float(global_max_time),
         "mean_fold_test_c_index": float(np.nanmean(np.array(test_c, dtype=float))) if test_c else float("nan"),
         "risk_horizon_days": float(args.risk_horizon_days),
+        "primary_endpoint": str(args.endpoint),
+        "survival_heads": list(SURVIVAL_ENDPOINTS),
+        "primary_surv_loss_weight": float(args.primary_surv_loss_weight),
+        "aux_surv_loss_weight": float(args.aux_surv_loss_weight),
         "device": str(device),
         "use_lora": bool(args.use_lora),
         "lora_scope": str(args.lora_scope),

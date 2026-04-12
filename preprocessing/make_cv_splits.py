@@ -2,8 +2,8 @@
 """
 trifusesurv.preprocessing.make_cv_splits
 
-Reproduces the EXACT (train/val/test) splits used by your swinunetr_survival.py:
-- same status/survival_matched filtering
+Reproduces the packaged train/val/test splits used by the survival trainer:
+- same status filtering
 - same QC filtering
 - same stratified K-fold construction
 - same per-fold train/val split seeding
@@ -20,7 +20,7 @@ PYTHONPATH=src python3 -m trifusesurv.preprocessing.make_cv_splits \
   --qc_policy none --qc_drop_air_gt 0 \
   --endpoint OS \
   --cv_folds 4 --val_frac 0.2 --split_seed 1 \
-  --out_dir runs/opscc_splits_os_seed1
+  --out_dir runs/opscc_splits_<endpoint>_seed1
 
 PYTHONPATH=src python3 -m trifusesurv.preprocessing.make_cv_splits \
   --meta_csv OPSCC_preprocessed_128/cohort_preprocessed.csv \
@@ -28,7 +28,7 @@ PYTHONPATH=src python3 -m trifusesurv.preprocessing.make_cv_splits \
   --qc_policy none --qc_drop_air_gt 0 \
   --endpoint OS \
   --cv_folds 1 --val_frac 0.2 --split_seed 1 \
-  --out_dir runs/opscc_splits_os_seed3
+  --out_dir runs/opscc_splits_<endpoint>_seed3
 
 When `--cv_folds 1`, this writes a single `fold_00/` with train/val IDs and an empty
 `test_ids.txt`, which keeps the downstream packaged trainer interface consistent.
@@ -87,15 +87,10 @@ def load_items_for_splits(
     if require_status_ok and "status" in df.columns:
         df = df[df["status"].astype(str).str.lower() == "ok"]
 
-    if require_survival_matched and "survival_matched" in df.columns:
-        sm = df["survival_matched"]
-        if sm.dtype == bool:
-            df = df[sm]
-        else:
-            df = df[sm.astype(str).str.lower().isin(["true", "1", "t", "yes"])]
-
     df[tcol] = pd.to_numeric(df[tcol], errors="coerce")
     df[ecol] = pd.to_numeric(df[ecol], errors="coerce")
+    if require_survival_matched:
+        df = df[df[tcol].notna() & df[ecol].notna()]
     df = df.dropna(subset=[tcol, ecol])
     df["patient_id"] = _validate_patient_ids(df["patient_id"], context=f"{meta_csv} after filtering")
     df[ecol] = df[ecol].astype(int)

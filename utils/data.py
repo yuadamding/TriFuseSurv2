@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import random
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -14,6 +15,42 @@ from torch.utils.data import Dataset
 
 from trifusesurv.utils.clinical import ClinicalEncoder
 from trifusesurv.utils.radiomics import RadiomicsEncoder
+
+
+def resolve_preprocessed_case_path(path: str, *, data_root: Optional[str] = None, patient_id: Optional[str] = None) -> str:
+    raw = str(path or "").strip()
+    if raw == "":
+        return raw
+    if os.path.isfile(raw):
+        return raw
+
+    root = Path(data_root).resolve() if data_root else None
+    raw_path = Path(raw)
+    candidates = []
+
+    def add_candidate(candidate: Path):
+        s = str(candidate)
+        if s not in candidates:
+            candidates.append(s)
+
+    if root is not None:
+        if not raw_path.is_absolute():
+            add_candidate(root / raw_path)
+
+        anchor = root.name
+        parts = raw_path.parts
+        if anchor in parts:
+            idx = parts.index(anchor)
+            suffix = Path(*parts[idx + 1 :])
+            add_candidate(root / suffix)
+
+        if patient_id:
+            add_candidate(root / str(patient_id) / raw_path.name)
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return raw
 
 
 def rand_flip_3d(ct: np.ndarray, m1: np.ndarray, m2: np.ndarray, p: float = 0.5):
@@ -51,6 +88,8 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         id_col: str,
         time_col: str,
         event_col: str,
+        multi_time_cols: Optional[Tuple[str, ...]] = None,
+        multi_event_cols: Optional[Tuple[str, ...]] = None,
         ct_col: str,
         mask_pt_col: str,
         mask_ln_col: str,
@@ -59,12 +98,15 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         use_radiomics: bool = True,
         strict_files: bool = True,
         expected_dhw: Optional[Tuple[int, int, int]] = None,
+        data_root: Optional[str] = None,
         mode: str = "eval",
     ):
         self.meta = meta.reset_index(drop=True)
         self.id_col = id_col
         self.time_col = time_col
         self.event_col = event_col
+        self.multi_time_cols = tuple(multi_time_cols or ())
+        self.multi_event_cols = tuple(multi_event_cols or ())
         self.ct_col = ct_col
         self.mask_pt_col = mask_pt_col
         self.mask_ln_col = mask_ln_col
@@ -73,6 +115,7 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         self.use_radiomics = bool(use_radiomics)
         self.strict_files = bool(strict_files)
         self.expected_dhw = tuple(expected_dhw) if expected_dhw is not None else None
+        self.data_root = str(Path(data_root).resolve()) if data_root else None
         self.mode = mode
 
     def _load_nii(self, path: str) -> np.ndarray:
@@ -90,14 +133,21 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         row = self.meta.iloc[idx]
         pid = str(row[self.id_col])
 
-        ct_path = str(row[self.ct_col])
-        pt_path = str(row[self.mask_pt_col])
-        ln_path = str(row[self.mask_ln_col])
+        ct_path_raw = str(row[self.ct_col])
+        pt_path_raw = str(row[self.mask_pt_col])
+        ln_path_raw = str(row[self.mask_ln_col])
+
+        ct_path = resolve_preprocessed_case_path(ct_path_raw, data_root=self.data_root, patient_id=pid)
+        pt_path = resolve_preprocessed_case_path(pt_path_raw, data_root=self.data_root, patient_id=pid)
+        ln_path = resolve_preprocessed_case_path(ln_path_raw, data_root=self.data_root, patient_id=pid)
 
         if (not os.path.isfile(ct_path)) or (not os.path.isfile(pt_path)) or (not os.path.isfile(ln_path)):
             if self.strict_files:
                 raise RuntimeError(
-                    f"Missing ct/pt/ln mask for pid={pid}: ct={ct_path} pt={pt_path} ln={ln_path}"
+                    f"Missing ct/pt/ln mask for pid={pid}: "
+                    f"ct={ct_path} (raw={ct_path_raw}) "
+                    f"pt={pt_path} (raw={pt_path_raw}) "
+                    f"ln={ln_path} (raw={ln_path_raw})"
                 )
             ct = self._zeros_like_expected()
             pt = self._zeros_like_expected()
@@ -122,6 +172,16 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         t = float(row[self.time_col])
         e = float(row[self.event_col])
 
+        t_multi = []
+        e_multi = []
+        if self.multi_time_cols and self.multi_event_cols:
+            for tcol, ecol in zip(self.multi_time_cols, self.multi_event_cols):
+                t_multi.append(float(row[tcol]) if tcol in row.index else float("nan"))
+                e_multi.append(float(row[ecol]) if ecol in row.index else float("nan"))
+        else:
+            t_multi.append(float(t))
+            e_multi.append(float(e))
+
         if self.clinical_encoder is not None and self.clinical_encoder.output_dim > 0:
             clin_t = torch.tensor(self.clinical_encoder.encode_row(row), dtype=torch.float32)
         else:
@@ -132,19 +192,21 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         else:
             rad_t = torch.zeros(0, dtype=torch.float32)
 
-        return ct, pt, ln, t, e, clin_t, rad_t, pid
+        return ct, pt, ln, t, e, np.asarray(t_multi, dtype=np.float32), np.asarray(e_multi, dtype=np.float32), clin_t, rad_t, pid
 
 class PreprocessedContourAwareDataset(_BasePreprocessedSurvivalDataset):
     """CT-only dataset with PT/LN masks kept as localization labels."""
 
     def __getitem__(self, idx):
-        ct, pt, ln, t, e, clin_t, rad_t, pid = self._load_case(idx)
+        ct, pt, ln, t, e, t_multi, e_multi, clin_t, rad_t, pid = self._load_case(idx)
         return (
             torch.tensor(ct[None, ...], dtype=torch.float32),
             torch.tensor(pt[None, ...], dtype=torch.float32),
             torch.tensor(ln[None, ...], dtype=torch.float32),
             torch.tensor(t, dtype=torch.float32),
             torch.tensor(e, dtype=torch.float32),
+            torch.tensor(t_multi, dtype=torch.float32),
+            torch.tensor(e_multi, dtype=torch.float32),
             clin_t,
             rad_t,
             pid,

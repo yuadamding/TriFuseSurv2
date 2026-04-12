@@ -12,6 +12,8 @@ from trifusesurv.models.swinunetr_shared_roi_token_backbone import (
     ContourAwareROITokenBackbone,
 )
 
+SURVIVAL_ENDPOINTS = ("OS", "DSS", "DFS")
+
 
 # ---------------------------------------------------------------------------
 # Gate penalties
@@ -185,12 +187,21 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         ) if self.use_rad else None
 
         surv_in = self.fused_dim + (self.fused_dim if self.use_clin else 0) + (self.fused_dim if self.use_rad else 0)
-        self.surv_head = nn.Sequential(
-            nn.LayerNorm(surv_in),
-            nn.Linear(surv_in, 256),
+        self.surv_head_input_dim = int(surv_in)
+        self.surv_hidden_dim = 256
+        self.surv_dropout_p = float(surv_dropout_p)
+        self.surv_heads = nn.ModuleDict({
+            endpoint: self._make_survival_head()
+            for endpoint in SURVIVAL_ENDPOINTS
+        })
+
+    def _make_survival_head(self) -> nn.Sequential:
+        return nn.Sequential(
+            nn.LayerNorm(self.surv_head_input_dim),
+            nn.Linear(self.surv_head_input_dim, self.surv_hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(p=float(surv_dropout_p)),
-            nn.Linear(256, self.num_time_bins),
+            nn.Dropout(p=self.surv_dropout_p),
+            nn.Linear(self.surv_hidden_dim, self.num_time_bins),
         )
 
     def enable_mask_patch_embed_training(self, verbose: bool = True):
@@ -323,9 +334,11 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
             chunks.append(self.rad_proj(r))
 
         h = torch.cat(chunks, dim=1) if len(chunks) > 1 else chunks[0]
-        logits = self.surv_head(h)
-        self._nan_check(logits, "logits_pre_nan_to_num")
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+        logits = {}
+        for endpoint, head in self.surv_heads.items():
+            ep_logits = head(h)
+            self._nan_check(ep_logits, f"{endpoint}_logits_pre_nan_to_num")
+            logits[endpoint] = torch.nan_to_num(ep_logits, nan=0.0, posinf=0.0, neginf=0.0)
 
         if return_gate and can_return_aux:
             return logits, gate.float(), pres_eff, aux

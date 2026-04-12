@@ -16,6 +16,11 @@ from trifusesurv.utils.clinical import DEFAULT_CLINICAL_COLS
 
 SURVIVAL_COLUMNS = ["Patient_ID", "OS.TIME", "OS.EVENT", "DSS.TIME", "DSS.EVENT", "DFS.TIME", "DFS.EVENT"]
 CLINICAL_ID_CANDIDATES = ["L_ID", "Patient_ID", "patient_id"]
+SURVIVAL_ENDPOINTS = (
+    ("OS.TIME", "OS.EVENT"),
+    ("DSS.TIME", "DSS.EVENT"),
+    ("DFS.TIME", "DFS.EVENT"),
+)
 
 
 def normalize_patient_id(pid: str) -> str:
@@ -45,7 +50,10 @@ def load_survival_data(path: str) -> pd.DataFrame:
     df = _ensure_unique(df, "patient_id_norm", context=f"survival CSV {path}")
     for col in SURVIVAL_COLUMNS[1:]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=SURVIVAL_COLUMNS[1:]).copy()
+    has_any_endpoint = pd.Series(False, index=df.index)
+    for time_col, event_col in SURVIVAL_ENDPOINTS:
+        has_any_endpoint = has_any_endpoint | (df[time_col].notna() & df[event_col].notna())
+    return df.loc[has_any_endpoint].copy()
 
 
 def load_clinical_data(path: str, target_ids: Optional[Set[str]] = None) -> pd.DataFrame:
@@ -113,7 +121,15 @@ def main():
         on="patient_id_norm",
         how="left",
     )
-    merged_df["survival_matched"] = merged_df["OS.TIME"].notna() & merged_df["OS.EVENT"].notna()
+    merged_df["survival_matched_os"] = merged_df["OS.TIME"].notna() & merged_df["OS.EVENT"].notna()
+    merged_df["survival_matched_dss"] = merged_df["DSS.TIME"].notna() & merged_df["DSS.EVENT"].notna()
+    merged_df["survival_matched_dfs"] = merged_df["DFS.TIME"].notna() & merged_df["DFS.EVENT"].notna()
+    merged_df["survival_matched_any"] = (
+        merged_df["survival_matched_os"]
+        | merged_df["survival_matched_dss"]
+        | merged_df["survival_matched_dfs"]
+    )
+    merged_df["survival_matched"] = merged_df["survival_matched_any"]
 
     if args.clin_csv and os.path.exists(args.clin_csv):
         clin_df = load_clinical_data(args.clin_csv, target_ids=surv_ids)
@@ -144,7 +160,10 @@ def main():
     summary = {
         "n_patients": int(len(merged_df)),
         "n_status_ok": int((merged_df["status"].astype(str) == "ok").sum()) if "status" in merged_df.columns else int(len(merged_df)),
-        "n_with_survival": int(merged_df["survival_matched"].sum()),
+        "n_with_survival_any": int(merged_df["survival_matched_any"].sum()),
+        "n_with_survival_os": int(merged_df["survival_matched_os"].sum()),
+        "n_with_survival_dss": int(merged_df["survival_matched_dss"].sum()),
+        "n_with_survival_dfs": int(merged_df["survival_matched_dfs"].sum()),
         "n_with_clinical": int(merged_df["clinical_matched"].sum()),
         "n_with_radiomics": int(merged_df["radiomics_matched"].sum()),
     }
@@ -155,7 +174,10 @@ def main():
     print(f"[done] wrote stage-2 metafile: {out_csv_path}")
     print(
         f"[summary] patients={summary['n_patients']} "
-        f"survival={summary['n_with_survival']} "
+        f"survival_any={summary['n_with_survival_any']} "
+        f"os={summary['n_with_survival_os']} "
+        f"dss={summary['n_with_survival_dss']} "
+        f"dfs={summary['n_with_survival_dfs']} "
         f"clinical={summary['n_with_clinical']} "
         f"radiomics={summary['n_with_radiomics']}"
     )
