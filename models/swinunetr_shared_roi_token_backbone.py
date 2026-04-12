@@ -153,6 +153,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         self.force_presence_from_raw_masks = bool(force_presence_from_raw_masks)
         self.raw_mask_threshold = float(raw_mask_threshold)
         self.fallback_peri_to_intra = bool(fallback_peri_to_intra)
+        self._warned_sanitized = set()
 
         self.backbone_shared = build_swinunetr_backbone(
             img_size=tuple(img_size),
@@ -253,6 +254,25 @@ class ContourAwareROITokenBackbone(nn.Module):
         if verbose:
             print("[PATCH][INFO] contour-aware CT-only encoder has no mask input channels; ignoring mask patch-embed training request.")
 
+    def _sanitize_tensor(
+        self,
+        tensor: torch.Tensor,
+        *,
+        name: str,
+        posinf: float = 0.0,
+        neginf: float = 0.0,
+        clamp_abs: float = 0.0,
+    ) -> torch.Tensor:
+        if not torch.isfinite(tensor).all().item():
+            if name not in self._warned_sanitized:
+                bad = int((~torch.isfinite(tensor)).sum().item())
+                print(f"[WARN][CONTOUR] sanitized {bad} non-finite value(s) in {name}", flush=True)
+                self._warned_sanitized.add(name)
+            tensor = torch.nan_to_num(tensor, nan=0.0, posinf=posinf, neginf=neginf)
+        if float(clamp_abs) > 0.0:
+            tensor = tensor.clamp(min=-float(clamp_abs), max=float(clamp_abs))
+        return tensor
+
     def _sync_backbone_eval(self):
         self.backbone_shared.eval()
 
@@ -300,14 +320,19 @@ class ContourAwareROITokenBackbone(nn.Module):
             print_shapes=(self.debug_swinvit_layout and (not self._checked_layout)),
             tag="swinViT-SHARED",
         )
+        feats = [self._sanitize_tensor(f, name=f"swin_feat_{i}") for i, f in enumerate(feats)]
         self._checked_layout = True
 
         use_feats = list(feats[-4:]) if (self.use_multiscale and len(feats) >= 4) else [feats[-1]]
         fdeep = use_feats[-1]
         deep_size = tuple(int(x) for x in fdeep.shape[2:])
 
-        loc_pt_logits = self.loc_pt_head(fdeep)
-        loc_ln_logits = self.loc_ln_head(fdeep)
+        loc_pt_logits = self._sanitize_tensor(
+            self.loc_pt_head(fdeep), name="loc_pt_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
+        )
+        loc_ln_logits = self._sanitize_tensor(
+            self.loc_ln_head(fdeep), name="loc_ln_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
+        )
         loc_pt_prob = torch.sigmoid(loc_pt_logits)
         loc_ln_prob = torch.sigmoid(loc_ln_logits)
 
@@ -328,7 +353,9 @@ class ContourAwareROITokenBackbone(nn.Module):
         pt_present_raw = self._raw_present(raw_pt_source, self.raw_mask_threshold)
         ln_present_raw = self._raw_present(raw_ln_source, self.raw_mask_threshold)
 
-        presence_logits = self.presence_head(fdeep)
+        presence_logits = self._sanitize_tensor(
+            self.presence_head(fdeep), name="presence_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
+        )
         pt_presence_logits = presence_logits[:, 0]
         ln_presence_logits = presence_logits[:, 1]
         pt_presence_pred = torch.sigmoid(pt_presence_logits) > 0.5

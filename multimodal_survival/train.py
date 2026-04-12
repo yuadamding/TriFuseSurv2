@@ -11,6 +11,7 @@ Recommended workflow:
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 import math
 import json
@@ -64,6 +65,21 @@ seed_worker = H.seed_worker
 ENDPOINT_TO_INDEX = {name: idx for idx, name in enumerate(SURVIVAL_ENDPOINTS)}
 MULTITASK_TIME_COLS = tuple(ENDPOINT_MAP[name][0] for name in SURVIVAL_ENDPOINTS)
 MULTITASK_EVENT_COLS = tuple(ENDPOINT_MAP[name][1] for name in SURVIVAL_ENDPOINTS)
+
+
+def _configure_stdio_line_buffering():
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(line_buffering=True, write_through=True)
+            except Exception:
+                pass
+
+
+def _log(msg: str):
+    print(msg, flush=True)
 
 
 def parse_device(device_str: str) -> torch.device:
@@ -497,8 +513,10 @@ def materialize_lazy_modules(model: nn.Module, loader: DataLoader, device: torch
     has_lazy = any(isinstance(p, UninitializedParameter) for p in model.parameters())
     if not has_lazy:
         return
+    _log("[init] materializing lazy modules from first batch...")
     batch = next(iter(loader), None)
     if batch is None:
+        _log("[init][warn] loader yielded no batch; skipping lazy-module materialization.")
         return
     payload = _unpack_surv_batch(batch)
     x = payload["x"].to(device, non_blocking=True)
@@ -510,6 +528,7 @@ def materialize_lazy_modules(model: nn.Module, loader: DataLoader, device: torch
     with torch.no_grad():
         with autocast_ctx():
             _ = model(x, clin, rad, mask_pt=mask_pt, mask_ln=mask_ln, teacher_force_alpha=0.0, return_gate=False)
+    _log("[init] lazy modules materialized.")
 
 
 # =============================================================================
@@ -791,6 +810,8 @@ def train_one_epoch(
     scaler,
     device: torch.device,
     *,
+    fold: int,
+    epoch: int,
     primary_endpoint: str,
     num_time_bins: int,
     time_bin_width_days: float,
@@ -806,6 +827,7 @@ def train_one_epoch(
     loc_presence_lambda: float,
     loc_bce_weight: float,
     loc_dice_weight: float,
+    log_every_batches: int,
     ema: Optional[H.EMAWeights],
     autocast_ctx,
 ) -> Dict[str, float]:
@@ -830,8 +852,18 @@ def train_one_epoch(
         stats_sum[f"surv_{endpoint.lower()}_nll"] = 0.0
         stats_sum[f"surv_{endpoint.lower()}_count"] = 0.0
     n_batches = 0
+    try:
+        planned_batches = int(len(loader))
+    except Exception:
+        planned_batches = -1
 
-    for batch in loader:
+    _log(
+        f"[fold {fold:02d}] epoch {epoch:03d} starting"
+        + (f" | batches={planned_batches}" if planned_batches > 0 else "")
+        + f" | teacher_force={teacher_force_alpha:.2f}"
+    )
+
+    for batch_idx, batch in enumerate(loader, start=1):
         payload = _unpack_surv_batch(batch)
         x = payload["x"].to(device, non_blocking=True)
         t_all = payload["t_all"].to(device, non_blocking=True)
@@ -1016,6 +1048,21 @@ def train_one_epoch(
             if endpoint in endpoint_losses:
                 stats_sum[f"surv_{endpoint.lower()}_nll"] += float(endpoint_losses[endpoint].detach().cpu().item())
             stats_sum[f"surv_{endpoint.lower()}_count"] += float(endpoint_counts.get(endpoint, 0))
+
+        should_log_batch = (
+            batch_idx == 1
+            or (int(log_every_batches) > 0 and batch_idx % int(log_every_batches) == 0)
+            or (planned_batches > 0 and batch_idx == planned_batches)
+        )
+        if should_log_batch:
+            batch_total = planned_batches if planned_batches > 0 else "?"
+            _log(
+                f"[fold {fold:02d}] epoch {epoch:03d} batch {batch_idx}/{batch_total} "
+                f"loss={float(loss.detach().cpu().item()):.4f} "
+                f"surv={float(loss_surv.detach().cpu().item()):.4f} "
+                f"loc_pt={float(loss_loc_pt.detach().cpu().item()):.4f} "
+                f"loc_ln={float(loss_loc_ln.detach().cpu().item()):.4f}"
+            )
 
     if n_batches == 0:
         return {k: float("nan") for k in stats_sum}
@@ -1615,6 +1662,8 @@ def run_one_fold(
         teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args)
         train_stats = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
+            fold=int(fold),
+            epoch=int(epoch),
             primary_endpoint=str(args.endpoint),
             num_time_bins=int(fold_num_time_bins),
             time_bin_width_days=float(args.time_bin_width_days),
@@ -1630,6 +1679,7 @@ def run_one_fold(
             loc_presence_lambda=float(args.loc_presence_lambda),
             loc_bce_weight=float(args.loc_bce_weight),
             loc_dice_weight=float(args.loc_dice_weight),
+            log_every_batches=int(args.log_every_batches),
             ema=ema,
             autocast_ctx=autocast_ctx,
         )
@@ -1893,6 +1943,7 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--log_every_batches", type=int, default=50)
     p.add_argument("--amp", action="store_true")
 
     p.add_argument("--resume", dest="resume", action="store_true")
@@ -2124,6 +2175,7 @@ def compute_multitask_num_time_bins(meta: pd.DataFrame, args) -> Tuple[int, floa
     return int(max_bins), float(max_time)
 
 def main():
+    _configure_stdio_line_buffering()
     args = parse_args()
     set_seed(args.seed)
 
