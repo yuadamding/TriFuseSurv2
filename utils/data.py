@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import random
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -17,8 +18,8 @@ from trifusesurv.utils.clinical import ClinicalEncoder
 from trifusesurv.utils.radiomics import RadiomicsEncoder
 
 
-def resolve_preprocessed_case_path(path: str, *, data_root: Optional[str] = None, patient_id: Optional[str] = None) -> str:
-    raw = str(path or "").strip()
+@lru_cache(maxsize=65536)
+def _resolve_preprocessed_case_path_cached(raw: str, data_root: str, patient_id: str) -> str:
     if raw == "":
         return raw
     if os.path.isfile(raw):
@@ -47,10 +48,30 @@ def resolve_preprocessed_case_path(path: str, *, data_root: Optional[str] = None
         if patient_id:
             add_candidate(root / str(patient_id) / raw_path.name)
 
+        # Last-resort recovery for slightly different layouts under the current
+        # preprocessed root, for example after moving the cohort between systems.
+        basename = raw_path.name
+        if patient_id:
+            for path_obj in root.glob(f"**/{patient_id}/{basename}"):
+                add_candidate(path_obj)
+        for path_obj in root.glob(f"**/{basename}"):
+            if patient_id and str(patient_id) not in path_obj.parts:
+                continue
+            add_candidate(path_obj)
+
     for candidate in candidates:
         if os.path.isfile(candidate):
             return candidate
     return raw
+
+
+def resolve_preprocessed_case_path(path: str, *, data_root: Optional[str] = None, patient_id: Optional[str] = None) -> str:
+    raw = str(path or "").strip()
+    return _resolve_preprocessed_case_path_cached(
+        raw,
+        str(Path(data_root).resolve()) if data_root else "",
+        str(patient_id or ""),
+    )
 
 
 def rand_flip_3d(ct: np.ndarray, m1: np.ndarray, m2: np.ndarray, p: float = 0.5):

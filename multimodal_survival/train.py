@@ -364,6 +364,12 @@ def _valid_survival_mask(times: torch.Tensor, events: torch.Tensor) -> torch.Ten
     return torch.isfinite(t) & torch.isfinite(e) & (t > 0.0) & ((e == 0.0) | (e == 1.0))
 
 
+def _valid_survival_mask_frame(df: pd.DataFrame, time_col: str, event_col: str) -> pd.Series:
+    times = pd.to_numeric(df[time_col], errors="coerce")
+    events = pd.to_numeric(df[event_col], errors="coerce")
+    return times.notna() & events.notna() & (times > 0.0) & events.isin([0, 1])
+
+
 def _endpoint_survival_losses(
     logits_by_endpoint,
     t_all: torch.Tensor,
@@ -399,6 +405,34 @@ def _endpoint_survival_losses(
     return losses, counts
 
 
+def _weighted_multitask_mean(
+    values_by_endpoint: Dict[str, torch.Tensor],
+    counts_by_endpoint: Dict[str, int],
+    *,
+    primary_endpoint: str,
+    primary_weight: float,
+    aux_weight: float,
+    ref_tensor: torch.Tensor,
+) -> torch.Tensor:
+    total = None
+    total_weight = 0.0
+    primary_key = str(primary_endpoint).strip().upper()
+    for endpoint, value in values_by_endpoint.items():
+        count = float(counts_by_endpoint.get(endpoint, 0))
+        if count <= 0.0:
+            continue
+        endpoint_weight = float(primary_weight if endpoint == primary_key else aux_weight)
+        if endpoint_weight <= 0.0:
+            continue
+        combined_weight = endpoint_weight * count
+        total = (value * combined_weight) if total is None else (total + (value * combined_weight))
+        total_weight += combined_weight
+
+    if total is None or total_weight <= 0.0:
+        return ref_tensor.new_tensor(float("nan"))
+    return total / float(total_weight)
+
+
 def _multitask_survival_loss(
     logits_by_endpoint,
     t_all: torch.Tensor,
@@ -410,8 +444,6 @@ def _multitask_survival_loss(
     time_bin_width_days: float,
     num_time_bins: int,
 ) -> torch.Tensor:
-    total = None
-    total_weight = 0.0
     primary_key = str(primary_endpoint).strip().upper()
     endpoint_losses, _ = _endpoint_survival_losses(
         logits_by_endpoint,
@@ -420,18 +452,22 @@ def _multitask_survival_loss(
         time_bin_width_days=float(time_bin_width_days),
         num_time_bins=int(num_time_bins),
     )
-
-    for endpoint, loss_ep in endpoint_losses.items():
-        weight = float(primary_surv_loss_weight if endpoint == primary_key else aux_surv_loss_weight)
-        if weight <= 0.0:
-            continue
-        total = (loss_ep * weight) if total is None else (total + (loss_ep * weight))
-        total_weight += weight
-
-    if total is None or total_weight <= 0.0:
-        ref = _extract_endpoint_logits(logits_by_endpoint, primary_key)
-        return ref.new_tensor(float("nan"))
-    return total / float(total_weight)
+    _, endpoint_counts = _endpoint_survival_losses(
+        logits_by_endpoint,
+        t_all=t_all,
+        e_all=e_all,
+        time_bin_width_days=float(time_bin_width_days),
+        num_time_bins=int(num_time_bins),
+    )
+    ref = _extract_endpoint_logits(logits_by_endpoint, primary_key)
+    return _weighted_multitask_mean(
+        endpoint_losses,
+        endpoint_counts,
+        primary_endpoint=primary_key,
+        primary_weight=float(primary_surv_loss_weight),
+        aux_weight=float(aux_surv_loss_weight),
+        ref_tensor=ref,
+    )
 
 
 def _resize_mask_target(mask: torch.Tensor, size: Tuple[int, int, int]) -> torch.Tensor:
@@ -708,9 +744,40 @@ def predict_risk_scores(
     return out
 
 
-def save_risk_dict_csv(risk_dict: Dict[str, float], out_path: Path, id_col: str):
-    rows = [{id_col: pid, "risk_score": float(score)} for pid, score in risk_dict.items()]
-    pd.DataFrame(rows, columns=[id_col, "risk_score"]).to_csv(out_path, index=False)
+def save_risk_dict_csv(
+    risk_dict: Dict[str, float],
+    out_path: Path,
+    id_col: str,
+    endpoint: str = "",
+    risk_horizon_days: float = float("nan"),
+):
+    save_endpoint_risk_dict_csv(
+        risk_dict,
+        out_path,
+        id_col=id_col,
+        endpoint=(str(endpoint).upper() if endpoint else "UNKNOWN"),
+        risk_horizon_days=float(risk_horizon_days),
+    )
+
+
+def save_endpoint_risk_dict_csv(
+    risk_dict: Dict[str, float],
+    out_path: Path,
+    *,
+    id_col: str,
+    endpoint: str,
+    risk_horizon_days: float,
+):
+    rows = [
+        {
+            id_col: pid,
+            "risk_score": float(score),
+            "risk_endpoint": str(endpoint).upper(),
+            "risk_horizon_days": float(risk_horizon_days),
+        }
+        for pid, score in risk_dict.items()
+    ]
+    pd.DataFrame(rows, columns=[id_col, "risk_score", "risk_endpoint", "risk_horizon_days"]).to_csv(out_path, index=False)
     print(f"[RISK] wrote {len(rows)} rows -> {out_path}")
 
 
@@ -809,28 +876,27 @@ def train_one_epoch(
                 num_time_bins=int(num_time_bins),
             )
 
-            loss_surv = _multitask_survival_loss(
-                logits,
-                t_all=t_all,
-                e_all=e_all,
+            loss_surv = _weighted_multitask_mean(
+                endpoint_losses,
+                endpoint_counts,
                 primary_endpoint=primary_endpoint,
-                primary_surv_loss_weight=float(primary_surv_loss_weight),
-                aux_surv_loss_weight=float(aux_surv_loss_weight),
-                time_bin_width_days=float(time_bin_width_days),
-                num_time_bins=int(num_time_bins),
+                primary_weight=float(primary_surv_loss_weight),
+                aux_weight=float(aux_surv_loss_weight),
+                ref_tensor=primary_logits,
             )
             loss = loss_surv
             primary_key = str(primary_endpoint).strip().upper()
             primary_surv_unweighted = endpoint_losses.get(primary_key, primary_logits.new_tensor(0.0))
-            aux_surv_unweighted = primary_logits.new_tensor(0.0)
-            aux_terms = 0
-            for endpoint, loss_ep in endpoint_losses.items():
-                if endpoint == primary_key:
-                    continue
-                aux_surv_unweighted = aux_surv_unweighted + loss_ep
-                aux_terms += 1
-            if aux_terms > 0:
-                aux_surv_unweighted = aux_surv_unweighted / float(aux_terms)
+            aux_endpoint_losses = {endpoint: loss_ep for endpoint, loss_ep in endpoint_losses.items() if endpoint != primary_key}
+            aux_endpoint_counts = {endpoint: endpoint_counts.get(endpoint, 0) for endpoint in aux_endpoint_losses}
+            aux_surv_unweighted = _weighted_multitask_mean(
+                aux_endpoint_losses,
+                aux_endpoint_counts,
+                primary_endpoint=primary_key,
+                primary_weight=1.0,
+                aux_weight=1.0,
+                ref_tensor=primary_logits,
+            )
             loss_hazard_smooth = primary_logits.new_tensor(0.0)
             loss_logit_l2 = primary_logits.new_tensor(0.0)
             loss_gate_entropy = primary_logits.new_tensor(0.0)
@@ -839,10 +905,32 @@ def train_one_epoch(
             loss_loc_ln = primary_logits.new_tensor(0.0)
             loss_loc_presence = primary_logits.new_tensor(0.0)
             if hazard_smooth_lambda > 0:
-                loss_hazard_smooth = float(hazard_smooth_lambda) * H.hazard_smoothness_penalty(primary_logits)
+                hazard_terms = {
+                    endpoint: H.hazard_smoothness_penalty(_extract_endpoint_logits(logits, endpoint).float())
+                    for endpoint in endpoint_losses
+                }
+                loss_hazard_smooth = float(hazard_smooth_lambda) * _weighted_multitask_mean(
+                    hazard_terms,
+                    endpoint_counts,
+                    primary_endpoint=primary_key,
+                    primary_weight=float(primary_surv_loss_weight),
+                    aux_weight=float(aux_surv_loss_weight),
+                    ref_tensor=primary_logits,
+                )
                 loss = loss + loss_hazard_smooth
             if logit_l2_lambda > 0:
-                loss_logit_l2 = float(logit_l2_lambda) * (primary_logits ** 2).mean()
+                l2_terms = {
+                    endpoint: (_extract_endpoint_logits(logits, endpoint).float() ** 2).mean()
+                    for endpoint in endpoint_losses
+                }
+                loss_logit_l2 = float(logit_l2_lambda) * _weighted_multitask_mean(
+                    l2_terms,
+                    endpoint_counts,
+                    primary_endpoint=primary_key,
+                    primary_weight=float(primary_surv_loss_weight),
+                    aux_weight=float(aux_surv_loss_weight),
+                    ref_tensor=primary_logits,
+                )
                 loss = loss + loss_logit_l2
             if gate_entropy_lambda > 0:
                 loss_gate_entropy = float(gate_entropy_lambda) * gate_entropy_penalty_presence(gate, pres)
@@ -879,7 +967,24 @@ def train_one_epoch(
                     loss = loss + loss_loc_presence
 
         if not torch.isfinite(loss).item():
-            continue
+            pid_preview = [str(x) for x in list(payload["pid"])[:8]]
+            raise RuntimeError(
+                "[TRAIN][NONFINITE] non-finite loss encountered "
+                f"primary={primary_key} teacher_force={teacher_force_alpha:.3f} "
+                f"pids={pid_preview} "
+                f"loss_total={float(loss.detach().cpu().item())} "
+                f"loss_surv={float(loss_surv.detach().cpu().item())} "
+                f"loss_surv_primary={float(primary_surv_unweighted.detach().cpu().item())} "
+                f"loss_surv_aux={float(aux_surv_unweighted.detach().cpu().item()) if torch.isfinite(aux_surv_unweighted).item() else float('nan')} "
+                f"loss_loc_pt={float(loss_loc_pt.detach().cpu().item())} "
+                f"loss_loc_ln={float(loss_loc_ln.detach().cpu().item())} "
+                f"loss_loc_presence={float(loss_loc_presence.detach().cpu().item())} "
+                f"loss_gate_entropy={float(loss_gate_entropy.detach().cpu().item())} "
+                f"loss_gate_loadbal={float(loss_gate_loadbal.detach().cpu().item())} "
+                f"loss_hazard_smooth={float(loss_hazard_smooth.detach().cpu().item())} "
+                f"loss_logit_l2={float(loss_logit_l2.detach().cpu().item())} "
+                f"endpoint_counts={endpoint_counts}"
+            )
 
         if device.type == "cuda" and scaler is not None:
             scaler.scale(loss).backward()
@@ -899,7 +1004,7 @@ def train_one_epoch(
         stats_sum["loss_total"] += float(loss.detach().cpu().item())
         stats_sum["loss_surv_total"] += float(loss_surv.detach().cpu().item())
         stats_sum["loss_surv_primary"] += float(primary_surv_unweighted.detach().cpu().item())
-        stats_sum["loss_surv_aux"] += float(aux_surv_unweighted.detach().cpu().item()) if aux_terms > 0 else 0.0
+        stats_sum["loss_surv_aux"] += float(aux_surv_unweighted.detach().cpu().item()) if aux_endpoint_losses else 0.0
         stats_sum["loss_loc_pt"] += float(loss_loc_pt.detach().cpu().item())
         stats_sum["loss_loc_ln"] += float(loss_loc_ln.detach().cpu().item())
         stats_sum["loss_loc_presence"] += float(loss_loc_presence.detach().cpu().item())
@@ -981,6 +1086,13 @@ def load_model_state_only(path: Path, model: nn.Module) -> bool:
         if k in target_sd and tuple(target_sd[k].shape) == tuple(v.shape):
             filtered[k] = v
 
+    target_head_keys = {k for k in target_sd if k.startswith("surv_heads.")}
+    filtered_head_keys = {k for k in filtered if k.startswith("surv_heads.")}
+    if target_head_keys and filtered_head_keys != target_head_keys:
+        missing = sorted(target_head_keys - filtered_head_keys)
+        print(f"[CKPT][WARN] refusing partial survival-head restore from {path}; missing head keys like {missing[:5]}")
+        return False
+
     if not filtered:
         return False
 
@@ -1021,6 +1133,15 @@ def load_checkpoint(
             filtered[k] = v
         else:
             mismatched += 1
+
+    target_head_keys = {k for k in target_sd if k.startswith("surv_heads.")}
+    filtered_head_keys = {k for k in filtered if k.startswith("surv_heads.")}
+    if target_head_keys and filtered_head_keys != target_head_keys:
+        missing = sorted(target_head_keys - filtered_head_keys)
+        raise RuntimeError(
+            f"[CKPT] checkpoint {path} is missing current multitask survival head keys; "
+            f"examples={missing[:5]}"
+        )
 
     if isinstance(model, nn.DataParallel):
         model.module.load_state_dict(filtered, strict=False)
@@ -1244,7 +1365,6 @@ def run_one_fold(
     meta: pd.DataFrame,
     split: Dict[str, List[str]],
     *,
-    global_num_time_bins: int,
     device: torch.device,
     scaler,
     autocast_ctx,
@@ -1288,6 +1408,17 @@ def run_one_fold(
 
     expected_dhw = tuple(int(x) for x in args.img_size)
     mode = _image_encoder_mode(args)
+    primary_valid_train = _valid_survival_mask_frame(tr_df, args.time_col, args.event_col)
+    tr_eval_df = tr_df.loc[primary_valid_train].copy().reset_index(drop=True)
+    if tr_eval_df.empty:
+        raise RuntimeError(f"[fold {fold:02d}] no primary-endpoint-labeled training rows remain for evaluation")
+    if not bool(_valid_survival_mask_frame(va_df, args.time_col, args.event_col).all()):
+        raise RuntimeError(f"[fold {fold:02d}] validation split contains rows without valid primary endpoint labels")
+    if not bool(_valid_survival_mask_frame(te_df, args.time_col, args.event_col).all()):
+        raise RuntimeError(f"[fold {fold:02d}] test split contains rows without valid primary endpoint labels")
+
+    fold_num_time_bins, fold_max_time = compute_multitask_num_time_bins(tr_df, args)
+    print(f"[TIME][fold {fold:02d}] train num_time_bins={fold_num_time_bins} train_max_time={fold_max_time:.1f}d")
 
     tr_ds = PreprocessedContourAwareDataset(
         tr_df,
@@ -1302,7 +1433,7 @@ def run_one_fold(
         data_root=data_root,
     )
     tr_eval_ds = PreprocessedContourAwareDataset(
-        tr_df,
+        tr_eval_df,
         id_col=args.id_col, time_col=args.time_col, event_col=args.event_col,
         multi_time_cols=MULTITASK_TIME_COLS, multi_event_cols=MULTITASK_EVENT_COLS,
         ct_col=args.ct_col, mask_pt_col=args.mask_pt_col, mask_ln_col=args.mask_ln_col,
@@ -1394,7 +1525,7 @@ def run_one_fold(
     ))
 
     base_model = SwinUNETRTokenMoEDiscrete(
-        num_time_bins=int(global_num_time_bins),
+        num_time_bins=int(fold_num_time_bins),
         time_bin_width_days=float(args.time_bin_width_days),
         fused_dim=int(args.fused_dim),
         backbone_cfg=backbone_cfg,
@@ -1472,7 +1603,7 @@ def run_one_fold(
     start_epoch = 1
     fully_restored = False
     if args.resume:
-        start_epoch, fully_restored = load_checkpoint(ckpt_last, int(global_num_time_bins), model, optimizer, scaler, scheduler, ema, swa)
+        start_epoch, fully_restored = load_checkpoint(ckpt_last, int(fold_num_time_bins), model, optimizer, scaler, scheduler, ema, swa)
         if start_epoch > 1:
             print(f"[fold {fold:02d}] resumed from epoch {start_epoch} (fully_restored={fully_restored})")
 
@@ -1485,7 +1616,7 @@ def run_one_fold(
         train_stats = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
             primary_endpoint=str(args.endpoint),
-            num_time_bins=int(global_num_time_bins),
+            num_time_bins=int(fold_num_time_bins),
             time_bin_width_days=float(args.time_bin_width_days),
             primary_surv_loss_weight=float(args.primary_surv_loss_weight),
             aux_surv_loss_weight=float(args.aux_surv_loss_weight),
@@ -1583,7 +1714,7 @@ def run_one_fold(
         save_checkpoint(
             ckpt_last,
             epoch=int(epoch),
-            num_time_bins=int(global_num_time_bins),
+            num_time_bins=int(fold_num_time_bins),
             model=model,
             args=args,
             optimizer=optimizer,
@@ -1597,7 +1728,7 @@ def run_one_fold(
             save_checkpoint(
                 ckpt_best,
                 epoch=int(epoch),
-                num_time_bins=int(global_num_time_bins),
+                num_time_bins=int(fold_num_time_bins),
                 model=model,
                 args=args,
                 optimizer=optimizer,
@@ -1668,17 +1799,47 @@ def run_one_fold(
 
     export_suffix = "ema" if (risks_ema is not None) else "last"
     export_risks = risks_ema if (risks_ema is not None) else risks_last
-    save_risk_dict_csv(export_risks, fold_dir / f"test_risks_{export_suffix}.csv", id_col=args.id_col)
+    save_endpoint_risk_dict_csv(
+        export_risks,
+        fold_dir / f"test_risks_{export_suffix}.csv",
+        id_col=args.id_col,
+        endpoint=str(args.endpoint),
+        risk_horizon_days=float(args.risk_horizon_days),
+    )
 
     if risks_best is not None:
-        save_risk_dict_csv(risks_best, fold_dir / "test_risks_best.csv", id_col=args.id_col)
+        save_endpoint_risk_dict_csv(
+            risks_best,
+            fold_dir / "test_risks_best.csv",
+            id_col=args.id_col,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+        )
 
     if args.export_extra_risks:
-        save_risk_dict_csv(risks_last, fold_dir / "test_risks_last.csv", id_col=args.id_col)
+        save_endpoint_risk_dict_csv(
+            risks_last,
+            fold_dir / "test_risks_last.csv",
+            id_col=args.id_col,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+        )
         if risks_ema is not None:
-            save_risk_dict_csv(risks_ema, fold_dir / "test_risks_ema.csv", id_col=args.id_col)
+            save_endpoint_risk_dict_csv(
+                risks_ema,
+                fold_dir / "test_risks_ema.csv",
+                id_col=args.id_col,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+            )
         if risks_swa is not None:
-            save_risk_dict_csv(risks_swa, fold_dir / "test_risks_swa.csv", id_col=args.id_col)
+            save_endpoint_risk_dict_csv(
+                risks_swa,
+                fold_dir / "test_risks_swa.csv",
+                id_col=args.id_col,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+            )
 
     met_export = ema_test if (export_suffix == "ema") else last_test
     return {
@@ -1691,6 +1852,8 @@ def run_one_fold(
         "test_metrics_swa": swa_test,
         "test_metrics_best": best_test,
         "n_test": int(len(te_df)),
+        "num_time_bins": int(fold_num_time_bins),
+        "train_max_time_days": float(fold_max_time),
     }
 
 
@@ -1969,6 +2132,8 @@ def main():
 
     scaler, autocast_ctx = make_amp(device, enabled=bool(args.amp))
     print(f"[info] device={device} amp={bool(args.amp and device.type=='cuda')} use_lora={bool(args.use_lora)}")
+    if not bool(args.strict_files):
+        print("[warn] strict_files is disabled; missing CT/PT/LN files will be replaced with zero arrays.")
     print(
         "[mtl] survival_heads="
         f"{'/'.join(SURVIVAL_ENDPOINTS)} "
@@ -1992,8 +2157,6 @@ def main():
     for event_col in MULTITASK_EVENT_COLS:
         if event_col in meta.columns:
             meta[event_col] = pd.to_numeric(meta[event_col], errors="coerce")
-    meta = meta.dropna(subset=[args.time_col, args.event_col]).copy()
-    meta = meta[meta[args.time_col] > 0].copy()
 
     for event_col in MULTITASK_EVENT_COLS:
         if event_col not in meta.columns:
@@ -2002,6 +2165,16 @@ def main():
         if bool(valid_ep.any()):
             _validate_event_column(meta.loc[valid_ep].copy(), event_col)
             meta.loc[valid_ep, event_col] = meta.loc[valid_ep, event_col].astype(int)
+
+    valid_any = pd.Series(False, index=meta.index)
+    for time_col, event_col in zip(MULTITASK_TIME_COLS, MULTITASK_EVENT_COLS):
+        if time_col not in meta.columns or event_col not in meta.columns:
+            continue
+        valid_any = valid_any | _valid_survival_mask_frame(meta, time_col, event_col)
+    meta = meta.loc[valid_any].copy()
+    primary_valid = _valid_survival_mask_frame(meta, args.time_col, args.event_col)
+    if not bool(primary_valid.any()):
+        raise RuntimeError(f"[DATA] no rows with valid primary endpoint labels for endpoint={args.endpoint}")
 
     resolved_img_size, data_shape = resolve_img_size_against_data(
         meta,
@@ -2016,9 +2189,6 @@ def main():
     splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
     folds = [int(args.debug_fold)] if int(args.debug_fold) >= 0 else list(range(int(args.cv_folds)))
 
-    global_bins, global_max_time = compute_multitask_num_time_bins(meta, args)
-    print(f"[TIME] global num_time_bins={global_bins} global_max_time={global_max_time:.1f}d")
-
     fold_results: List[Dict[str, Any]] = []
     all_test_risks: Dict[str, float] = {}
 
@@ -2028,7 +2198,6 @@ def main():
             args=args,
             meta=meta,
             split=splits[int(f)],
-            global_num_time_bins=int(global_bins),
             device=device,
             scaler=scaler,
             autocast_ctx=autocast_ctx,
@@ -2041,7 +2210,13 @@ def main():
         all_test_risks.update(res["export_risks"])
 
     if all_test_risks:
-        save_risk_dict_csv(all_test_risks, out_root / "cv_test_risks_export.csv", id_col=args.id_col)
+        save_endpoint_risk_dict_csv(
+            all_test_risks,
+            out_root / "cv_test_risks_export.csv",
+            id_col=args.id_col,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+        )
 
     test_c = []
     for r in fold_results:
@@ -2051,8 +2226,8 @@ def main():
     summary = {
         "exp_name": args.exp_name,
         "folds_run": folds,
-        "global_num_time_bins": int(global_bins),
-        "global_max_time_days": float(global_max_time),
+        "fold_num_time_bins": [int(r.get("num_time_bins", 0)) for r in fold_results],
+        "fold_train_max_time_days": [float(r.get("train_max_time_days", float("nan"))) for r in fold_results],
         "mean_fold_test_c_index": float(np.nanmean(np.array(test_c, dtype=float))) if test_c else float("nan"),
         "risk_horizon_days": float(args.risk_horizon_days),
         "primary_endpoint": str(args.endpoint),

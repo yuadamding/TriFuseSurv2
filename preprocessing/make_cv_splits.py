@@ -65,6 +65,12 @@ def _validate_binary_events(events, *, context: str) -> np.ndarray:
     return arr
 
 
+def _endpoint_valid_mask(df: pd.DataFrame, time_col: str, event_col: str) -> pd.Series:
+    times = pd.to_numeric(df[time_col], errors="coerce")
+    events = pd.to_numeric(df[event_col], errors="coerce")
+    return times.notna() & events.notna() & (times > 0) & events.isin([0, 1])
+
+
 def load_items_for_splits(
     meta_csv: str,
     endpoint: str,
@@ -108,6 +114,58 @@ def load_items_for_splits(
     return items
 
 
+def load_primary_and_aux_train_ids(
+    meta_csv: str,
+    endpoint: str,
+    require_status_ok: bool = True,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    df = pd.read_csv(meta_csv)
+
+    if endpoint not in ENDPOINT_MAP:
+        raise ValueError(f"--endpoint must be one of {list(ENDPOINT_MAP.keys())}, got {endpoint}")
+
+    tcol, ecol = ENDPOINT_MAP[endpoint]
+    needed = ["patient_id", *[c for pair in ENDPOINT_MAP.values() for c in pair]]
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        raise ValueError(f"Metafile missing required columns: {missing}")
+
+    df = df.copy()
+    if require_status_ok and "status" in df.columns:
+        df = df[df["status"].astype(str).str.lower() == "ok"]
+
+    df["patient_id"] = _validate_patient_ids(df["patient_id"], context=f"{meta_csv} after filtering")
+
+    valid_any = pd.Series(False, index=df.index)
+    for time_col, event_col in ENDPOINT_MAP.values():
+        valid_ep = _endpoint_valid_mask(df, time_col, event_col)
+        if bool(valid_ep.any()):
+            _validate_binary_events(
+                pd.to_numeric(df.loc[valid_ep, event_col], errors="raise").astype(int).to_numpy(),
+                context=f"{meta_csv}:{event_col}",
+            )
+        valid_any = valid_any | valid_ep
+
+    primary_valid = _endpoint_valid_mask(df, tcol, ecol)
+    primary_items = []
+    for _, r in df.loc[primary_valid].iterrows():
+        primary_items.append(
+            {
+                "patient_id": str(r["patient_id"]),
+                "time": float(r[tcol]),
+                "event": int(pd.to_numeric(r[ecol], errors="raise")),
+            }
+        )
+
+    aux_only_ids = (
+        df.loc[valid_any & (~primary_valid), "patient_id"]
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+    return primary_items, aux_only_ids
+
+
 def qc_filter_items(
     items: List[Dict[str, Any]],
     qc_report: str,
@@ -119,6 +177,46 @@ def qc_filter_items(
 ) -> List[Dict[str, Any]]:
     if qc_policy == "none" or not qc_report:
         return items
+
+    keep_ids = load_qc_keep_ids(
+        qc_report=qc_report,
+        qc_policy=qc_policy,
+        qc_id_col=qc_id_col,
+        qc_severity_col=qc_severity_col,
+        qc_drop_if_contains=qc_drop_if_contains,
+        qc_drop_air_gt=qc_drop_air_gt,
+    )
+
+    item_ids = set(str(it["patient_id"]) for it in items)
+    qc_ids_all = load_qc_all_ids(qc_report, qc_id_col)
+    missing_in_qc = item_ids - qc_ids_all
+    if missing_in_qc:
+        print(f"[qc] warning: {len(missing_in_qc)} item(s) not found in QC report; they will be dropped.")
+
+    before = len(items)
+    items2 = [it for it in items if str(it["patient_id"]) in keep_ids]
+    print(f"[qc] applied {qc_policy}: kept {len(items2)}/{before} (dropped {before-len(items2)})")
+    return items2
+
+
+def load_qc_all_ids(qc_report: str, qc_id_col: str) -> set[str]:
+    qc = pd.read_csv(qc_report)
+    if qc_id_col not in qc.columns:
+        raise ValueError(f"QC report missing '{qc_id_col}'")
+    return set(qc[qc_id_col].astype(str).tolist())
+
+
+def load_qc_keep_ids(
+    *,
+    qc_report: str,
+    qc_policy: str,
+    qc_id_col: str,
+    qc_severity_col: str,
+    qc_drop_if_contains: List[str],
+    qc_drop_air_gt: float,
+) -> set[str]:
+    if qc_policy == "none" or not qc_report:
+        return set()
 
     qc = pd.read_csv(qc_report)
     if qc_id_col not in qc.columns:
@@ -152,18 +250,7 @@ def qc_filter_items(
         air = pd.to_numeric(qc["union_in_air_frac"], errors="coerce")
         keep = keep & ~(air > float(qc_drop_air_gt))
 
-    keep_ids = set(qc.loc[keep, qc_id_col].astype(str).tolist())
-
-    item_ids = set(str(it["patient_id"]) for it in items)
-    qc_ids_all = set(qc[qc_id_col].astype(str).tolist())
-    missing_in_qc = item_ids - qc_ids_all
-    if missing_in_qc:
-        print(f"[qc] warning: {len(missing_in_qc)} item(s) not found in QC report; they will be dropped.")
-
-    before = len(items)
-    items2 = [it for it in items if str(it["patient_id"]) in keep_ids]
-    print(f"[qc] applied {qc_policy}: kept {len(items2)}/{before} (dropped {before-len(items2)})")
-    return items2
+    return set(qc.loc[keep, qc_id_col].astype(str).tolist())
 
 
 def stratified_kfold_indices(events: np.ndarray, k: int, seed: int) -> List[List[int]]:
@@ -256,6 +343,9 @@ def main():
     # Match your training script flags
     ap.add_argument("--keep_bad_status", action="store_true")
     ap.add_argument("--keep_unmatched_survival", action="store_true")
+    ap.add_argument("--include_aux_only_train", dest="include_aux_only_train", action="store_true")
+    ap.add_argument("--no_include_aux_only_train", dest="include_aux_only_train", action="store_false")
+    ap.set_defaults(include_aux_only_train=True)
 
     # QC
     ap.add_argument("--qc_report", type=str, default="")
@@ -295,6 +385,26 @@ def main():
     if not items:
         raise ValueError("No samples remain after filtering and QC.")
 
+    aux_only_train_ids: List[str] = []
+    if args.include_aux_only_train:
+        _, aux_only_train_ids = load_primary_and_aux_train_ids(
+            args.meta_csv,
+            args.endpoint,
+            require_status_ok=not args.keep_bad_status,
+        )
+        if args.qc_policy != "none" and args.qc_report:
+            keep_ids = load_qc_keep_ids(
+                qc_report=args.qc_report,
+                qc_policy=args.qc_policy,
+                qc_id_col=args.qc_id_col,
+                qc_severity_col=args.qc_severity_col,
+                qc_drop_if_contains=args.qc_drop_if_contains,
+                qc_drop_air_gt=args.qc_drop_air_gt,
+            )
+            aux_only_train_ids = [pid for pid in aux_only_train_ids if pid in keep_ids]
+        if aux_only_train_ids:
+            print(f"[mtl] adding {len(aux_only_train_ids)} aux-only training case(s) with non-primary survival labels")
+
     events = np.array([it["event"] for it in items], dtype=int)
     split_defs = make_fold_splits(events, args.cv_folds, args.val_frac, args.split_seed)
 
@@ -303,6 +413,8 @@ def main():
         train_ids = [items[i]["patient_id"] for i in split_def["train"]]
         val_ids = [items[i]["patient_id"] for i in split_def["val"]]
         test_ids = [items[i]["patient_id"] for i in split_def["test"]]
+        if aux_only_train_ids:
+            train_ids = train_ids + [pid for pid in aux_only_train_ids if pid not in set(train_ids)]
 
         print(f"[fold {f:02d}] train={len(train_ids)} val={len(val_ids)} test={len(test_ids)}")
 
@@ -313,11 +425,18 @@ def main():
         write_ids(os.path.join(fold_dir, "test_ids.txt"), test_ids)
 
         for pid in train_ids:
-            rows.append({"patient_id": pid, "fold": f, "split": "train"})
+            rows.append(
+                {
+                    "patient_id": pid,
+                    "fold": f,
+                    "split": "train",
+                    "cohort": "aux_only_train" if pid in set(aux_only_train_ids) else "primary",
+                }
+            )
         for pid in val_ids:
-            rows.append({"patient_id": pid, "fold": f, "split": "val"})
+            rows.append({"patient_id": pid, "fold": f, "split": "val", "cohort": "primary"})
         for pid in test_ids:
-            rows.append({"patient_id": pid, "fold": f, "split": "test"})
+            rows.append({"patient_id": pid, "fold": f, "split": "test", "cohort": "primary"})
 
     out_csv = os.path.join(args.out_dir, "splits.csv")
     pd.DataFrame(rows).to_csv(out_csv, index=False)

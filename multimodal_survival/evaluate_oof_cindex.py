@@ -53,6 +53,10 @@ def load_risks(files: List[Path], id_col: str, risk_col: str) -> pd.DataFrame:
         if id_col not in df.columns or risk_col not in df.columns:
             raise ValueError(f"Risk CSV missing required columns: {p}")
         sub = df[[id_col, risk_col]].copy()
+        if "risk_endpoint" in df.columns:
+            sub["risk_endpoint"] = df["risk_endpoint"].astype(str).str.upper()
+        if "risk_horizon_days" in df.columns:
+            sub["risk_horizon_days"] = pd.to_numeric(df["risk_horizon_days"], errors="coerce")
         sub[id_col] = sub[id_col].astype(str)
         sub["source_risk_csv"] = str(p)
         dfs.append(sub)
@@ -76,6 +80,18 @@ def main():
 
     risk_files = resolve_risk_files(args)
     risk_df = load_risks(risk_files, args.id_col, args.risk_col)
+    if "risk_endpoint" in risk_df.columns:
+        if risk_df["risk_endpoint"].isna().any():
+            raise ValueError("Risk CSVs are mixed: some include risk_endpoint and some do not.")
+        endpoints = sorted(set(risk_df["risk_endpoint"].dropna().tolist()))
+        if endpoints and (endpoints != [str(args.endpoint).upper()]):
+            raise ValueError(f"Risk CSV endpoint mismatch: expected {args.endpoint}, found {endpoints}")
+    if "risk_horizon_days" in risk_df.columns:
+        if risk_df["risk_horizon_days"].isna().any():
+            raise ValueError("Risk CSVs are mixed: some include risk_horizon_days and some do not.")
+        horizons = sorted(set(float(x) for x in risk_df["risk_horizon_days"].tolist()))
+        if len(horizons) > 1:
+            raise ValueError(f"Risk CSV horizon mismatch: found multiple risk_horizon_days values {horizons}")
 
     meta = pd.read_csv(args.meta_csv, dtype={args.id_col: str})
     meta[args.id_col] = meta[args.id_col].astype(str)
