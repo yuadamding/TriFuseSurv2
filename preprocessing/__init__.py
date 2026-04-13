@@ -1,3 +1,15 @@
-"""Preprocessing utilities for cohort export, tabular merge, and CV splits."""
+"""Preprocessing helpers for TriFuseSurv2."""
 
-__all__ = ["export_swinunetr", "prepare_opscc_tabular", "make_cv_splits"]
+from trifusesurv2.preprocessing.nodes import (
+    NodeInstanceSummary,
+    extract_node_instances,
+    summarize_node_topology,
+    topology_summary_to_vector,
+)
+
+__all__ = [
+    "NodeInstanceSummary",
+    "extract_node_instances",
+    "summarize_node_topology",
+    "topology_summary_to_vector",
+]
