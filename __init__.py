@@ -1,8 +1,10 @@
 """TriFuseSurv2: habitat-aligned, node-aware OPSCC survival modeling."""
 
-from trifusesurv2.data import HabitatBatch, SurvivalTargets, TokenBlock
-from trifusesurv2.encoders import HabitatRadiomicsTokenEncoder, SemanticClinicalTokenEncoder
-from trifusesurv2.models import HabitatAlignedSurvivalModel
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
 from trifusesurv2.schema import (
     CLINICAL_TOKEN_GROUPS,
     DEFAULT_HABITAT_CLINICAL_CONTEXT,
@@ -18,10 +20,10 @@ from trifusesurv2.schema import (
 __all__ = [
     "CLINICAL_TOKEN_GROUPS",
     "DEFAULT_HABITAT_CLINICAL_CONTEXT",
+    "FUTURE_IMAGE_HABITATS_MM",
     "HabitatAlignedSurvivalModel",
     "HabitatBatch",
     "HabitatRadiomicsTokenEncoder",
-    "FUTURE_IMAGE_HABITATS_MM",
     "IMAGE_HABITATS",
     "PROGNOSTIC_CLINICAL_TOKEN_GROUPS",
     "RADIOLOGY_HABITATS",
@@ -32,3 +34,26 @@ __all__ = [
     "TREATMENT_AWARE_CLINICAL_TOKEN_GROUPS",
     "TokenBlock",
 ]
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "HabitatBatch": ("trifusesurv2.data.batch", "HabitatBatch"),
+    "SurvivalTargets": ("trifusesurv2.data.batch", "SurvivalTargets"),
+    "TokenBlock": ("trifusesurv2.data.batch", "TokenBlock"),
+    "SemanticClinicalTokenEncoder": ("trifusesurv2.encoders.clinical", "SemanticClinicalTokenEncoder"),
+    "HabitatRadiomicsTokenEncoder": ("trifusesurv2.encoders.radiomics", "HabitatRadiomicsTokenEncoder"),
+    "HabitatAlignedSurvivalModel": ("trifusesurv2.models.habitat_survival", "HabitatAlignedSurvivalModel"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _LAZY_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = _LAZY_EXPORTS[name]
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
