@@ -77,6 +77,7 @@ NODE_TOPOLOGY_FEATURES: tuple[str, ...] = (
     "node_bilateral_flag",
     "node_laterality_known_flag",
     "node_centroid_spread_mm",
+    "pt_ln_distance_known_flag",
     "pt_ln_min_distance_mm",
     "pt_ln_mean_distance_mm",
 )
@@ -101,6 +102,7 @@ class NodeTopologySummary:
     node_bilateral_flag: float
     node_laterality_known_flag: float
     node_centroid_spread_mm: float
+    pt_ln_distance_known_flag: float
     pt_ln_min_distance_mm: float
     pt_ln_mean_distance_mm: float
 
@@ -112,6 +114,7 @@ class NodeTopologySummary:
             self.node_bilateral_flag,
             self.node_laterality_known_flag,
             self.node_centroid_spread_mm,
+            self.pt_ln_distance_known_flag,
             self.pt_ln_min_distance_mm,
             self.pt_ln_mean_distance_mm,
         )

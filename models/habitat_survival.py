@@ -77,6 +77,69 @@ class HabitatCrossAttentionBlock(nn.Module):
         return self.ffn(fused)
 
 
+class PTNodeCrossAttention(nn.Module):
+    """Bipartite cross-attention giving PT habitats direct access to node context.
+
+    After per-habitat fusion, PT habitats (pt_intra, pt_peri) still lack direct
+    node/topology information — they only meet it later in the global sequence
+    encoder. This block injects node-set and topology context directly into PT
+    habitat representations before the final encoder, strengthening the
+    primary-nodal coupling signal.
+    """
+
+    def __init__(self, model_dim: int, num_heads: int, dropout: float):
+        super().__init__()
+        self.query_norm = nn.LayerNorm(model_dim)
+        self.context_norm = nn.LayerNorm(model_dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=model_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.ffn = ResidualMLP(model_dim, hidden_dim=2 * model_dim, dropout=dropout)
+
+    def forward(
+        self,
+        pt_tokens: torch.Tensor,
+        pt_mask: torch.Tensor,
+        node_context: torch.Tensor,
+        node_context_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Cross-attend PT habitat tokens to node-set context.
+
+        Args:
+            pt_tokens: [B, num_pt_habitats, model_dim] — fused PT tokens.
+            pt_mask: [B, num_pt_habitats] — presence mask for PT habitats.
+            node_context: [B, N_ctx, model_dim] — node tokens (+ optional topology).
+            node_context_mask: [B, N_ctx] — presence mask for context tokens.
+
+        Returns:
+            Updated PT tokens [B, num_pt_habitats, model_dim].
+        """
+        B, N_pt, D = pt_tokens.shape
+        q = self.query_norm(pt_tokens)
+        kv = self.context_norm(node_context)
+
+        safe_ctx_mask = node_context_mask.to(torch.bool)
+        empty_ctx = ~safe_ctx_mask.any(dim=1)
+        if empty_ctx.any():
+            safe_ctx_mask = safe_ctx_mask.clone()
+            kv = kv.clone()
+            safe_ctx_mask[empty_ctx, 0] = True
+            kv[empty_ctx, 0, :] = 0.0
+
+        attn_out, _ = self.attn(q, kv, kv, key_padding_mask=(~safe_ctx_mask))
+
+        pt_mask_f = pt_mask.to(pt_tokens.dtype).unsqueeze(-1)
+        updated = pt_tokens + attn_out * pt_mask_f
+
+        out_parts = []
+        for i in range(N_pt):
+            out_parts.append(self.ffn(updated[:, i, :]) * pt_mask[:, i].to(pt_tokens.dtype).unsqueeze(-1))
+        return torch.stack(out_parts, dim=1)
+
+
 class StructuredSurvivalHeads(nn.Module):
     """Shared-trunk multitask endpoint heads.
 
@@ -175,6 +238,16 @@ class HabitatAlignedSurvivalModel(nn.Module):
             if node_token_dim > 0
             else None
         )
+
+        self._pt_habitat_indices = [
+            i for i, h in enumerate(self.image_habitats) if h.startswith("pt_")
+        ]
+        self.pt_node_cross_attn = (
+            PTNodeCrossAttention(model_dim=model_dim, num_heads=num_heads, dropout=dropout)
+            if node_token_dim > 0
+            else None
+        )
+
         self.habitat_fusers = nn.ModuleDict(
             {
                 habitat: HabitatCrossAttentionBlock(model_dim=model_dim, num_heads=num_heads, dropout=dropout)
@@ -407,6 +480,25 @@ class HabitatAlignedSurvivalModel(nn.Module):
 
         habitat_seq = torch.stack(fused_habitats, dim=1)
         habitat_mask = torch.stack(fused_presence, dim=1)
+
+        if self.pt_node_cross_attn is not None and node_encoded is not None and self._pt_habitat_indices:
+            pt_idx = self._pt_habitat_indices
+            pt_tokens = habitat_seq[:, pt_idx, :]
+            pt_mask = habitat_mask[:, pt_idx]
+
+            ctx_parts = [node_encoded]
+            ctx_masks = [node_mask]
+            if topology is not None:
+                ctx_parts.append(topology)
+                ctx_masks.append(topology_mask)
+            node_ctx = torch.cat(ctx_parts, dim=1)
+            node_ctx_mask = torch.cat(ctx_masks, dim=1)
+
+            pt_updated = self.pt_node_cross_attn(pt_tokens, pt_mask, node_ctx, node_ctx_mask)
+
+            habitat_seq = habitat_seq.clone()
+            for out_idx, hab_idx in enumerate(pt_idx):
+                habitat_seq[:, hab_idx, :] = pt_updated[:, out_idx, :]
 
         seq_parts = [self.prognosis_token.expand(image.shape[0], -1, -1), habitat_seq]
         seq_masks = [

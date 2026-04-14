@@ -19,13 +19,16 @@ from trifusesurv2.schema import (
 
 __all__ = [
     "CLINICAL_TOKEN_GROUPS",
+    "ContourAwareHabitatSurvivalModel",
     "DEFAULT_HABITAT_CLINICAL_CONTEXT",
     "FUTURE_IMAGE_HABITATS_MM",
     "HabitatAlignedSurvivalModel",
     "HabitatBatch",
     "HabitatRadiomicsTokenEncoder",
     "IMAGE_HABITATS",
+    "ImageTokenBackbone",
     "PROGNOSTIC_CLINICAL_TOKEN_GROUPS",
+    "PTNodeCrossAttention",
     "RADIOLOGY_HABITATS",
     "SemanticClinicalTokenEncoder",
     "SurvivalTargets",
@@ -42,6 +45,9 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "SemanticClinicalTokenEncoder": ("trifusesurv2.encoders.clinical", "SemanticClinicalTokenEncoder"),
     "HabitatRadiomicsTokenEncoder": ("trifusesurv2.encoders.radiomics", "HabitatRadiomicsTokenEncoder"),
     "HabitatAlignedSurvivalModel": ("trifusesurv2.models.habitat_survival", "HabitatAlignedSurvivalModel"),
+    "PTNodeCrossAttention": ("trifusesurv2.models.habitat_survival", "PTNodeCrossAttention"),
+    "ContourAwareHabitatSurvivalModel": ("trifusesurv2.models.contour_habitat_survival", "ContourAwareHabitatSurvivalModel"),
+    "ImageTokenBackbone": ("trifusesurv2.models.contour_habitat_survival", "ImageTokenBackbone"),
 }
 
 
