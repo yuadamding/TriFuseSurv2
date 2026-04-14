@@ -179,6 +179,17 @@ class SemanticClinicalTokenEncoder:
             return [0.0, 1.0]
         return [float((x - spec.mean) / spec.std), 0.0]
 
+    def _numeric_is_present(self, row: pd.Series, spec: NumericFeatureSpec) -> bool:
+        val = row.get(spec.name, np.nan)
+        if spec.ordinal:
+            x = parse_ordinal_value(spec.name, val)
+        else:
+            try:
+                x = float(val)
+            except Exception:
+                x = np.nan
+        return not np.isnan(x)
+
     def _encode_categorical(self, row: pd.Series, spec: CategoricalFeatureSpec) -> list[float]:
         dim = len(spec.mapping) + 1
         vec = np.zeros(dim, dtype=np.float32)
@@ -189,6 +200,12 @@ class SemanticClinicalTokenEncoder:
             idx = spec.mapping.get(str(val).strip(), spec.unk_index)
         vec[idx] = 1.0
         return vec.tolist()
+
+    def _categorical_is_present(self, row: pd.Series, spec: CategoricalFeatureSpec) -> bool:
+        val = row.get(spec.name, None)
+        if val is None or pd.isna(val):
+            return False
+        return str(val).strip() != ""
 
     def encode_row_tokens(self, row: pd.Series) -> "OrderedDict[str, np.ndarray]":
         out: "OrderedDict[str, np.ndarray]" = OrderedDict()
@@ -210,7 +227,12 @@ class SemanticClinicalTokenEncoder:
         for idx, name in enumerate(self.group_names):
             vec = tokens[name]
             mat[idx, : vec.shape[0]] = vec
-            presence[idx] = 1.0
+            spec = self.group_specs[name]
+            group_present = any(self._numeric_is_present(row, numeric_spec) for numeric_spec in spec.numeric)
+            group_present = group_present or any(
+                self._categorical_is_present(row, categorical_spec) for categorical_spec in spec.categorical
+            )
+            presence[idx] = 1.0 if group_present else 0.0
         return mat, presence
 
     def encode_frame_token_matrix(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:

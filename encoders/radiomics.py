@@ -93,6 +93,7 @@ class HabitatRadiomicsTokenEncoder:
         total_pcs_per_group: int = 16,
         group_prefixes: OrderedDict[str, str] | None = None,
         presence_columns: dict[str, str] | None = None,
+        require_presence_columns: bool = True,
         random_state: int = 1,
     ) -> "HabitatRadiomicsTokenEncoder":
         group_prefixes = OrderedDict(group_prefixes or DEFAULT_GROUP_PREFIXES)
@@ -102,6 +103,14 @@ class HabitatRadiomicsTokenEncoder:
         id_col = "case_id" if "case_id" in df.columns else ("patient_id" if "patient_id" in df.columns else None)
         if id_col is None:
             raise ValueError(f"[RAD2] Missing case identifier column in {radiomics_csv}")
+
+        if require_presence_columns:
+            missing_presence = [presence_columns[g] for g in group_prefixes if presence_columns.get(g, "") not in df.columns]
+            if missing_presence:
+                raise ValueError(
+                    "[RAD2] Missing explicit radiomics presence columns: "
+                    + ", ".join(sorted(dict.fromkeys(missing_presence)))
+                )
 
         df = df.copy()
         df["patient_id_norm"] = df[id_col].map(cls.normalize_patient_id)
@@ -145,11 +154,16 @@ class HabitatRadiomicsTokenEncoder:
 
                 present_col = presence_columns.get(group_name, "")
                 if present_col and present_col in df.columns:
-                    try:
-                        present = float(row[present_col]) > 0.0
-                    except Exception:
-                        present = bool(np.any(np.abs(vals) > 0))
+                    present_raw = pd.to_numeric(pd.Series([row[present_col]]), errors="coerce").iloc[0]
+                    if pd.isna(present_raw):
+                        raise ValueError(
+                            f"[RAD2] Non-numeric presence value for patient {pid} group {group_name}: "
+                            f"{row[present_col]!r}"
+                        )
+                    present = float(present_raw) > 0.0
                 else:
+                    if require_presence_columns:
+                        raise ValueError(f"[RAD2] Missing presence column for group {group_name}")
                     present = bool(np.any(np.abs(vals) > 0))
                 presence_bits[idx] = 1.0 if present else 0.0
 
