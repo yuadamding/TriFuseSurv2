@@ -8,6 +8,12 @@ from typing import Mapping, Sequence
 
 SURVIVAL_ENDPOINTS: tuple[str, ...] = ("OS", "DSS", "DFS")
 
+ENDPOINT_MAP: dict[str, tuple[str, str]] = {
+    "OS": ("OS.TIME", "OS.EVENT"),
+    "DSS": ("DSS.TIME", "DSS.EVENT"),
+    "DFS": ("DFS.TIME", "DFS.EVENT"),
+}
+
 # Established image habitats from the current contour-aware backbone.
 IMAGE_HABITATS: tuple[str, ...] = (
     "global",

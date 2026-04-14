@@ -131,13 +131,17 @@ class PTNodeCrossAttention(nn.Module):
 
         attn_out, _ = self.attn(q, kv, kv, key_padding_mask=(~safe_ctx_mask))
 
-        pt_mask_f = pt_mask.to(pt_tokens.dtype).unsqueeze(-1)
-        updated = pt_tokens + attn_out * pt_mask_f
+        pt_mask_f = pt_mask.to(pt_tokens.dtype).unsqueeze(-1)  # [B, N_pt, 1]
+        updated = pt_tokens + attn_out * pt_mask_f  # [B, N_pt, D]
 
-        out_parts = []
-        for i in range(N_pt):
-            out_parts.append(self.ffn(updated[:, i, :]) * pt_mask[:, i].to(pt_tokens.dtype).unsqueeze(-1))
-        return torch.stack(out_parts, dim=1)
+        # Batched masked FFN: only run on present tokens to avoid spurious
+        # gradients through LayerNorm bias for absent (zero) inputs.
+        flat = updated.reshape(B * N_pt, D)
+        flat_mask = pt_mask.reshape(B * N_pt).bool()
+        out_flat = torch.zeros_like(flat)
+        if flat_mask.any():
+            out_flat[flat_mask] = self.ffn(flat[flat_mask])
+        return out_flat.reshape(B, N_pt, D) * pt_mask_f
 
 
 class StructuredSurvivalHeads(nn.Module):
@@ -275,6 +279,21 @@ class HabitatAlignedSurvivalModel(nn.Module):
             hidden_dim=model_dim,
             dropout=dropout,
         )
+
+        self._init_weights()
+        # Restore prognosis token init (the sweep above would have overwritten it)
+        nn.init.normal_(self.prognosis_token, mean=0.0, std=0.02)
+
+    def _init_weights(self) -> None:
+        """Xavier uniform for Linear layers, ones/zeros for LayerNorm."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
 
     def _project_optional_tokens(
         self,

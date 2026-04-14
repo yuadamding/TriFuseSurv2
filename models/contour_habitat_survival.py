@@ -222,13 +222,11 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
             aux = None
 
         if return_gate:
-            B = x_img.shape[0]
-            N = int(self.backbone.num_tokens)
-            dummy_gate = torch.ones((B, N), device=x_img.device) / max(N, 1)
-            dummy_pres = image_presence
-            if aux is not None:
-                return logits, dummy_gate, dummy_pres, aux
-            return logits, dummy_gate, dummy_pres
+            raise NotImplementedError(
+                "ContourAwareHabitatSurvivalModel uses habitat-aligned cross-attention, "
+                "not MoE gating. Gate weights are not available. Use return_aux=True "
+                "to inspect habitat_tokens and attention patterns instead."
+            )
 
         if aux is not None:
             return logits, aux

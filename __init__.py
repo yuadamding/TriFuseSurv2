@@ -8,6 +8,7 @@ from typing import Any
 from trifusesurv2.schema import (
     CLINICAL_TOKEN_GROUPS,
     DEFAULT_HABITAT_CLINICAL_CONTEXT,
+    ENDPOINT_MAP,
     FUTURE_IMAGE_HABITATS_MM,
     IMAGE_HABITATS,
     PROGNOSTIC_CLINICAL_TOKEN_GROUPS,
@@ -21,6 +22,7 @@ __all__ = [
     "CLINICAL_TOKEN_GROUPS",
     "ContourAwareHabitatSurvivalModel",
     "DEFAULT_HABITAT_CLINICAL_CONTEXT",
+    "ENDPOINT_MAP",
     "FUTURE_IMAGE_HABITATS_MM",
     "HabitatAlignedSurvivalModel",
     "HabitatBatch",
