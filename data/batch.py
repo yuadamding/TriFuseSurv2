@@ -87,6 +87,12 @@ class HabitatBatch:
                 raise ValueError(f"topology.tokens must be [B, D] or [B, 1, D], got shape {tuple(t.shape)}")
             if t.shape[0] != B:
                 raise ValueError(f"topology batch size {t.shape[0]} != image batch size {B}")
+            if self.topology.presence is not None:
+                p = self.topology.presence
+                if p.shape[0] != B:
+                    raise ValueError(
+                        f"topology.presence batch size {p.shape[0]} != image batch size {B}"
+                    )
 
         if self.survival is not None:
             if self.survival.times.shape[0] != B:

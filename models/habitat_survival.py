@@ -557,8 +557,16 @@ class HabitatAlignedSurvivalModel(nn.Module):
         *,
         return_aux: bool = False,
     ) -> dict[str, torch.Tensor] | tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        """Forward pass using the structured TriFuseSurv2 batch interface."""
+        """Forward pass using the structured TriFuseSurv2 batch interface.
 
+        Calls ``batch.validate()`` before forwarding to catch shape mismatches
+        early rather than letting them surface as cryptic tensor errors.
+        """
+        batch.validate(
+            num_image_habitats=len(self.image_habitats),
+            num_radiomics_habitats=len(self.radiomics_habitats) if batch.radiomics is not None else None,
+            num_clinical_groups=len(self.clinical_groups) if batch.clinical is not None else None,
+        )
         return self.forward(
             image_tokens=batch.image.tokens,
             image_presence=batch.image.presence,

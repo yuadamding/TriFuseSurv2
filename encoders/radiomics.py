@@ -181,6 +181,13 @@ class HabitatRadiomicsTokenEncoder:
                     train_rows.append(vec)
 
             if not train_rows:
+                import warnings
+                warnings.warn(
+                    f"[RAD2] radiomics group '{group_name}' has no present training samples; "
+                    f"it will be absent from the fitted encoder. If this group is required, "
+                    f"check the presence columns and training ID overlap.",
+                    stacklevel=2,
+                )
                 continue
             x = np.stack(train_rows, axis=0).astype(np.float32)
             x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)

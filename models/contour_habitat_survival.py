@@ -182,7 +182,13 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         logits : dict[str, Tensor]
             Per-endpoint hazard logits {endpoint: [B, num_time_bins]}.
         If ``return_aux``, also returns a dict of intermediate representations.
-        If ``return_gate``, returns a dummy gate/presence for compatibility.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``return_gate=True``.  This model uses habitat-aligned cross-
+            attention, not MoE gating.  Use ``return_aux=True`` to inspect
+            habitat tokens and attention patterns instead.
         """
         request_bb_aux = bool(return_aux)
         bb_out = self.backbone(

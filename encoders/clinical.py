@@ -30,7 +30,13 @@ CLINICAL_SCHEMA: dict[str, str] = {
 
 
 def parse_ordinal_value(col: str, val: Any) -> float:
-    """Parse an ordinal or semi-structured value to float."""
+    """Parse an ordinal or semi-structured value to float.
+
+    This is a lossy reduction: TNM sub-stages (e.g. T4a → 4, N2b → 2) and
+    Roman numeral suffixes (IVA → 4) collapse to the coarse numeric stage.
+    Subclass letters are discarded.  If finer staging semantics are needed,
+    encode TNM subclasses as separate categorical features instead.
+    """
 
     if val is None or pd.isna(val):
         return np.nan
