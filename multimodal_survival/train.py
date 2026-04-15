@@ -79,6 +79,8 @@ def _configure_stdio_line_buffering():
 
 
 def _log(msg: str):
+    if _DDP_INITIALIZED and not _is_main_process():
+        return
     print(msg, flush=True)
 
 
@@ -100,6 +102,45 @@ def parse_device(device_str: str) -> torch.device:
 def bind_cuda_device(device: torch.device):
     if device.type == "cuda":
         torch.cuda.set_device(int(device.index) if device.index is not None else 0)
+
+
+# ---------------------------------------------------------------------------
+# Distributed Data Parallel (DDP) helpers
+# ---------------------------------------------------------------------------
+_DDP_INITIALIZED = False
+_DDP_RANK = 0
+_DDP_WORLD_SIZE = 1
+_DDP_LOCAL_RANK = 0
+
+
+def _init_ddp(backend: str = "nccl") -> None:
+    """Initialize the DDP process group from torchrun environment variables."""
+    global _DDP_INITIALIZED, _DDP_RANK, _DDP_WORLD_SIZE, _DDP_LOCAL_RANK
+    import os
+    if _DDP_INITIALIZED:
+        return
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
+    torch.distributed.init_process_group(backend=backend)
+    _DDP_RANK = torch.distributed.get_rank()
+    _DDP_WORLD_SIZE = torch.distributed.get_world_size()
+    _DDP_LOCAL_RANK = local_rank
+    _DDP_INITIALIZED = True
+
+
+def _is_main_process() -> bool:
+    return _DDP_RANK == 0
+
+
+def _ddp_device() -> torch.device:
+    return torch.device(f"cuda:{_DDP_LOCAL_RANK}")
+
+
+def _cleanup_ddp() -> None:
+    global _DDP_INITIALIZED
+    if _DDP_INITIALIZED and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+        _DDP_INITIALIZED = False
 
 
 def make_amp(device: torch.device, enabled: bool):
@@ -351,18 +392,39 @@ def _to_optional_device_tensor(x: Optional[torch.Tensor], device: torch.device):
     return x.to(device, non_blocking=True)
 
 
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    """Unwrap DataParallel or DDP wrapper."""
+    if hasattr(model, "module"):
+        return model.module
+    return model
+
+
 def _is_v2_model(model: nn.Module) -> bool:
     """Check if model is the v2 habitat-aligned wrapper (not v1 MoE)."""
     from trifusesurv2.models.contour_habitat_survival import ContourAwareHabitatSurvivalModel
-    mm = model.module if isinstance(model, nn.DataParallel) else model
-    return isinstance(mm, ContourAwareHabitatSurvivalModel)
+    return isinstance(_unwrap_model(model), ContourAwareHabitatSurvivalModel)
+
+
+def _prep_optional_tensor(payload, key, device):
+    """Get a tensor from payload, move to device. Return empty [B,0] if None.
+
+    DataParallel cannot scatter None across replicas—it silently drops None
+    positional args, causing the replica to receive fewer args than expected.
+    We convert None to an empty tensor so DP can scatter it safely.  The model's
+    forward() already handles numel()==0 as "modality absent."
+    """
+    t = payload.get(key)
+    if t is None or (hasattr(t, "numel") and t.numel() == 0):
+        B = payload["x"].shape[0]
+        return torch.zeros(B, 0, device=device)
+    return t.to(device, non_blocking=True)
 
 
 def _model_forward_eval(model, payload, device, autocast_ctx):
     """Dispatch model forward for evaluation (no gate, no aux)."""
     x = payload["x"].to(device, non_blocking=True)
-    clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
-    rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
+    clin = _prep_optional_tensor(payload, "clin", device)
+    rad = _prep_optional_tensor(payload, "rad", device)
 
     if _is_v2_model(model):
         clin_pres = _to_optional_device_tensor(payload.get("clin_presence"), device)
@@ -713,7 +775,7 @@ def evaluate_model(
     autocast_ctx,
 ) -> Dict[str, float]:
     model.eval()
-    mm = model.module if isinstance(model, nn.DataParallel) else model
+    mm = _unwrap_model(model)
 
     all_t, all_e, all_r, all_h = [], [], [], []
 
@@ -779,7 +841,7 @@ def predict_risk_scores(
     autocast_ctx,
 ) -> Dict[str, float]:
     model.eval()
-    mm = model.module if isinstance(model, nn.DataParallel) else model
+    mm = _unwrap_model(model)
     out: Dict[str, float] = {}
 
     for batch in loader:
@@ -859,9 +921,11 @@ def train_one_epoch(
     log_every_batches: int,
     ema: Optional[H.EMAWeights],
     autocast_ctx,
+    grad_accumulation_steps: int = 1,
 ) -> Dict[str, float]:
     model.train()
-    mm = model.module if isinstance(model, nn.DataParallel) else model
+    mm = _unwrap_model(model)
+    accum_steps = max(1, int(grad_accumulation_steps))
     request_aux = str(getattr(mm, "image_encoder_mode", "")).strip().lower() == "contour_aware"
 
     stats_sum: Dict[str, float] = {
@@ -899,12 +963,14 @@ def train_one_epoch(
         x = payload["x"].to(device, non_blocking=True)
         t_all = payload["t_all"].to(device, non_blocking=True)
         e_all = payload["e_all"].to(device, non_blocking=True)
-        clin = payload["clin"].to(device) if (payload["clin"] is not None and payload["clin"].numel() > 0) else None
-        rad = payload["rad"].to(device) if (payload["rad"] is not None and payload["rad"].numel() > 0) else None
+        clin = _prep_optional_tensor(payload, "clin", device)
+        rad = _prep_optional_tensor(payload, "rad", device)
         mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
         mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
 
-        optimizer.zero_grad(set_to_none=True)
+        is_accum_step = (batch_idx % accum_steps) != 0
+        if not is_accum_step or batch_idx == 1:
+            optimizer.zero_grad(set_to_none=True)
 
         with autocast_ctx():
             if v2_mode:
@@ -1074,18 +1140,21 @@ def train_one_epoch(
                 f"endpoint_counts={endpoint_counts}"
             )
 
+        scaled_loss = loss / float(accum_steps) if accum_steps > 1 else loss
         if device.type == "cuda" and scaler is not None:
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            scaler.scale(scaled_loss).backward()
+            if not is_accum_step:
+                scaler.unscale_(optimizer)
+                clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
         else:
-            loss.backward()
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaled_loss.backward()
+            if not is_accum_step:
+                clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
 
-        if ema is not None:
+        if not is_accum_step and ema is not None:
             ema.update(mm)
 
         n_batches += 1
@@ -1152,7 +1221,7 @@ def save_checkpoint(
     state = {
         "epoch": int(epoch),
         "num_time_bins": int(num_time_bins),
-        "model_state": (model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()),
+        "model_state": (_unwrap_model(model).state_dict()),
         "report_metric": float(report_metric) if report_metric is not None else float("nan"),
         "args": dict(vars(args)),
     }
@@ -1202,7 +1271,7 @@ def load_model_state_only(path: Path, model: nn.Module) -> bool:
     if not isinstance(in_sd, dict):
         return False
 
-    target_sd = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    target_sd = _unwrap_model(model).state_dict()
     filtered = {}
     for k, v in in_sd.items():
         if k in target_sd and tuple(target_sd[k].shape) == tuple(v.shape):
@@ -1218,10 +1287,7 @@ def load_model_state_only(path: Path, model: nn.Module) -> bool:
     if not filtered:
         return False
 
-    if isinstance(model, nn.DataParallel):
-        model.module.load_state_dict(filtered, strict=False)
-    else:
-        model.load_state_dict(filtered, strict=False)
+    _unwrap_model(model).load_state_dict(filtered, strict=False)
     return True
 
 
@@ -1246,7 +1312,7 @@ def load_checkpoint(
         raise RuntimeError(f"Checkpoint num_time_bins mismatch: ckpt={ck.get('num_time_bins')} current={num_time_bins}")
 
     in_sd = ck.get("model_state", {})
-    target_sd = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    target_sd = _unwrap_model(model).state_dict()
 
     filtered = {}
     mismatched = 0
@@ -1265,10 +1331,7 @@ def load_checkpoint(
             f"examples={missing[:5]}"
         )
 
-    if isinstance(model, nn.DataParallel):
-        model.module.load_state_dict(filtered, strict=False)
-    else:
-        model.load_state_dict(filtered, strict=False)
+    _unwrap_model(model).load_state_dict(filtered, strict=False)
 
     fully_restored = (mismatched == 0)
 
@@ -1292,7 +1355,7 @@ def load_checkpoint(
             fully_restored = False
             print(f"[CKPT][WARN] scheduler restore failed: {ex}")
 
-    mm = model.module if isinstance(model, nn.DataParallel) else model
+    mm = _unwrap_model(model)
     if ema is not None and ck.get("ema") is not None:
         try:
             ema.load_state_dict(ck["ema"], model=mm)
@@ -1594,7 +1657,16 @@ def run_one_fold(
     g = torch.Generator()
     g.manual_seed(int(args.seed + 777 + fold))
 
-    tr_loader = DataLoader(tr_ds, batch_size=int(args.batch_size), shuffle=True, num_workers=int(args.workers),
+    use_ddp = getattr(args, "ddp", False) and _DDP_INITIALIZED
+    if use_ddp:
+        from torch.utils.data.distributed import DistributedSampler
+        tr_sampler = DistributedSampler(tr_ds, num_replicas=_DDP_WORLD_SIZE, rank=_DDP_RANK, shuffle=True, seed=int(args.seed + 777 + fold))
+    else:
+        tr_sampler = None
+
+    tr_loader = DataLoader(tr_ds, batch_size=int(args.batch_size),
+                           shuffle=(tr_sampler is None), sampler=tr_sampler,
+                           num_workers=int(args.workers),
                            pin_memory=(device.type == "cuda"), drop_last=False, persistent_workers=(int(args.workers) > 0),
                            worker_init_fn=seed_worker, generator=g)
     tr_eval_loader = DataLoader(tr_eval_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.workers),
@@ -1716,12 +1788,23 @@ def run_one_fold(
 
     materialize_lazy_modules(base_model, tr_loader, device, autocast_ctx)
 
-    if args.data_parallel and device.type == "cuda" and torch.cuda.device_count() > 1:
+    if getattr(args, "ddp", False) and _DDP_INITIALIZED:
+        from torch.nn.parallel import DistributedDataParallel as DDP
+        model = DDP(base_model, device_ids=[_DDP_LOCAL_RANK], find_unused_parameters=True)
+        _log(f"[DDP] wrapped model on rank {_DDP_RANK}/{_DDP_WORLD_SIZE}, device cuda:{_DDP_LOCAL_RANK}")
+    elif args.data_parallel and device.type == "cuda" and torch.cuda.device_count() > 1:
         model = nn.DataParallel(base_model)
     else:
         model = base_model
 
-    mm = model.module if isinstance(model, nn.DataParallel) else model
+    def _unwrap(m):
+        if isinstance(m, nn.DataParallel):
+            return m.module
+        if hasattr(m, "module"):  # DDP
+            return m.module
+        return m
+
+    mm = _unwrap(model)
 
     groups = make_param_groups(
         mm,
@@ -1753,6 +1836,8 @@ def run_one_fold(
     save_full_training_state = bool(args.resume) and (not bool(args.lightweight_checkpoints))
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
+        if tr_sampler is not None:
+            tr_sampler.set_epoch(epoch)
         teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args)
         train_stats = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
@@ -1776,7 +1861,15 @@ def run_one_fold(
             log_every_batches=int(args.log_every_batches),
             ema=ema,
             autocast_ctx=autocast_ctx,
+            grad_accumulation_steps=int(getattr(args, "grad_accumulation_steps", 1)),
         )
+
+        # In DDP, only rank 0 evaluates and saves checkpoints.
+        # Other ranks wait at the barrier below.
+        if _DDP_INITIALIZED and not _is_main_process():
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+            continue
 
         train_met = evaluate_model(
             model, tr_eval_loader, device,
@@ -1887,6 +1980,10 @@ def run_one_fold(
             best_report_metric = float(report_metric)
             print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
         scheduler.step()
+
+        # Release non-rank-0 processes that are waiting at the barrier above.
+        if _DDP_INITIALIZED and _is_main_process() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
     last_test = evaluate_model(
         model, te_loader, device,
@@ -2034,9 +2131,15 @@ def parse_args():
 
     p.add_argument("--device", type=str, default="")
     p.add_argument("--data_parallel", action="store_true")
+    p.add_argument("--ddp", action="store_true",
+                   help="Use DistributedDataParallel. Launch via: "
+                        "torchrun --nproc_per_node=N -m trifusesurv2.multimodal_survival.train --ddp ...")
 
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument("--grad_accumulation_steps", type=int, default=1,
+                   help="Accumulate gradients over N micro-batches before stepping. "
+                        "Effective batch = batch_size * grad_accumulation_steps * num_gpus.")
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--log_every_batches", type=int, default=50)
@@ -2286,7 +2389,14 @@ def main():
     args = parse_args()
     set_seed(args.seed)
 
-    device = parse_device(args.device)
+    if getattr(args, "ddp", False):
+        _init_ddp()
+        device = _ddp_device()
+        if not _is_main_process():
+            import logging
+            logging.disable(logging.CRITICAL)
+    else:
+        device = parse_device(args.device)
     bind_cuda_device(device)
 
     scaler, autocast_ctx = make_amp(device, enabled=bool(args.amp))
@@ -2418,4 +2528,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        _cleanup_ddp()
