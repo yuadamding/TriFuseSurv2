@@ -79,8 +79,9 @@ except ModuleNotFoundError as exc:
     missing = getattr(exc, "name", "a required dependency")
     raise SystemExit(
         f"Missing preprocessing dependency: {missing}. "
-        "Run ./scripts/install_env.sh or install the package dependencies with "
-        "`python -m pip install --upgrade -e .`."
+        "Run ./scripts/install_env.sh for a full environment setup, or if the "
+        "environment already exists refresh the editable package with "
+        "`python -m pip install -e . --no-deps`."
     ) from exc
 except ImportError as exc:
     msg = str(exc)

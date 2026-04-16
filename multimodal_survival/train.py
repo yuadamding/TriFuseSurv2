@@ -431,7 +431,9 @@ def _model_forward_eval(model, payload, device, autocast_ctx):
         rad_pres = _to_optional_device_tensor(payload.get("rad_presence"), device)
         with autocast_ctx():
             logits = model(
-                x, clin, rad,
+                x_img=x,
+                clinical_tokens=clin,
+                radiomics_tokens=rad,
                 mask_pt=_to_optional_device_tensor(payload.get("mask_pt"), device),
                 mask_ln=_to_optional_device_tensor(payload.get("mask_ln"), device),
                 clinical_presence=clin_pres,
@@ -440,7 +442,13 @@ def _model_forward_eval(model, payload, device, autocast_ctx):
             )
     else:
         with autocast_ctx():
-            logits = model(x, clin, rad, teacher_force_alpha=0.0, return_gate=False)
+            logits = model(
+                x_img=x,
+                clinical=clin,
+                radiomics=rad,
+                teacher_force_alpha=0.0,
+                return_gate=False,
+            )
     return logits
 
 
@@ -927,6 +935,7 @@ def train_one_epoch(
     mm = _unwrap_model(model)
     accum_steps = max(1, int(grad_accumulation_steps))
     request_aux = str(getattr(mm, "image_encoder_mode", "")).strip().lower() == "contour_aware"
+    optimizer.zero_grad(set_to_none=True)
 
     stats_sum: Dict[str, float] = {
         "loss_total": 0.0,
@@ -958,6 +967,8 @@ def train_one_epoch(
 
     v2_mode = _is_v2_model(model)
 
+    batches_since_step = 0
+
     for batch_idx, batch in enumerate(loader, start=1):
         payload = _unpack_surv_batch(batch)
         x = payload["x"].to(device, non_blocking=True)
@@ -967,10 +978,7 @@ def train_one_epoch(
         rad = _prep_optional_tensor(payload, "rad", device)
         mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
         mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
-
-        is_accum_step = (batch_idx % accum_steps) != 0
-        if not is_accum_step or batch_idx == 1:
-            optimizer.zero_grad(set_to_none=True)
+        batches_since_step += 1
 
         with autocast_ctx():
             if v2_mode:
@@ -1141,20 +1149,27 @@ def train_one_epoch(
             )
 
         scaled_loss = loss / float(accum_steps) if accum_steps > 1 else loss
+        should_step = (batches_since_step >= accum_steps)
+        if planned_batches > 0 and batch_idx == planned_batches:
+            should_step = True
         if device.type == "cuda" and scaler is not None:
             scaler.scale(scaled_loss).backward()
-            if not is_accum_step:
+            if should_step:
                 scaler.unscale_(optimizer)
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                batches_since_step = 0
         else:
             scaled_loss.backward()
-            if not is_accum_step:
+            if should_step:
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                batches_since_step = 0
 
-        if not is_accum_step and ema is not None:
+        if should_step and ema is not None:
             ema.update(mm)
 
         n_batches += 1
@@ -1188,6 +1203,19 @@ def train_one_epoch(
                 f"loc_pt={float(loss_loc_pt.detach().cpu().item()):.4f} "
                 f"loc_ln={float(loss_loc_ln.detach().cpu().item()):.4f}"
             )
+
+    if batches_since_step > 0:
+        if device.type == "cuda" and scaler is not None:
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        if ema is not None:
+            ema.update(mm)
 
     if n_batches == 0:
         return {k: float("nan") for k in stats_sum}
@@ -1679,6 +1707,21 @@ def run_one_fold(
                            pin_memory=(device.type == "cuda"), drop_last=False, persistent_workers=(int(args.workers) > 0),
                            worker_init_fn=seed_worker)
 
+    workers_per_loader = int(args.workers)
+    loader_count = 4
+    total_loader_workers = workers_per_loader * loader_count
+    omp_threads = os.environ.get("OMP_NUM_THREADS", "unset")
+    mkl_threads = os.environ.get("MKL_NUM_THREADS", "unset")
+    openblas_threads = os.environ.get("OPENBLAS_NUM_THREADS", "unset")
+    itk_threads = os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", "unset")
+    _log(
+        f"[CPU][fold {fold:02d}] dataloader_workers_per_loader={workers_per_loader} "
+        f"loaders={loader_count} total_loader_processes_per_rank={total_loader_workers} "
+        f"persistent_workers={(workers_per_loader > 0)} "
+        f"omp_threads={omp_threads} mkl_threads={mkl_threads} "
+        f"openblas_threads={openblas_threads} itk_threads={itk_threads}"
+    )
+
     backbone_cfg = dict(
         img_size=tuple(args.img_size),
         feature_size=int(args.feature_size),
@@ -1790,7 +1833,11 @@ def run_one_fold(
 
     if getattr(args, "ddp", False) and _DDP_INITIALIZED:
         from torch.nn.parallel import DistributedDataParallel as DDP
-        model = DDP(base_model, device_ids=[_DDP_LOCAL_RANK], find_unused_parameters=True)
+        model = DDP(
+            base_model,
+            device_ids=[_DDP_LOCAL_RANK],
+            find_unused_parameters=True,
+        )
         _log(f"[DDP] wrapped model on rank {_DDP_RANK}/{_DDP_WORLD_SIZE}, device cuda:{_DDP_LOCAL_RANK}")
     elif args.data_parallel and device.type == "cuda" and torch.cuda.device_count() > 1:
         model = nn.DataParallel(base_model)
@@ -1830,7 +1877,9 @@ def run_one_fold(
         if start_epoch > 1:
             print(f"[fold {fold:02d}] resumed from epoch {start_epoch} (fully_restored={fully_restored})")
 
-    _reset_metrics_log_if_needed(metrics_csv, start_epoch=start_epoch, fully_restored=fully_restored, args=args)
+    is_main_rank = (not _DDP_INITIALIZED) or _is_main_process()
+    if is_main_rank:
+        _reset_metrics_log_if_needed(metrics_csv, start_epoch=start_epoch, fully_restored=fully_restored, args=args)
 
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
     save_full_training_state = bool(args.resume) and (not bool(args.lightweight_checkpoints))
@@ -1864,55 +1913,56 @@ def run_one_fold(
             grad_accumulation_steps=int(getattr(args, "grad_accumulation_steps", 1)),
         )
 
-        # In DDP, only rank 0 evaluates and saves checkpoints.
-        # Other ranks wait at the barrier below.
-        if _DDP_INITIALIZED and not _is_main_process():
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
-            continue
-
-        train_met = evaluate_model(
-            model, tr_eval_loader, device,
-            endpoint=str(args.endpoint),
-            risk_horizon_days=float(args.risk_horizon_days),
-            time_bin_width_days=float(args.time_bin_width_days),
-            eval_times_days=args.auc_times_days,
-            dca_thresholds=args.dca_thresholds,
-            autocast_ctx=autocast_ctx,
-        )
-        val_met = evaluate_model(
-            model, va_loader, device,
-            endpoint=str(args.endpoint),
-            risk_horizon_days=float(args.risk_horizon_days),
-            time_bin_width_days=float(args.time_bin_width_days),
-            eval_times_days=args.auc_times_days,
-            dca_thresholds=args.dca_thresholds,
-            autocast_ctx=autocast_ctx,
-        )
+        # In DDP, evaluate on the unwrapped model (no all-reduce) and only on rank 0.
+        # All ranks must reach this point — we do NOT skip or barrier here.
+        _eval_model = mm if _DDP_INITIALIZED else model
+        if not _DDP_INITIALIZED or _is_main_process():
+            train_met = evaluate_model(
+                _eval_model, tr_eval_loader, device,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+                time_bin_width_days=float(args.time_bin_width_days),
+                eval_times_days=args.auc_times_days,
+                dca_thresholds=args.dca_thresholds,
+                autocast_ctx=autocast_ctx,
+            )
+            val_met = evaluate_model(
+                _eval_model, va_loader, device,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+                time_bin_width_days=float(args.time_bin_width_days),
+                eval_times_days=args.auc_times_days,
+                dca_thresholds=args.dca_thresholds,
+                autocast_ctx=autocast_ctx,
+            )
+        else:
+            train_met = {"c_index": 0.0, "ibs": 0.0, "auc_mean": 0.0, "nb_mean": 0.0, "nll": 0.0}
+            val_met = {"c_index": 0.0, "ibs": 0.0, "auc_mean": 0.0, "nb_mean": 0.0, "nll": 0.0}
 
         if swa is not None and epoch >= int(args.swa_start_epoch):
             if ((epoch - int(args.swa_start_epoch)) % int(args.swa_update_freq_epochs)) == 0:
                 swa.update(mm)
 
         report_metric = float(val_met.get(args.report_metric, float("nan")))
-        print(
-            f"[fold {fold:02d}] epoch {epoch:03d} | "
-            f"primary={str(args.endpoint).upper()} | "
-            f"loss={train_stats.get('loss_total', float('nan')):.4f} "
-            f"surv={train_stats.get('loss_surv_total', float('nan')):.4f} "
-            f"prim={train_stats.get('loss_surv_primary', float('nan')):.4f} "
-            f"aux={train_stats.get('loss_surv_aux', float('nan')):.4f} "
-            f"os={train_stats.get('surv_os_nll', float('nan')):.4f} "
-            f"dss={train_stats.get('surv_dss_nll', float('nan')):.4f} "
-            f"dfs={train_stats.get('surv_dfs_nll', float('nan')):.4f} | "
-            f"loc_pt={train_stats.get('loss_loc_pt', float('nan')):.4f} "
-            f"loc_ln={train_stats.get('loss_loc_ln', float('nan')):.4f} "
-            f"loc_pres={train_stats.get('loss_loc_presence', float('nan')):.4f} | "
-            f"val_nll={val_met.get('nll', float('nan')):.4f} | "
-            f"train_c={train_met.get('c_index', float('nan')):.3f} val_c={val_met.get('c_index', float('nan')):.3f} "
-            f"val_{args.report_metric}={report_metric:.3f} "
-            f"teacher_force={teacher_force_alpha:.2f}"
-        )
+        if is_main_rank:
+            print(
+                f"[fold {fold:02d}] epoch {epoch:03d} | "
+                f"primary={str(args.endpoint).upper()} | "
+                f"loss={train_stats.get('loss_total', float('nan')):.4f} "
+                f"surv={train_stats.get('loss_surv_total', float('nan')):.4f} "
+                f"prim={train_stats.get('loss_surv_primary', float('nan')):.4f} "
+                f"aux={train_stats.get('loss_surv_aux', float('nan')):.4f} "
+                f"os={train_stats.get('surv_os_nll', float('nan')):.4f} "
+                f"dss={train_stats.get('surv_dss_nll', float('nan')):.4f} "
+                f"dfs={train_stats.get('surv_dfs_nll', float('nan')):.4f} | "
+                f"loc_pt={train_stats.get('loss_loc_pt', float('nan')):.4f} "
+                f"loc_ln={train_stats.get('loss_loc_ln', float('nan')):.4f} "
+                f"loc_pres={train_stats.get('loss_loc_presence', float('nan')):.4f} | "
+                f"val_nll={val_met.get('nll', float('nan')):.4f} | "
+                f"train_c={train_met.get('c_index', float('nan')):.3f} val_c={val_met.get('c_index', float('nan')):.3f} "
+                f"val_{args.report_metric}={report_metric:.3f} "
+                f"teacher_force={teacher_force_alpha:.2f}"
+            )
 
         row = {
             "epoch": int(epoch),
@@ -1946,25 +1996,11 @@ def run_one_fold(
             key = f"auc_{int(round(float(tday)))}d"
             row[f"train_{key}"] = float(train_met.get(key, float("nan")))
             row[f"val_{key}"] = float(val_met.get(key, float("nan")))
-        pd.DataFrame([row]).to_csv(metrics_csv, mode="a", header=not metrics_csv.is_file(), index=False)
+        if is_main_rank:
+            pd.DataFrame([row]).to_csv(metrics_csv, mode="a", header=not metrics_csv.is_file(), index=False)
 
-        save_checkpoint(
-            ckpt_last,
-            epoch=int(epoch),
-            num_time_bins=int(fold_num_time_bins),
-            model=model,
-            args=args,
-            optimizer=optimizer,
-            scaler=scaler,
-            scheduler=scheduler,
-            report_metric=report_metric,
-            ema=ema,
-            swa=swa,
-            include_training_state=save_full_training_state,
-        )
-        if np.isfinite(report_metric) and report_metric > best_report_metric:
             save_checkpoint(
-                ckpt_best,
+                ckpt_last,
                 epoch=int(epoch),
                 num_time_bins=int(fold_num_time_bins),
                 model=model,
@@ -1977,16 +2013,48 @@ def run_one_fold(
                 swa=swa,
                 include_training_state=save_full_training_state,
             )
-            best_report_metric = float(report_metric)
-            print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
+            if np.isfinite(report_metric) and report_metric > best_report_metric:
+                save_checkpoint(
+                    ckpt_best,
+                    epoch=int(epoch),
+                    num_time_bins=int(fold_num_time_bins),
+                    model=model,
+                    args=args,
+                    optimizer=optimizer,
+                    scaler=scaler,
+                    scheduler=scheduler,
+                    report_metric=report_metric,
+                    ema=ema,
+                    swa=swa,
+                    include_training_state=save_full_training_state,
+                )
+                best_report_metric = float(report_metric)
+                print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
         scheduler.step()
+        # No barrier needed here — DDP synchronizes during forward/backward,
+        # and DistributedSampler.set_epoch() at the top of each epoch is enough.
+        # A barrier would deadlock when rank 0 eval takes >600s (NCCL timeout).
 
-        # Release non-rank-0 processes that are waiting at the barrier above.
-        if _DDP_INITIALIZED and _is_main_process() and torch.distributed.is_initialized():
-            torch.distributed.barrier()
+    # Post-training evaluation: use unwrapped model to avoid DDP collectives.
+    _eval_model = mm if _DDP_INITIALIZED else model
+    if _DDP_INITIALIZED and not _is_main_process():
+        # Non-rank-0: skip final eval/export, return minimal result.
+        return {
+            "fold": int(fold),
+            "export_suffix": "skip",
+            "export_risks": {},
+            "test_metrics_export": {},
+            "test_metrics_last": None,
+            "test_metrics_ema": None,
+            "test_metrics_swa": None,
+            "test_metrics_best": None,
+            "n_test": int(len(te_df)),
+            "num_time_bins": int(fold_num_time_bins),
+            "train_max_time_days": float(fold_max_time),
+        }
 
     last_test = evaluate_model(
-        model, te_loader, device,
+        _eval_model, te_loader, device,
         endpoint=str(args.endpoint),
         risk_horizon_days=float(args.risk_horizon_days),
         time_bin_width_days=float(args.time_bin_width_days),
@@ -1994,14 +2062,14 @@ def run_one_fold(
         dca_thresholds=args.dca_thresholds,
         autocast_ctx=autocast_ctx,
     )
-    risks_last = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+    risks_last = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     ema_test = None
     risks_ema = None
     if ema is not None:
         with ema.apply_to(mm):
             ema_test = evaluate_model(
-                model, te_loader, device,
+                _eval_model, te_loader, device,
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
                 time_bin_width_days=float(args.time_bin_width_days),
@@ -2009,14 +2077,14 @@ def run_one_fold(
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
             )
-            risks_ema = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+            risks_ema = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     swa_test = None
     risks_swa = None
     if swa is not None and swa.n_averaged > 0:
         with swa.apply_to(mm):
             swa_test = evaluate_model(
-                model, te_loader, device,
+                _eval_model, te_loader, device,
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
                 time_bin_width_days=float(args.time_bin_width_days),
@@ -2024,13 +2092,13 @@ def run_one_fold(
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
             )
-            risks_swa = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+            risks_swa = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     best_test = None
     risks_best = None
-    if load_model_state_only(ckpt_best, model):
+    if load_model_state_only(ckpt_best, _eval_model):
         best_test = evaluate_model(
-            model, te_loader, device,
+            _eval_model, te_loader, device,
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
             time_bin_width_days=float(args.time_bin_width_days),
@@ -2038,7 +2106,7 @@ def run_one_fold(
             dca_thresholds=args.dca_thresholds,
             autocast_ctx=autocast_ctx,
         )
-        risks_best = predict_risk_scores(model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+        risks_best = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
 
     export_suffix = "ema" if (risks_ema is not None) else "last"
     export_risks = risks_ema if (risks_ema is not None) else risks_last
@@ -2138,8 +2206,12 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--grad_accumulation_steps", type=int, default=1,
-                   help="Accumulate gradients over N micro-batches before stepping. "
-                        "Effective batch = batch_size * grad_accumulation_steps * num_gpus.")
+                   help="Accumulate gradients over N forward/backward passes before stepping. "
+                        "For single-GPU runs, effective global batch is batch_size * grad_accumulation_steps. "
+                        "For DataParallel, batch_size is the global batch passed to the model, "
+                        "so effective global batch is batch_size * grad_accumulation_steps. "
+                        "For DDP, batch_size is per-rank, so effective global batch is "
+                        "batch_size * world_size * grad_accumulation_steps.")
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--log_every_batches", type=int, default=50)
@@ -2477,6 +2549,9 @@ def main():
             raise RuntimeError(f"[CV] duplicate test IDs across folds: {sorted(list(dup))[:20]}")
         fold_results.append(res)
         all_test_risks.update(res["export_risks"])
+
+    if _DDP_INITIALIZED and not _is_main_process():
+        return
 
     if all_test_risks:
         save_endpoint_risk_dict_csv(
