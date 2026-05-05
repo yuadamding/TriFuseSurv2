@@ -15,6 +15,7 @@ NODE_TOPOLOGY_DIR="${NODE_TOPOLOGY_DIR:-}"
 MODEL_VERSION="${MODEL_VERSION:-v2}"
 DRY_RUN="${DRY_RUN:-0}"
 ALLOW_OUTER_TEST_SCORING="${ALLOW_OUTER_TEST_SCORING:-0}"
+LOCKED_CONFIG_HASH="${LOCKED_CONFIG_HASH:-}"
 
 # Phase 1 is deliberately small: cover model width, radiomics-token PCA width,
 # and teacher-forcing duration without spending the whole allocation.
@@ -65,6 +66,7 @@ env \
   RADIOMICS_SOURCE="$RADIOMICS_SOURCE" \
   NODE_TOPOLOGY_DIR="$NODE_TOPOLOGY_DIR" \
   ALLOW_OUTER_TEST_SCORING="$ALLOW_OUTER_TEST_SCORING" \
+  LOCKED_CONFIG_HASH="$LOCKED_CONFIG_HASH" \
   DRY_RUN="$DRY_RUN" \
   OUT_DIR="$OUT_DIR_BASE/phase1_coarse" \
   bash "$PACKAGE_DIR/scripts/run_contour_aware_cindex_search_75gb_30ep.sh" "$@"
@@ -84,6 +86,7 @@ exec env \
   RADIOMICS_SOURCE="$RADIOMICS_SOURCE" \
   NODE_TOPOLOGY_DIR="$NODE_TOPOLOGY_DIR" \
   ALLOW_OUTER_TEST_SCORING="$ALLOW_OUTER_TEST_SCORING" \
+  LOCKED_CONFIG_HASH="$LOCKED_CONFIG_HASH" \
   DRY_RUN="$DRY_RUN" \
   OUT_DIR="$OUT_DIR_BASE/phase2_followup" \
   bash "$PACKAGE_DIR/scripts/run_contour_aware_cindex_search_75gb_30ep.sh" "$@"

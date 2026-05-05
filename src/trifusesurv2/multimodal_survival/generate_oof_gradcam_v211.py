@@ -248,6 +248,7 @@ def _filter_oof_column(
     expected: Any,
     notes: list[str],
     aliases: tuple[str, ...] = (),
+    strict: bool = True,
 ) -> pd.DataFrame:
     actual_col = ""
     for candidate in (column, *aliases):
@@ -255,6 +256,9 @@ def _filter_oof_column(
             actual_col = candidate
             break
     if not actual_col:
+        if strict:
+            alias_msg = f" or aliases {aliases}" if aliases else ""
+            raise RuntimeError(f"OOF CSV is missing required metadata column {column!r}{alias_msg}")
         notes.append(f"oof_missing_{column}")
         return rows
     if column == "fold":
@@ -277,6 +281,7 @@ def _oof_lookup(
     fold: int,
     checkpoint: str,
     weights: str,
+    strict_metadata: bool = True,
 ) -> tuple[Optional[float], str]:
     if df is None:
         return None, "unchecked"
@@ -286,6 +291,11 @@ def _oof_lookup(
     rows = df[df[pid_col].astype(str) == str(pid)]
     if rows.empty:
         raise RuntimeError(f"OOF CSV has no row for patient_id={pid}")
+    if "risk_score" not in rows.columns:
+        raise RuntimeError(f"OOF CSV is missing required column 'risk_score' for patient_id={pid}")
+    missing = [col for col in ("risk_endpoint", "risk_horizon_days") if col not in rows.columns]
+    if missing and strict_metadata:
+        raise RuntimeError(f"OOF CSV is missing required columns for patient_id={pid}: {missing}")
     if "risk_endpoint" in rows.columns:
         rows = rows[rows["risk_endpoint"].astype(str).str.upper() == str(endpoint).upper()]
     if "risk_horizon_days" in rows.columns:
@@ -294,12 +304,12 @@ def _oof_lookup(
     if rows.empty:
         raise RuntimeError(f"OOF CSV has no endpoint/horizon-matched row for patient_id={pid}")
     notes: list[str] = []
-    rows = _filter_oof_column(rows, column="fold", expected=int(fold), notes=notes)
-    rows = _filter_oof_column(rows, column="checkpoint", expected=str(checkpoint), notes=notes)
-    rows = _filter_oof_column(rows, column="weights", expected=str(weights), notes=notes, aliases=("weights_type",))
-    rows = _filter_oof_column(rows, column="model_version", expected="v2", notes=notes)
-    rows = _filter_oof_column(rows, column="software_version", expected=SOFTWARE_VERSION, notes=notes)
-    rows = _filter_oof_column(rows, column="commit_sha", expected=TARGET_COMMIT_SHA, notes=notes)
+    rows = _filter_oof_column(rows, column="fold", expected=int(fold), notes=notes, strict=strict_metadata)
+    rows = _filter_oof_column(rows, column="checkpoint", expected=str(checkpoint), notes=notes, strict=strict_metadata)
+    rows = _filter_oof_column(rows, column="weights", expected=str(weights), notes=notes, aliases=("weights_type",), strict=strict_metadata)
+    rows = _filter_oof_column(rows, column="model_version", expected="v2", notes=notes, strict=strict_metadata)
+    rows = _filter_oof_column(rows, column="software_version", expected=SOFTWARE_VERSION, notes=notes, strict=strict_metadata)
+    rows = _filter_oof_column(rows, column="commit_sha", expected=TARGET_COMMIT_SHA, notes=notes, strict=strict_metadata)
     if len(rows) > 1 and len(rows["risk_score"].astype(float).round(12).unique()) > 1:
         raise RuntimeError(f"OOF lookup ambiguous for patient_id={pid}: matched rows={len(rows)}")
     return float(rows.iloc[0]["risk_score"]), ";".join(notes)
@@ -342,7 +352,11 @@ def _to_device(batch: dict[str, Any], device: torch.device, key: str) -> Optiona
 def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[str, Any]:
     ck_path = _checkpoint_for_fold(args.run_dir, fold, args.checkpoint)
     ck = torch.load(ck_path, map_location="cpu", weights_only=False)
-    assert_v211_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
+    assert_v211_v2_checkpoint(
+        ck,
+        checkpoint_path=_relative_path(ck_path),
+        require_commit=not bool(args.allow_commit_mismatch),
+    )
     ck_args = checkpoint_args_to_dict(ck)
     state = normalized_state_dict(ck)
     model = _build_model_from_checkpoint(ck, state)
@@ -478,6 +492,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             pt_peri_disjoint_t = (pt_shell_t - pt_native_t - ln_native_t - ln_shell_t).clamp(0, 1)
             ln_peri_disjoint_t = (ln_shell_t - ln_native_t - pt_native_t - pt_shell_t).clamp(0, 1)
             habitat_union_disjoint_t = (pt_native_t + ln_native_t + pt_peri_disjoint_t + ln_peri_disjoint_t).clamp(0, 1)
+            peri_overlap_t = torch.minimum(pt_shell_t, ln_shell_t).clamp(0, 1)
             supports_t = {
                 "full_volume": torch.ones_like(body_t),
                 "body": body_t,
@@ -486,6 +501,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 "pt_peri_disjoint": pt_peri_disjoint_t,
                 "ln_intra": ln_native_t,
                 "ln_peri": ln_shell_t.clamp(0, 1),
+                "peri_overlap": peri_overlap_t,
                 "ln_peri_disjoint": ln_peri_disjoint_t,
                 "pt_ln_union": (pt_native_t + ln_native_t).clamp(0, 1),
                 "habitat_union": habitat_union_t,
@@ -508,6 +524,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
         ln_shell_rel = audit_dir_rel / "ln_shell.nii.gz"
         pt_peri_disjoint_rel = audit_dir_rel / "pt_peri_disjoint.nii.gz"
         ln_peri_disjoint_rel = audit_dir_rel / "ln_peri_disjoint.nii.gz"
+        peri_overlap_rel = audit_dir_rel / "peri_overlap.nii.gz"
         habitat_union_rel = audit_dir_rel / "habitat_union.nii.gz"
         habitat_union_disjoint_rel = audit_dir_rel / "habitat_union_disjoint.nii.gz"
         off_habitat_body_rel = audit_dir_rel / "off_habitat_body.nii.gz"
@@ -520,6 +537,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
         save_nifti(pred_supports_np["ln_peri"], args.out_dir / ln_shell_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["pt_peri_disjoint"], args.out_dir / pt_peri_disjoint_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["ln_peri_disjoint"], args.out_dir / ln_peri_disjoint_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["peri_overlap"], args.out_dir / peri_overlap_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["habitat_union"], args.out_dir / habitat_union_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["habitat_union_disjoint"], args.out_dir / habitat_union_disjoint_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["off_habitat_body"], args.out_dir / off_habitat_body_rel, ct_path, clip=True)
@@ -551,6 +569,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             fold=int(fold),
             checkpoint=str(args.checkpoint),
             weights=str(args.weights),
+            strict_metadata=not bool(args.allow_incomplete_oof_metadata),
         )
         risk_absdiff = "" if saved is None else abs(risk_full - float(saved))
         if saved is not None and float(risk_absdiff) > float(args.risk_match_tol):
@@ -583,8 +602,12 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             write_json(args.out_dir / ablation_rel, ablations)
 
         habitat_names = image_habitat_names(model)
-        map_specs = [("full_model", None), *[(name, idx) for idx, name in enumerate(habitat_names)]]
-        for map_i, (habitat_name, habitat_idx) in enumerate(map_specs):
+        map_specs = [
+            ("full_model_body", None, "body"),
+            ("full_model_habitat_union", None, "habitat_union"),
+            *[(name, idx, ("body" if name == "global" else name)) for idx, name in enumerate(habitat_names)],
+        ]
+        for map_i, (habitat_name, habitat_idx, focus_name) in enumerate(map_specs):
             model.zero_grad(set_to_none=True)
             for feat in bb_aux["cam_features"]:
                 if feat.grad is not None:
@@ -615,13 +638,13 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             target.backward(retain_graph=(map_i < len(map_specs) - 1))
             signed_cam, scale_cams, scale_shapes = cam_from_features(bb_aux["cam_features"], tuple(int(x) for x in x.shape[2:]))
             pos_raw, neg_raw = split_signed_cam(signed_cam)
-            focus_name = "habitat_union" if habitat_name == "full_model" else ("body" if habitat_name == "global" else habitat_name)
             support_np = supports_np[focus_name]
             pos_focus = normalize_component(pos_raw, support=support_np)
             neg_focus = normalize_component(neg_raw, support=support_np)
             pos_raw_norm = normalize_component(pos_raw, support=None)
             neg_raw_norm = normalize_component(neg_raw, support=None)
-            mass = cam_mass_summary(pos_raw, supports_np, denominator="body")
+            pos_mass = {f"pos_{k}": v for k, v in cam_mass_summary(pos_raw, supports_np, denominator="body").items()}
+            neg_mass = {f"neg_{k}": v for k, v in cam_mass_summary(neg_raw, supports_np, denominator="body").items()}
 
             case_dir_rel = Path(f"fold_{fold:02d}") / pid_slug(pid) / config_tag / pid_slug(habitat_name)
             signed_rel = case_dir_rel / "signed_raw_gradcam.nii.gz"
@@ -685,6 +708,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 "ln_shell_path": str(ln_shell_rel),
                 "pt_peri_disjoint_path": str(pt_peri_disjoint_rel),
                 "ln_peri_disjoint_path": str(ln_peri_disjoint_rel),
+                "peri_overlap_path": str(peri_overlap_rel),
                 "habitat_union_path": str(habitat_union_rel),
                 "habitat_union_disjoint_path": str(habitat_union_disjoint_rel),
                 "off_habitat_body_path": str(off_habitat_body_rel),
@@ -706,7 +730,8 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 "delta_risk_without_topology": ablations.get("delta_risk_without_topology", ""),
                 "delta_risk_without_node_tokens": ablations.get("delta_risk_without_node_tokens", ""),
             }
-            row.update(mass)
+            row.update(pos_mass)
+            row.update(neg_mass)
             rows.append(row)
         append_manifest(manifest_path, rows)
         rows.clear()
@@ -743,8 +768,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_attention", action="store_true")
     p.add_argument("--save_ablations", action="store_true")
     p.add_argument("--save_per_scale_cams", action="store_true")
-    p.add_argument("--require_commit_sha", action="store_true")
-    p.add_argument("--require_radiomics_presence_columns", action="store_true")
+    p.add_argument("--require_commit_sha", dest="require_commit_sha", action="store_true", default=True, help=argparse.SUPPRESS)
+    p.add_argument("--allow_commit_mismatch", action="store_true")
+    p.add_argument("--allow_unchecked_oof", action="store_true")
+    p.add_argument("--allow_incomplete_oof_metadata", action="store_true")
+    p.add_argument("--require_radiomics_presence_columns", dest="require_radiomics_presence_columns", action="store_true", default=True)
+    p.add_argument("--allow_missing_radiomics_presence_columns", dest="require_radiomics_presence_columns", action="store_false")
     p.add_argument("--radiomics_pcs_per_group", type=int, default=16)
     p.add_argument("--max_nodes", type=int, default=16)
     p.add_argument("--risk_match_tol", type=float, default=1e-4)
@@ -754,6 +783,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--device", type=str, default="cuda:0")
     args = p.parse_args()
+    if args.oof_predictions_csv is None and not bool(args.allow_unchecked_oof):
+        raise ValueError("Provide --oof_predictions_csv for OOF-matched Grad-CAM, or pass --allow_unchecked_oof for exploratory exports.")
     if not (0.0 <= float(args.teacher_force_alpha) <= 1.0):
         raise ValueError("--teacher_force_alpha must be in [0,1]")
     args.out_dir.mkdir(parents=True, exist_ok=True)

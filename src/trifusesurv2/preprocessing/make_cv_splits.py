@@ -281,6 +281,45 @@ def _build_strata(events: np.ndarray, times: Optional[np.ndarray], n_time_bins: 
     return events * (int(n_time_bins) + 1) + time_bin
 
 
+def _split_words(value: str) -> List[str]:
+    out: List[str] = []
+    for part in str(value or "").replace(",", " ").split():
+        part = part.strip()
+        if part:
+            out.append(part)
+    return out
+
+
+def _extra_strata_from_meta(meta: pd.DataFrame, patient_ids: List[str], cols: List[str]) -> Optional[np.ndarray]:
+    cols = [c for c in cols if c in meta.columns]
+    if not cols:
+        return None
+    m = meta.copy()
+    m["patient_id"] = m["patient_id"].astype(str)
+    m = m.drop_duplicates("patient_id").set_index("patient_id")
+    labels = []
+    for pid in patient_ids:
+        if pid not in m.index:
+            labels.append("missing")
+            continue
+        parts = []
+        for col in cols:
+            value = m.at[pid, col]
+            if pd.isna(value) or str(value).strip() == "":
+                value = "unknown"
+            parts.append(f"{col}={str(value).strip().lower()}")
+        labels.append("|".join(parts))
+    return np.asarray(labels, dtype=object)
+
+
+def _combine_strata(base: np.ndarray, extra: Optional[np.ndarray]) -> np.ndarray:
+    if extra is None:
+        return np.asarray(base)
+    labels = np.asarray([f"{int(b)}|{str(e)}" for b, e in zip(base, extra)], dtype=object)
+    _, codes = np.unique(labels, return_inverse=True)
+    return codes.astype(int)
+
+
 def stratified_kfold_indices(
     events: np.ndarray,
     k: int,
@@ -288,28 +327,39 @@ def stratified_kfold_indices(
     *,
     times: Optional[np.ndarray] = None,
     n_time_bins: int = 0,
+    extra_strata: Optional[np.ndarray] = None,
 ) -> List[List[int]]:
     if int(k) < 1:
         raise ValueError(f"k must be >= 1, got {k}")
     rng = np.random.default_rng(seed)
     events = _validate_binary_events(events, context="events")
 
-    strata = _build_strata(events, times, n_time_bins)
+    strata = _combine_strata(_build_strata(events, times, n_time_bins), extra_strata)
     unique_strata = np.unique(strata)
+    rng.shuffle(unique_strata)
 
     folds: List[List[int]] = [[] for _ in range(k)]
+    cursor = 0
     for s in unique_strata:
         members = np.where(strata == s)[0]
         rng.shuffle(members)
         for i, idx in enumerate(members):
-            folds[i % k].append(int(idx))
+            folds[(cursor + i) % k].append(int(idx))
+        cursor = (cursor + len(members)) % k
 
     for f in folds:
         rng.shuffle(f)
     return folds
 
 
-def stratified_train_val_split(indices: List[int], events: np.ndarray, val_frac: float, seed: int) -> Tuple[List[int], List[int]]:
+def stratified_train_val_split(
+    indices: List[int],
+    events: np.ndarray,
+    val_frac: float,
+    seed: int,
+    *,
+    extra_strata: Optional[np.ndarray] = None,
+) -> Tuple[List[int], List[int]]:
     if not 0 <= float(val_frac) < 1:
         raise ValueError(f"val_frac must be in [0, 1), got {val_frac}")
 
@@ -317,22 +367,39 @@ def stratified_train_val_split(indices: List[int], events: np.ndarray, val_frac:
     idx = np.array(indices, dtype=int)
     if len(idx) <= 1 or val_frac <= 0:
         return [int(x) for x in idx.tolist()], []
-    ev = _validate_binary_events(events, context="events")[idx]
-
-    idx_e = idx[ev == 1]
-    idx_c = idx[ev == 0]
-    rng.shuffle(idx_e)
-    rng.shuffle(idx_c)
 
     n_val = int(round(len(idx) * val_frac))
     n_val = min(n_val, len(idx) - 1)
     if n_val <= 0:
         return [int(x) for x in idx.tolist()], []
-    n_val_e = int(round(n_val * (len(idx_e) / max(1, len(idx)))))
-    n_val_e = min(n_val_e, len(idx_e))
-    n_val_c = min(n_val - n_val_e, len(idx_c))
 
-    val_idx = np.concatenate([idx_e[:n_val_e], idx_c[:n_val_c]])
+    ev = _validate_binary_events(events, context="events")[idx]
+    if extra_strata is None:
+        strata = ev
+    else:
+        strata = _combine_strata(ev, np.asarray(extra_strata, dtype=object)[idx])
+
+    groups = []
+    for s in np.unique(strata):
+        members = idx[strata == s]
+        rng.shuffle(members)
+        raw = float(len(members)) * float(val_frac)
+        take = min(int(np.floor(raw)), max(0, len(members) - 1))
+        groups.append({"members": members, "take": take, "remainder": raw - float(np.floor(raw))})
+
+    current = sum(int(g["take"]) for g in groups)
+    for g in sorted(groups, key=lambda item: item["remainder"], reverse=True):
+        if current >= n_val:
+            break
+        if int(g["take"]) < len(g["members"]):
+            g["take"] = int(g["take"]) + 1
+            current += 1
+
+    val_parts = [g["members"][: int(g["take"])] for g in groups if int(g["take"]) > 0]
+    if val_parts:
+        val_idx = np.concatenate(val_parts)
+    else:
+        val_idx = idx[:n_val]
     rng.shuffle(val_idx)
 
     val_set = set(int(x) for x in val_idx.tolist())
@@ -349,6 +416,7 @@ def make_fold_splits(
     *,
     times: Optional[np.ndarray] = None,
     n_time_bins: int = 0,
+    extra_strata: Optional[np.ndarray] = None,
 ) -> List[Dict[str, List[int]]]:
     events = _validate_binary_events(events, context="events")
     cv_folds = int(cv_folds)
@@ -356,20 +424,81 @@ def make_fold_splits(
         raise ValueError(f"cv_folds must be >= 1, got {cv_folds}")
 
     if cv_folds == 1:
-        tr_idx, va_idx = stratified_train_val_split(list(range(len(events))), events, val_frac, split_seed + 1000)
+        tr_idx, va_idx = stratified_train_val_split(
+            list(range(len(events))),
+            events,
+            val_frac,
+            split_seed + 1000,
+            extra_strata=extra_strata,
+        )
         return [{"train": tr_idx, "val": va_idx, "test": []}]
 
     if len(events) < cv_folds:
         raise ValueError(f"Not enough samples ({len(events)}) for {cv_folds}-fold CV after QC.")
 
-    folds = stratified_kfold_indices(events, cv_folds, split_seed, times=times, n_time_bins=n_time_bins)
+    folds = stratified_kfold_indices(events, cv_folds, split_seed, times=times, n_time_bins=n_time_bins, extra_strata=extra_strata)
     split_defs: List[Dict[str, List[int]]] = []
     for fold_idx in range(cv_folds):
         test_idx = folds[fold_idx]
         trainval_idx = [i for other_idx, fold in enumerate(folds) if other_idx != fold_idx for i in fold]
-        tr_idx, va_idx = stratified_train_val_split(trainval_idx, events, val_frac, split_seed + 1000 + fold_idx)
+        tr_idx, va_idx = stratified_train_val_split(
+            trainval_idx,
+            events,
+            val_frac,
+            split_seed + 1000 + fold_idx,
+            extra_strata=extra_strata,
+        )
         split_defs.append({"train": tr_idx, "val": va_idx, "test": test_idx})
     return split_defs
+
+
+def write_fold_balance(
+    path: str,
+    *,
+    split_rows: List[Dict[str, Any]],
+    items: List[Dict[str, Any]],
+    meta_csv: str,
+    balance_cols: List[str],
+) -> None:
+    meta = pd.read_csv(meta_csv, dtype={"patient_id": str})
+    meta["patient_id"] = meta["patient_id"].astype(str)
+    item_df = pd.DataFrame(items)
+    item_df["patient_id"] = item_df["patient_id"].astype(str)
+    split_df = pd.DataFrame(split_rows)
+    if split_df.empty:
+        pd.DataFrame().to_csv(path, index=False)
+        return
+    df = split_df.merge(item_df[["patient_id", "time", "event"]], on="patient_id", how="left")
+    extra_cols = [c for c in balance_cols if c in meta.columns]
+    if extra_cols:
+        df = df.merge(meta[["patient_id", *extra_cols]].drop_duplicates("patient_id"), on="patient_id", how="left")
+
+    rows: List[Dict[str, Any]] = []
+    for (fold, split), sub in df.groupby(["fold", "split"], dropna=False):
+        event = pd.to_numeric(sub["event"], errors="coerce")
+        time = pd.to_numeric(sub["time"], errors="coerce")
+        rows.extend(
+            [
+                {"fold": fold, "split": split, "metric": "n", "value": "all", "count": int(len(sub)), "fraction": 1.0},
+                {"fold": fold, "split": split, "metric": "event_count", "value": "1", "count": int((event == 1).sum()), "fraction": float((event == 1).mean()) if event.notna().any() else float("nan")},
+                {"fold": fold, "split": split, "metric": "median_time_days", "value": "median", "count": float(time.median()) if time.notna().any() else float("nan"), "fraction": ""},
+            ]
+        )
+        for col in extra_cols:
+            values = sub[col].fillna("unknown").astype(str)
+            denom = max(1, len(values))
+            for value, count in values.value_counts(dropna=False).sort_index().items():
+                rows.append(
+                    {
+                        "fold": fold,
+                        "split": split,
+                        "metric": col,
+                        "value": value,
+                        "count": int(count),
+                        "fraction": float(count) / float(denom),
+                    }
+                )
+    pd.DataFrame(rows).to_csv(path, index=False)
 
 
 def write_ids(path: str, ids: List[str]):
@@ -404,6 +533,18 @@ def main():
     ap.add_argument("--split_seed", type=int, default=1)
     ap.add_argument("--stratify_time_bins", type=int, default=4,
                     help="Stratify on (event, coarse time bin). 0 = event-only (legacy).")
+    ap.add_argument(
+        "--stratify_cols",
+        type=str,
+        default="HPV p16 T N NSTAGE TX scanner site smoke_group crop_mode",
+        help="Optional metadata/QC columns to include in split strata when present and report in fold_balance.csv.",
+    )
+    ap.add_argument(
+        "--balance_cols",
+        type=str,
+        default="",
+        help="Optional metadata columns for fold_balance.csv. Defaults to --stratify_cols.",
+    )
 
     ap.add_argument("--out_dir", type=str, default="cv_splits")
     args = ap.parse_args()
@@ -452,9 +593,14 @@ def main():
 
     events = np.array([it["event"] for it in items], dtype=int)
     times = np.array([it["time"] for it in items], dtype=float)
+    item_ids = [str(it["patient_id"]) for it in items]
+    meta_for_balance = pd.read_csv(args.meta_csv, dtype={"patient_id": str})
+    stratify_cols = _split_words(args.stratify_cols)
+    balance_cols = _split_words(args.balance_cols) or stratify_cols
+    extra_strata = _extra_strata_from_meta(meta_for_balance, item_ids, stratify_cols)
     split_defs = make_fold_splits(
         events, args.cv_folds, args.val_frac, args.split_seed,
-        times=times, n_time_bins=args.stratify_time_bins,
+        times=times, n_time_bins=args.stratify_time_bins, extra_strata=extra_strata,
     )
 
     rows = []
@@ -489,7 +635,10 @@ def main():
 
     out_csv = os.path.join(args.out_dir, "splits.csv")
     pd.DataFrame(rows).to_csv(out_csv, index=False)
+    balance_csv = os.path.join(args.out_dir, "fold_balance.csv")
+    write_fold_balance(balance_csv, split_rows=rows, items=items, meta_csv=args.meta_csv, balance_cols=balance_cols)
     print(f"[done] wrote {out_csv}")
+    print(f"[done] wrote {balance_csv}")
 
 
 if __name__ == "__main__":

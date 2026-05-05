@@ -88,7 +88,7 @@ class GradcamCoreTest(unittest.TestCase):
                     "weights_type": "ema",
                     "model_version": "v2",
                     "software_version": "2.0.11",
-                    "commit_sha": "50b1ca75168ac346332954fbc0b1c58a9b805a3a",
+                    "commit_sha": "daaaa363020b7e27b93981f62dfa17821489e1ea",
                 }
             ]
         )
@@ -114,6 +114,31 @@ class GradcamCoreTest(unittest.TestCase):
                 fold=1,
                 checkpoint="best",
                 weights="ema",
+            )
+
+        with self.assertRaises(RuntimeError):
+            _oof_lookup(
+                df.drop(columns=["commit_sha"]),
+                "P1",
+                id_col="case_id",
+                endpoint="DSS",
+                horizon_days=1095.0,
+                fold=0,
+                checkpoint="best",
+                weights="ema",
+            )
+
+        with self.assertRaises(RuntimeError):
+            _oof_lookup(
+                df.drop(columns=["risk_score"]),
+                "P1",
+                id_col="case_id",
+                endpoint="DSS",
+                horizon_days=1095.0,
+                fold=0,
+                checkpoint="best",
+                weights="ema",
+                strict_metadata=False,
             )
 
 

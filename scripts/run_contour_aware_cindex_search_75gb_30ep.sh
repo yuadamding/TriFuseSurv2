@@ -28,9 +28,15 @@ FAIL_LOG_TAIL_LINES="${FAIL_LOG_TAIL_LINES:-120}"
 SKIP_FINISHED="${SKIP_FINISHED:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 ALLOW_OUTER_TEST_SCORING="${ALLOW_OUTER_TEST_SCORING:-0}"
+LOCKED_CONFIG_HASH="${LOCKED_CONFIG_HASH:-}"
 
 if [[ "$DRY_RUN" != "1" ]]; then
   tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom rt_utils cv2
+fi
+
+if [[ "$ALLOW_OUTER_TEST_SCORING" == "1" && -z "$LOCKED_CONFIG_HASH" ]]; then
+  echo "[search75][error] ALLOW_OUTER_TEST_SCORING=1 requires LOCKED_CONFIG_HASH for final-audit traceability." >&2
+  exit 1
 fi
 
 normalize_list_var() {
@@ -133,6 +139,7 @@ data = json.loads(summary_path.read_text())
 row = {
     "trial": trial,
     "score_source": "outer_test_oof",
+    "locked_config_hash": "${LOCKED_CONFIG_HASH}",
     "weight": data["weights"],
     "c_index": data["c_index"],
     "n_predictions": data["n_predictions"],
@@ -196,6 +203,7 @@ c_index = sum(fold_best) / len(fold_best) if fold_best else float("nan")
 row = {
     "trial": trial,
     "score_source": "validation_metrics",
+    "locked_config_hash": "",
     "weight": "validation",
     "c_index": c_index,
     "n_predictions": "",

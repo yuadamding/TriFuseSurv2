@@ -90,6 +90,9 @@ trifusesurv2-prepare-opscc-tabular   # Tabular data preparation
 `trifusesurv2-gradcam-v211` defaults to `--checkpoint last --weights ema`,
 matching the default `test_risks_ema.csv` export from training. Use
 `--checkpoint best --weights best` when explaining `test_risks_best.csv`.
+OOF Grad-CAM now requires matching OOF predictions and complete provenance
+metadata by default; use `--allow_unchecked_oof`, `--allow_commit_mismatch`,
+or `--allow_incomplete_oof_metadata` only for exploratory debugging.
 
 ## Operational search scripts
 
@@ -108,7 +111,8 @@ launchers. The current scripts live in `scripts/`:
   - v2 habitat-aligned two-phase launcher with `quick`, `balanced`, and `broad`
     profiles; use `DRY_RUN=1` to print the candidate settings without training
   - ranks trials from validation metrics by default; set
-    `ALLOW_OUTER_TEST_SCORING=1` only for final held-out audit reporting
+    `ALLOW_OUTER_TEST_SCORING=1 LOCKED_CONFIG_HASH=<hash>` only for final
+    held-out audit reporting
 - `scripts/run_dual_h100_140gb_best_perf_20hr.sh`
   - dual-H100 best-performance search; resumable by default with full checkpoints
 - `scripts/run_dual_h100_140gb_diverse_search_20hr.sh`

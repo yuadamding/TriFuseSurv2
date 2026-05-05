@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from trifusesurv2.schema import IMAGE_HABITATS
 
 SOFTWARE_VERSION = "2.0.11"
-TARGET_COMMIT_SHA = "50b1ca75168ac346332954fbc0b1c58a9b805a3a"
+TARGET_COMMIT_SHA = "daaaa363020b7e27b93981f62dfa17821489e1ea"
 MODEL_CLASS = "ContourAwareHabitatSurvivalModel"
 
 
@@ -185,6 +185,7 @@ def supports_from_backbone_aux(aux: dict[str, torch.Tensor]) -> dict[str, torch.
     ln_shell = aux["ln_shell"].detach().clamp(0, 1)
     body = aux.get("body", torch.ones_like(pt)).detach().clamp(0, 1)
     habitat_union = (pt + pt_shell + ln + ln_shell).clamp(0, 1)
+    peri_overlap = torch.minimum(pt_shell, ln_shell).clamp(0, 1)
     pt_peri_disjoint = (pt_shell - pt - ln - ln_shell).clamp(0, 1)
     ln_peri_disjoint = (ln_shell - ln - pt - pt_shell).clamp(0, 1)
     habitat_union_disjoint = (pt + ln + pt_peri_disjoint + ln_peri_disjoint).clamp(0, 1)
@@ -196,6 +197,7 @@ def supports_from_backbone_aux(aux: dict[str, torch.Tensor]) -> dict[str, torch.
         "pt_peri_disjoint": pt_peri_disjoint,
         "ln_intra": ln,
         "ln_peri": ln_shell,
+        "peri_overlap": peri_overlap,
         "ln_peri_disjoint": ln_peri_disjoint,
         "pt_ln_union": (pt + ln).clamp(0, 1),
         "habitat_union": habitat_union,

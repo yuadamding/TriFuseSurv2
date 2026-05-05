@@ -61,6 +61,14 @@ class TimeAwareKFoldTest(unittest.TestCase):
         all_indices = sorted(idx for fold in folds for idx in fold)
         self.assertEqual(all_indices, list(range(8)))
 
+    def test_singleton_extra_strata_are_distributed(self):
+        events = np.array([0, 1, 0, 1, 0, 1, 0, 1])
+        extra = np.array([f"hpv_stage_{i}" for i in range(8)], dtype=object)
+        folds = stratified_kfold_indices(events, k=4, seed=1, extra_strata=extra)
+        self.assertEqual(sorted(len(fold) for fold in folds), [2, 2, 2, 2])
+        all_indices = sorted(idx for fold in folds for idx in fold)
+        self.assertEqual(all_indices, list(range(8)))
+
     def test_make_fold_splits_with_times(self):
         rng = np.random.default_rng(42)
         n = 50
@@ -74,6 +82,17 @@ class TimeAwareKFoldTest(unittest.TestCase):
             self.assertIn("train", s)
             self.assertIn("val", s)
             self.assertIn("test", s)
+
+    def test_make_fold_splits_accepts_extra_strata_for_val_split(self):
+        events = np.array([0, 1] * 12)
+        extra = np.array(["hpv_pos" if i % 3 else "hpv_neg" for i in range(len(events))], dtype=object)
+        splits = make_fold_splits(events, cv_folds=3, val_frac=0.25, split_seed=1, extra_strata=extra)
+        self.assertEqual(len(splits), 3)
+        for split in splits:
+            self.assertGreater(len(split["val"]), 0)
+            self.assertTrue(set(split["train"]).isdisjoint(split["val"]))
+            self.assertTrue(set(split["test"]).isdisjoint(split["train"]))
+            self.assertTrue(set(split["test"]).isdisjoint(split["val"]))
 
 
 if __name__ == "__main__":

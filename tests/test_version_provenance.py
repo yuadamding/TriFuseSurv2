@@ -21,7 +21,7 @@ class VersionProvenanceTest(unittest.TestCase):
         self.assertEqual(project_version, "2.0.11")
         self.assertEqual(__version__, project_version)
         self.assertEqual(SOFTWARE_VERSION, project_version)
-        self.assertEqual(TARGET_COMMIT_SHA, "50b1ca75168ac346332954fbc0b1c58a9b805a3a")
+        self.assertEqual(TARGET_COMMIT_SHA, "daaaa363020b7e27b93981f62dfa17821489e1ea")
 
     def test_current_gradcam_cli_module_exists_and_old_module_is_absent(self):
         self.assertIsNotNone(importlib.util.find_spec("trifusesurv2.multimodal_survival.generate_oof_gradcam_v211"))

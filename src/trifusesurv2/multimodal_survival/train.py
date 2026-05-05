@@ -1450,7 +1450,7 @@ def save_checkpoint(
 ):
     ck_args = dict(vars(args))
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
-    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "50b1ca75168ac346332954fbc0b1c58a9b805a3a"))
+    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "daaaa363020b7e27b93981f62dfa17821489e1ea"))
     state = {
         "epoch": int(epoch),
         "num_time_bins": int(num_time_bins),
@@ -1856,7 +1856,7 @@ def run_one_fold(
                 train_ids=train_ids,
                 all_ids=all_ids,
                 total_pcs_per_group=int(getattr(args, "v2_radiomics_pcs_per_group", args.radiomics_pca_total_components)),
-                require_presence_columns=bool(getattr(args, "v2_require_radiomics_presence_columns", False)),
+                require_presence_columns=bool(getattr(args, "v2_require_radiomics_presence_columns", True)),
                 random_state=int(args.seed),
             )
         else:
@@ -2389,7 +2389,7 @@ def run_one_fold(
         "fold": int(fold),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
         "software_version": TRIFUSESURV2_VERSION,
-        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "50b1ca75168ac346332954fbc0b1c58a9b805a3a"),
+        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "daaaa363020b7e27b93981f62dfa17821489e1ea"),
         "time_bin_width_days": float(args.time_bin_width_days),
     }
     save_endpoint_risk_dict_csv(
@@ -2683,7 +2683,9 @@ def parse_args():
     p.add_argument("--v2_transformer_layers", type=int, default=2)
     p.add_argument("--v2_dropout", type=float, default=0.1)
     p.add_argument("--v2_radiomics_pcs_per_group", type=int, default=16)
-    p.add_argument("--v2_require_radiomics_presence_columns", action="store_true")
+    p.add_argument("--v2_require_radiomics_presence_columns", dest="v2_require_radiomics_presence_columns", action="store_true")
+    p.add_argument("--v2_allow_missing_radiomics_presence_columns", dest="v2_require_radiomics_presence_columns", action="store_false")
+    p.set_defaults(v2_require_radiomics_presence_columns=True)
     p.add_argument("--node_topology_dir", type=str, default="")
     p.add_argument("--v2_max_nodes", type=int, default=16)
     p.add_argument("--v2_node_token_dim", type=int, default=9)
