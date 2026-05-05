@@ -14,6 +14,7 @@ RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
 NODE_TOPOLOGY_DIR="${NODE_TOPOLOGY_DIR:-}"
 MODEL_VERSION="${MODEL_VERSION:-v2}"
 DRY_RUN="${DRY_RUN:-0}"
+ALLOW_OUTER_TEST_SCORING="${ALLOW_OUTER_TEST_SCORING:-0}"
 
 # Phase 1 is deliberately small: cover model width, radiomics-token PCA width,
 # and teacher-forcing duration without spending the whole allocation.
@@ -63,6 +64,7 @@ env \
   WEIGHTS_TO_SCORE="$WEIGHTS_TO_SCORE_VALUE" \
   RADIOMICS_SOURCE="$RADIOMICS_SOURCE" \
   NODE_TOPOLOGY_DIR="$NODE_TOPOLOGY_DIR" \
+  ALLOW_OUTER_TEST_SCORING="$ALLOW_OUTER_TEST_SCORING" \
   DRY_RUN="$DRY_RUN" \
   OUT_DIR="$OUT_DIR_BASE/phase1_coarse" \
   bash "$PACKAGE_DIR/scripts/run_contour_aware_cindex_search_75gb_30ep.sh" "$@"
@@ -81,6 +83,7 @@ exec env \
   WEIGHTS_TO_SCORE="$WEIGHTS_TO_SCORE_VALUE" \
   RADIOMICS_SOURCE="$RADIOMICS_SOURCE" \
   NODE_TOPOLOGY_DIR="$NODE_TOPOLOGY_DIR" \
+  ALLOW_OUTER_TEST_SCORING="$ALLOW_OUTER_TEST_SCORING" \
   DRY_RUN="$DRY_RUN" \
   OUT_DIR="$OUT_DIR_BASE/phase2_followup" \
   bash "$PACKAGE_DIR/scripts/run_contour_aware_cindex_search_75gb_30ep.sh" "$@"

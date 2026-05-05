@@ -81,13 +81,13 @@ pip install -e .
 ```bash
 trifusesurv2-train                   # Joint contour-aware survival training
 trifusesurv2-evaluate-oof            # Out-of-fold c-index evaluation
-trifusesurv2-gradcam-v209            # v2 habitat Grad-CAM/attention/ablation export
+trifusesurv2-gradcam-v211            # v2 habitat Grad-CAM/attention/ablation export
 trifusesurv2-preprocess-export       # DICOM to NIfTI preprocessing
 trifusesurv2-make-cv-splits          # Cross-validation split generation
 trifusesurv2-prepare-opscc-tabular   # Tabular data preparation
 ```
 
-`trifusesurv2-gradcam-v209` defaults to `--checkpoint last --weights ema`,
+`trifusesurv2-gradcam-v211` defaults to `--checkpoint last --weights ema`,
 matching the default `test_risks_ema.csv` export from training. Use
 `--checkpoint best --weights best` when explaining `test_risks_best.csv`.
 
@@ -107,6 +107,8 @@ launchers. The current scripts live in `scripts/`:
 - `scripts/run_optimal_setting_search_75gb_30ep.sh`
   - v2 habitat-aligned two-phase launcher with `quick`, `balanced`, and `broad`
     profiles; use `DRY_RUN=1` to print the candidate settings without training
+  - ranks trials from validation metrics by default; set
+    `ALLOW_OUTER_TEST_SCORING=1` only for final held-out audit reporting
 - `scripts/run_dual_h100_140gb_best_perf_20hr.sh`
   - dual-H100 best-performance search; resumable by default with full checkpoints
 - `scripts/run_dual_h100_140gb_diverse_search_20hr.sh`

@@ -950,13 +950,14 @@ def evaluate_model(
         all_h.append(haz)
 
     if not all_t:
-        return {"c_index": 0.0, "ibs": 0.0, "auc_mean": float("nan"), "nb_mean": float("nan"), "nll": float("nan")}
+        return {"c_index": float("nan"), "ibs": float("nan"), "auc_mean": float("nan"), "nb_mean": float("nan"), "nll": float("nan")}
 
     T = np.concatenate(all_t)
     E = np.concatenate(all_e)
     R = np.concatenate(all_r)
     HZ = np.concatenate(all_h, axis=0)
 
+    n_comparable = H.comparable_pair_count(T, E, R)
     c = H.concordance_index(T, E, R)
     ibs = H.integrated_brier_score(T, E, HZ, float(time_bin_width_days))
     auc_by, auc_mean = H.time_dependent_auc_surv(T, E, HZ, eval_times_days, float(time_bin_width_days))
@@ -964,7 +965,14 @@ def evaluate_model(
 
     nll_mean = float(nll_sum / max(1, nll_n))
 
-    out = {"c_index": float(c), "ibs": float(ibs), "auc_mean": float(auc_mean), "nb_mean": float(nb_mean), "nll": nll_mean}
+    out = {
+        "c_index": float(c),
+        "n_comparable_pairs": int(n_comparable),
+        "ibs": float(ibs),
+        "auc_mean": float(auc_mean),
+        "nb_mean": float(nb_mean),
+        "nll": nll_mean,
+    }
     for tt, v in auc_by.items():
         out[f"auc_{int(round(tt))}d"] = float(v)
     for (tt, thr), v in nb_by.items():
@@ -1442,7 +1450,7 @@ def save_checkpoint(
 ):
     ck_args = dict(vars(args))
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
-    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "e40c9b4a25f06a2f5003e16b903cc245cce34251"))
+    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "50b1ca75168ac346332954fbc0b1c58a9b805a3a"))
     state = {
         "epoch": int(epoch),
         "num_time_bins": int(num_time_bins),
@@ -1805,7 +1813,7 @@ def run_one_fold(
     autocast_ctx,
     out_root: Path,
 ) -> Dict[str, Any]:
-    set_seed(args.seed + 100 * int(fold))
+    set_seed(args.seed + 100 * int(fold), deterministic=bool(getattr(args, "deterministic", False)))
     _assert_split_disjoint(int(fold), split)
     data_root = str(Path(args.meta_csv).parent)
 
@@ -2381,7 +2389,7 @@ def run_one_fold(
         "fold": int(fold),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
         "software_version": TRIFUSESURV2_VERSION,
-        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "e40c9b4a25f06a2f5003e16b903cc245cce34251"),
+        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "50b1ca75168ac346332954fbc0b1c58a9b805a3a"),
         "time_bin_width_days": float(args.time_bin_width_days),
     }
     save_endpoint_risk_dict_csv(
@@ -2483,6 +2491,11 @@ def parse_args():
                         "torchrun --nproc_per_node=N -m trifusesurv2.multimodal_survival.train --ddp ...")
 
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Use deterministic PyTorch/cuDNN settings for reproducibility at the cost of speed.",
+    )
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--grad_accumulation_steps", type=int, default=1,
                    help="Accumulate gradients over N forward/backward passes before stepping. "
@@ -2765,7 +2778,7 @@ def compute_multitask_num_time_bins(meta: pd.DataFrame, args) -> Tuple[int, floa
 def main():
     _configure_stdio_line_buffering()
     args = parse_args()
-    set_seed(args.seed)
+    set_seed(args.seed, deterministic=bool(args.deterministic))
 
     if getattr(args, "ddp", False):
         _init_ddp()

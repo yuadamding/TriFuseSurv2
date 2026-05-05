@@ -1,4 +1,4 @@
-"""Core utilities for TriFuseSurv2 2.0.9 v2 Grad-CAM generation."""
+"""Core utilities for TriFuseSurv2 2.0.11 v2 Grad-CAM generation."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import torch.nn.functional as F
 
 from trifusesurv2.schema import IMAGE_HABITATS
 
-SOFTWARE_VERSION = "2.0.9"
-TARGET_COMMIT_SHA = "e40c9b4a25f06a2f5003e16b903cc245cce34251"
+SOFTWARE_VERSION = "2.0.11"
+TARGET_COMMIT_SHA = "50b1ca75168ac346332954fbc0b1c58a9b805a3a"
 MODEL_CLASS = "ContourAwareHabitatSurvivalModel"
 
 
@@ -39,13 +39,13 @@ def normalized_state_dict(ck: dict[str, Any]) -> dict[str, torch.Tensor]:
     return out
 
 
-def assert_v209_v2_checkpoint(
+def assert_v211_v2_checkpoint(
     ck: dict[str, Any],
     *,
     checkpoint_path: str | Path = "",
     require_commit: bool = False,
 ) -> None:
-    """Fail unless a checkpoint looks like the 2.0.9 habitat-aligned v2 model."""
+    """Fail unless a checkpoint looks like the 2.0.11 habitat-aligned v2 model."""
 
     args = checkpoint_args_to_dict(ck)
     state = normalized_state_dict(ck)
@@ -78,13 +78,13 @@ def assert_v209_v2_checkpoint(
     if model_version != "v2":
         raise RuntimeError(
             f"{checkpoint_path}: checkpoint args model_version={model_version!r}; expected 'v2'. "
-            "A repository version of 2.0.9 is not sufficient if the run used --model_version v1."
+            "A repository version of 2.0.11 is not sufficient if the run used --model_version v1."
         )
 
     commit_sha = str(ck.get("commit_sha", args.get("commit_sha", args.get("git_commit", "")))).strip()
     if require_commit and commit_sha != TARGET_COMMIT_SHA:
         raise RuntimeError(
-            f"{checkpoint_path}: checkpoint commit_sha={commit_sha}, expected {TARGET_COMMIT_SHA} for 2.0.9."
+            f"{checkpoint_path}: checkpoint commit_sha={commit_sha}, expected {TARGET_COMMIT_SHA} for 2.0.11."
         )
 
 

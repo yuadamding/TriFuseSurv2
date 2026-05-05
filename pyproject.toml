@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trifusesurv2"
-version = "2.0.9"
+version = "2.0.11"
 description = "TriFuseSurv2: habitat-aligned, node-aware OPSCC survival modeling."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,7 +29,7 @@ explain = ["matplotlib"]
 [project.scripts]
 trifusesurv2-train = "trifusesurv2.multimodal_survival.train:main"
 trifusesurv2-evaluate-oof = "trifusesurv2.multimodal_survival.evaluate_oof_cindex:main"
-trifusesurv2-gradcam-v209 = "trifusesurv2.multimodal_survival.generate_oof_gradcam_v209:main"
+trifusesurv2-gradcam-v211 = "trifusesurv2.multimodal_survival.generate_oof_gradcam_v211:main"
 trifusesurv2-preprocess-export = "trifusesurv2.preprocessing.export_swinunetr:main"
 trifusesurv2-make-cv-splits = "trifusesurv2.preprocessing.make_cv_splits:main"
 trifusesurv2-prepare-opscc-tabular = "trifusesurv2.preprocessing.prepare_opscc_tabular:main"

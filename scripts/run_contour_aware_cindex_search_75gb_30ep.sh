@@ -27,6 +27,7 @@ STOP_ON_FAILURE="${STOP_ON_FAILURE:-1}"
 FAIL_LOG_TAIL_LINES="${FAIL_LOG_TAIL_LINES:-120}"
 SKIP_FINISHED="${SKIP_FINISHED:-1}"
 DRY_RUN="${DRY_RUN:-0}"
+ALLOW_OUTER_TEST_SCORING="${ALLOW_OUTER_TEST_SCORING:-0}"
 
 if [[ "$DRY_RUN" != "1" ]]; then
   tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom rt_utils cv2
@@ -131,11 +132,14 @@ summary_csv = Path(sys.argv[3])
 data = json.loads(summary_path.read_text())
 row = {
     "trial": trial,
+    "score_source": "outer_test_oof",
     "weight": data["weights"],
     "c_index": data["c_index"],
     "n_predictions": data["n_predictions"],
     "n_evaluable": data["n_evaluable"],
+    "n_comparable_pairs": data.get("n_comparable_pairs", ""),
     "n_risk_files": data["n_risk_files"],
+    "n_metric_files": "",
 }
 write_header = not summary_csv.exists()
 with summary_csv.open("a", newline="") as f:
@@ -144,6 +148,69 @@ with summary_csv.open("a", newline="") as f:
         w.writeheader()
     w.writerow(row)
 print(f"[search75] {trial} weight={row['weight']} OOF c-index={row['c_index']:.4f}")
+PY
+}
+
+append_validation_summary_row() {
+  local trial="$1"
+  local trial_dir="$OUT_DIR/$trial"
+  local -a matches=()
+  while IFS= read -r path; do
+    matches+=("$path")
+  done < <(find "$trial_dir" -path "*/metrics.csv" -type f | sort)
+
+  if (( ${#matches[@]} == 0 )); then
+    echo "[search75] trial=$trial -> no metrics.csv files, skipping validation score"
+    return 0
+  fi
+  if (( ${#matches[@]} != ${#FOLDS[@]} )); then
+    echo "[search75] trial=$trial -> found ${#matches[@]} metrics files for ${#FOLDS[@]} folds, skipping incomplete validation score"
+    return 0
+  fi
+
+  python3 - "$trial" "$SUMMARY_CSV" "${matches[@]}" <<'PY'
+import csv
+import math
+import sys
+from pathlib import Path
+
+trial = sys.argv[1]
+summary_csv = Path(sys.argv[2])
+metric_paths = [Path(p) for p in sys.argv[3:]]
+fold_best = []
+for path in metric_paths:
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    values = []
+    for row in rows:
+        try:
+            value = float(row.get("val_c_index", "nan"))
+        except Exception:
+            value = float("nan")
+        if math.isfinite(value):
+            values.append(value)
+    if values:
+        fold_best.append(max(values))
+
+c_index = sum(fold_best) / len(fold_best) if fold_best else float("nan")
+row = {
+    "trial": trial,
+    "score_source": "validation_metrics",
+    "weight": "validation",
+    "c_index": c_index,
+    "n_predictions": "",
+    "n_evaluable": len(fold_best),
+    "n_comparable_pairs": "",
+    "n_risk_files": "",
+    "n_metric_files": len(metric_paths),
+}
+write_header = not summary_csv.exists()
+with summary_csv.open("a", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=list(row.keys()))
+    if write_header:
+        w.writeheader()
+    w.writerow(row)
+print(f"[search75] {trial} validation mean best val c-index={c_index:.4f} folds={len(fold_best)}")
 PY
 }
 
@@ -232,6 +299,22 @@ fold_has_complete_risks() {
     [[ -f "$fold_dir/test_risks_${weight}.csv" ]] || return 1
   done
   return 0
+}
+
+fold_has_complete_metrics() {
+  local trial="$1"
+  local fold="$2"
+  local fold_dir
+  fold_dir="$(fold_export_dir "$trial" "$fold")"
+  [[ -f "$fold_dir/metrics.csv" ]]
+}
+
+fold_has_complete_outputs() {
+  if [[ "$ALLOW_OUTER_TEST_SCORING" == "1" ]]; then
+    fold_has_complete_risks "$@"
+  else
+    fold_has_complete_metrics "$@"
+  fi
 }
 
 configure_trial() {
@@ -582,6 +665,16 @@ score_trial_weights() {
   done
 }
 
+score_trial() {
+  local trial="$1"
+  append_validation_summary_row "$trial"
+  if [[ "$ALLOW_OUTER_TEST_SCORING" == "1" ]]; then
+    score_trial_weights "$trial"
+  else
+    echo "[search75] trial=$trial -> outer-test OOF scoring disabled; set ALLOW_OUTER_TEST_SCORING=1 only for final audit reporting"
+  fi
+}
+
 run_trial() {
   local trial="$1"
   configure_trial "$trial"
@@ -608,8 +701,8 @@ run_trial() {
   local -a pending_folds=()
   local fold
   for fold in "${FOLDS[@]}"; do
-    if [[ "$SKIP_FINISHED" == "1" ]] && fold_has_complete_risks "$trial" "$fold"; then
-      echo "[search75] trial=$trial fold=$fold -> existing completed risk exports found, skipping training"
+    if [[ "$SKIP_FINISHED" == "1" ]] && fold_has_complete_outputs "$trial" "$fold"; then
+      echo "[search75] trial=$trial fold=$fold -> existing completed outputs found, skipping training"
       continue
     fi
     pending_folds+=("$fold")
@@ -617,7 +710,7 @@ run_trial() {
 
   if (( ${#pending_folds[@]} == 0 )); then
     echo "[search75] trial=$trial -> all requested folds already finished; scoring existing outputs"
-    score_trial_weights "$trial"
+    score_trial "$trial"
     return 0
   fi
 
@@ -676,7 +769,7 @@ run_trial() {
     return 1
   fi
 
-  score_trial_weights "$trial"
+  score_trial "$trial"
 }
 
 mkdir -p "$OUT_DIR" "$LOG_DIR"

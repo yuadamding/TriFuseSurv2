@@ -21,6 +21,7 @@ __all__ = [
     "hazards_to_survival_end_of_bin_numpy",
     "survival_at_time_from_hazards",
     "risk_at_time_from_hazards",
+    "comparable_pair_count",
     "concordance_index",
     "integrated_brier_score",
     "time_dependent_auc_surv",
@@ -38,7 +39,7 @@ def get_module_param_dtype(module: nn.Module, default: torch.dtype = torch.float
     return default
 
 
-def set_seed(seed: int = 42):
+def set_seed(seed: int = 42, *, deterministic: bool = False):
     seed = int(seed)
     import random
     random.seed(seed)
@@ -46,8 +47,10 @@ def set_seed(seed: int = 42):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = False
-    torch.backends.cudnn.benchmark = True
+    deterministic = bool(deterministic)
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
+    torch.use_deterministic_algorithms(deterministic, warn_only=True)
 
 
 def seed_worker(worker_id: int):
@@ -411,6 +414,36 @@ class _Fenwick:
         return self.sum(self.n)
 
 
+def comparable_pair_count(times, events, risks=None) -> int:
+    times = np.asarray(times, dtype=float).reshape(-1)
+    events = np.asarray(events, dtype=float).reshape(-1)
+    m = np.isfinite(times) & np.isfinite(events)
+    if risks is not None:
+        risks = np.asarray(risks, dtype=float).reshape(-1)
+        m = m & np.isfinite(risks)
+    times, events = times[m], events[m]
+    n = times.size
+    if n <= 1:
+        return 0
+
+    order = np.argsort(times, kind="mergesort")
+    times = times[order]
+    events = events[order]
+
+    den = 0
+    i = 0
+    while i < n:
+        t = times[i]
+        j = i
+        while j < n and times[j] == t:
+            j += 1
+        future = n - j
+        if future > 0:
+            den += int(np.sum(events[i:j] == 1.0)) * int(future)
+        i = j
+    return int(den)
+
+
 def concordance_index(times, events, risks) -> float:
     times = np.asarray(times, dtype=float).reshape(-1)
     events = np.asarray(events, dtype=float).reshape(-1)
@@ -420,7 +453,7 @@ def concordance_index(times, events, risks) -> float:
     times, events, risks = times[m], events[m], risks[m]
     n = times.size
     if n <= 1:
-        return 0.0
+        return float("nan")
 
     order = np.argsort(times, kind="mergesort")
     times = times[order]
@@ -460,7 +493,7 @@ def concordance_index(times, events, risks) -> float:
 
         i = j
 
-    return float(num / den) if den > 0 else 0.0
+    return float(num / den) if den > 0 else float("nan")
 
 
 def _km_censoring_survival(times: np.ndarray, events: np.ndarray, eval_times: np.ndarray) -> np.ndarray:

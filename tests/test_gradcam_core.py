@@ -15,11 +15,11 @@ if _HAVE_DEPS:
     import torch
 
     from trifusesurv2.explain.gradcam_v2_core import (
-        assert_v209_v2_checkpoint,
+        assert_v211_v2_checkpoint,
         image_habitat_names,
         supports_from_backbone_aux,
     )
-    from trifusesurv2.multimodal_survival.generate_oof_gradcam_v209 import _oof_lookup
+    from trifusesurv2.multimodal_survival.generate_oof_gradcam_v211 import _oof_lookup
 
 
 @unittest.skipUnless(_HAVE_DEPS, "torch is not available in this runtime")
@@ -33,10 +33,10 @@ class GradcamCoreTest(unittest.TestCase):
             "habitat_model.survival_heads.x": torch.zeros(1),
         }
         for key in ("model_state", "model_state_dict", "state_dict"):
-            assert_v209_v2_checkpoint({key: state, "args": {"model_version": "v2"}}, checkpoint_path="relative.pt")
+            assert_v211_v2_checkpoint({key: state, "args": {"model_version": "v2"}}, checkpoint_path="relative.pt")
 
         with self.assertRaises(RuntimeError):
-            assert_v209_v2_checkpoint(
+            assert_v211_v2_checkpoint(
                 {"model_state": {"gate_mlp.0.weight": torch.zeros(1)}, "args": {"model_version": "v1"}},
                 checkpoint_path="legacy.pt",
             )
@@ -87,8 +87,8 @@ class GradcamCoreTest(unittest.TestCase):
                     "checkpoint": "best",
                     "weights_type": "ema",
                     "model_version": "v2",
-                    "software_version": "2.0.9",
-                    "commit_sha": "e40c9b4a25f06a2f5003e16b903cc245cce34251",
+                    "software_version": "2.0.11",
+                    "commit_sha": "50b1ca75168ac346332954fbc0b1c58a9b805a3a",
                 }
             ]
         )

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from trifusesurv2.utils.clinical import ENDPOINT_MAP
-from trifusesurv2.utils.survival import concordance_index
+from trifusesurv2.utils.survival import comparable_pair_count, concordance_index
 
 
 def parse_args():
@@ -110,6 +110,11 @@ def main():
     merged = merged.dropna(subset=[args.time_col, args.event_col, args.risk_col]).copy()
     merged[args.event_col] = merged[args.event_col].astype(int)
 
+    n_comparable = comparable_pair_count(
+        merged[args.time_col].to_numpy(dtype=float),
+        merged[args.event_col].to_numpy(dtype=float),
+        merged[args.risk_col].to_numpy(dtype=float),
+    )
     c_index = concordance_index(
         merged[args.time_col].to_numpy(dtype=float),
         merged[args.event_col].to_numpy(dtype=float),
@@ -125,6 +130,7 @@ def main():
         "n_risk_files": int(len(risk_files)),
         "n_predictions": int(len(risk_df)),
         "n_evaluable": int(len(merged)),
+        "n_comparable_pairs": int(n_comparable),
         "c_index": float(c_index),
         "risk_files": [relative_path(p) for p in risk_files],
     }

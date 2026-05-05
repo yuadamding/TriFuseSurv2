@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate OOF Grad-CAM packages for TriFuseSurv2 2.0.9 v2 checkpoints."""
+"""Generate OOF Grad-CAM packages for TriFuseSurv2 2.0.11 v2 checkpoints."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from trifusesurv2.explain.gradcam_v2_core import (
     SOFTWARE_VERSION,
     TARGET_COMMIT_SHA,
     append_manifest,
-    assert_v209_v2_checkpoint,
+    assert_v211_v2_checkpoint,
     cam_from_features,
     cam_mass_summary,
     checkpoint_args_to_dict,
@@ -342,7 +342,7 @@ def _to_device(batch: dict[str, Any], device: torch.device, key: str) -> Optiona
 def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[str, Any]:
     ck_path = _checkpoint_for_fold(args.run_dir, fold, args.checkpoint)
     ck = torch.load(ck_path, map_location="cpu", weights_only=False)
-    assert_v209_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
+    assert_v211_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
     ck_args = checkpoint_args_to_dict(ck)
     state = normalized_state_dict(ck)
     model = _build_model_from_checkpoint(ck, state)
@@ -762,7 +762,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    manifest = args.out_dir / "gradcam_v209_manifest.csv"
+    manifest = args.out_dir / "gradcam_v211_manifest.csv"
     statuses = []
     endpoints = tuple(SURVIVAL_ENDPOINTS) if str(args.endpoint).upper() == "ALL" else (str(args.endpoint).upper(),)
     for endpoint in endpoints:
@@ -771,7 +771,7 @@ def main() -> None:
         for fold in [int(x) for x in args.folds]:
             statuses.append(run_fold(endpoint_args, fold, manifest))
     status = {
-        "kind": "v209_oof_gradcam",
+        "kind": "v211_oof_gradcam",
         "software_version": SOFTWARE_VERSION,
         "commit_sha": TARGET_COMMIT_SHA,
         "model_class": MODEL_CLASS,
@@ -781,7 +781,7 @@ def main() -> None:
         "manifest": _relative_path(manifest),
         "fold_status": statuses,
     }
-    write_json(args.out_dir / "gradcam_v209_status.json", status)
+    write_json(args.out_dir / "gradcam_v211_status.json", status)
     print(json.dumps(status, indent=2), flush=True)
 
 
