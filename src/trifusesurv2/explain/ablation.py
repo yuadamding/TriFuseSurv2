@@ -7,11 +7,19 @@ from typing import Optional
 import torch
 
 from trifusesurv2.explain.gradcam_v2_core import risk_vector
-from trifusesurv2.schema import CLINICAL_TOKEN_GROUPS, IMAGE_HABITATS, RADIOLOGY_HABITATS
 
 
 def _clone_presence(p: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     return None if p is None else p.clone().to(torch.bool)
+
+
+def _model_group_names(model, attr: str, count: int) -> tuple[str, ...]:
+    habitat_model = getattr(model, "habitat_model", model)
+    names = tuple(str(x) for x in getattr(habitat_model, attr, ()))
+    if len(names) >= int(count):
+        return names[: int(count)]
+    fallback = tuple(f"{attr}_{i}" for i in range(len(names), int(count)))
+    return names + fallback
 
 
 @torch.no_grad()
@@ -49,7 +57,7 @@ def compute_v2_ablation_package(
     risk_full = risk_vector(model, logits, endpoint=endpoint, horizon_days=horizon_days)
     out: dict[str, float] = {"risk_full": float(risk_full.detach().cpu()[0])}
 
-    for idx, name in enumerate(IMAGE_HABITATS):
+    for idx, name in enumerate(_model_group_names(model, "image_habitats", image_tokens.shape[1])):
         tok = image_tokens.clone()
         pres = image_presence.clone().to(torch.bool)
         tok[:, idx, :] = 0.0
@@ -72,9 +80,7 @@ def compute_v2_ablation_package(
         out[f"delta_risk_without_image_{name}"] = out["risk_full"] - risk_without
 
     if radiomics_tokens is not None and radiomics_tokens.numel() > 0:
-        for idx, name in enumerate(RADIOLOGY_HABITATS):
-            if idx >= radiomics_tokens.shape[1]:
-                continue
+        for idx, name in enumerate(_model_group_names(model, "radiomics_habitats", radiomics_tokens.shape[1])):
             tok = radiomics_tokens.clone()
             pres = _clone_presence(radiomics_presence)
             tok[:, idx, :] = 0.0
@@ -98,9 +104,7 @@ def compute_v2_ablation_package(
             out[f"delta_risk_without_radiomics_{name}"] = out["risk_full"] - risk_without
 
     if clinical_tokens is not None and clinical_tokens.numel() > 0:
-        for idx, name in enumerate(CLINICAL_TOKEN_GROUPS.keys()):
-            if idx >= clinical_tokens.shape[1]:
-                continue
+        for idx, name in enumerate(_model_group_names(model, "clinical_groups", clinical_tokens.shape[1])):
             tok = clinical_tokens.clone()
             pres = _clone_presence(clinical_presence)
             tok[:, idx, :] = 0.0

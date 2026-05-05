@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import List
 
@@ -46,6 +47,13 @@ def resolve_risk_files(args) -> List[Path]:
     return files
 
 
+def relative_path(path: str | Path) -> str:
+    try:
+        return os.path.relpath(os.fspath(path), start=os.getcwd())
+    except Exception:
+        return str(path)
+
+
 def load_risks(files: List[Path], id_col: str, risk_col: str) -> pd.DataFrame:
     dfs = []
     for p in files:
@@ -58,7 +66,7 @@ def load_risks(files: List[Path], id_col: str, risk_col: str) -> pd.DataFrame:
         if "risk_horizon_days" in df.columns:
             sub["risk_horizon_days"] = pd.to_numeric(df["risk_horizon_days"], errors="coerce")
         sub[id_col] = sub[id_col].astype(str)
-        sub["source_risk_csv"] = str(p)
+        sub["source_risk_csv"] = relative_path(p)
         dfs.append(sub)
     out = pd.concat(dfs, axis=0, ignore_index=True)
     dup = out[id_col].duplicated(keep=False)
@@ -109,7 +117,7 @@ def main():
     )
 
     summary = {
-        "meta_csv": str(args.meta_csv),
+        "meta_csv": relative_path(args.meta_csv),
         "endpoint": args.endpoint,
         "time_col": args.time_col,
         "event_col": args.event_col,
@@ -118,7 +126,7 @@ def main():
         "n_predictions": int(len(risk_df)),
         "n_evaluable": int(len(merged)),
         "c_index": float(c_index),
-        "risk_files": [str(p) for p in risk_files],
+        "risk_files": [relative_path(p) for p in risk_files],
     }
 
     if args.out_csv:

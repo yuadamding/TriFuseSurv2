@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import random
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Tuple
@@ -123,6 +124,7 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         expected_dhw: Optional[Tuple[int, int, int]] = None,
         data_root: Optional[str] = None,
         mode: str = "eval",
+        spatial_augment: bool = True,
     ):
         self.meta = meta.reset_index(drop=True)
         self.id_col = id_col
@@ -140,6 +142,7 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         self.expected_dhw = tuple(expected_dhw) if expected_dhw is not None else None
         self.data_root = str(Path(data_root)) if data_root else None
         self.mode = mode
+        self.spatial_augment = bool(spatial_augment)
 
     def _load_nii(self, path: str) -> np.ndarray:
         img = sitk.ReadImage(str(path))
@@ -188,8 +191,10 @@ class _BasePreprocessedSurvivalDataset(Dataset):
             if tuple(ln.shape) != self.expected_dhw:
                 raise RuntimeError(f"[SHAPE] pid={pid} LN {tuple(ln.shape)} != expected {self.expected_dhw}")
 
-        if self.mode == "train":
+        if self.mode == "train" and self.spatial_augment:
             ct, pt, ln = rand_flip_3d(ct, pt, ln)
+            ct = rand_intensity(ct)
+        elif self.mode == "train":
             ct = rand_intensity(ct)
 
         t = float(row[self.time_col])
@@ -303,6 +308,80 @@ def _node_matrix_from_payload(payload: Optional[dict], *, max_nodes: int, node_d
     return mat, presence
 
 
+@dataclass
+class NodeTopologyScaler:
+    """Fold-wise scaler for compact node/topology numeric tokens."""
+
+    topology_mean: np.ndarray
+    topology_scale: np.ndarray
+    node_mean: np.ndarray
+    node_scale: np.ndarray
+
+    @staticmethod
+    def _precondition_topology(vec: np.ndarray) -> np.ndarray:
+        out = np.asarray(vec, dtype=np.float32).copy()
+        for name in ("node_count", "node_total_volume_mm3", "node_largest_volume_mm3"):
+            if name in NODE_TOPOLOGY_FEATURES:
+                idx = NODE_TOPOLOGY_FEATURES.index(name)
+                out[idx] = np.log1p(max(float(out[idx]), 0.0))
+        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+    @staticmethod
+    def _precondition_nodes(mat: np.ndarray) -> np.ndarray:
+        out = np.asarray(mat, dtype=np.float32).copy()
+        if out.shape[-1] > 0:
+            out[..., 0] = np.log1p(np.maximum(out[..., 0], 0.0))
+        if out.shape[-1] > 1:
+            out[..., 1] = np.log1p(np.maximum(out[..., 1], 0.0))
+        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+    @classmethod
+    def fit(
+        cls,
+        *,
+        node_topology_dir: str,
+        train_ids: list[str],
+        max_nodes: int,
+        node_dim: int,
+    ) -> "NodeTopologyScaler":
+        topo_rows: list[np.ndarray] = []
+        node_rows: list[np.ndarray] = []
+        for pid in train_ids:
+            payload = _read_node_topology_payload(node_topology_dir, str(pid))
+            topo, topo_present = _topology_vector_from_payload(payload)
+            if topo_present > 0.5:
+                topo_rows.append(cls._precondition_topology(topo))
+            nodes, node_presence = _node_matrix_from_payload(payload, max_nodes=max_nodes, node_dim=node_dim)
+            nodes = cls._precondition_nodes(nodes)
+            for row in nodes[node_presence > 0.5]:
+                node_rows.append(row.astype(np.float32))
+
+        topo_dim = len(NODE_TOPOLOGY_FEATURES)
+        topo_stack = np.stack(topo_rows, axis=0) if topo_rows else np.zeros((1, topo_dim), dtype=np.float32)
+        node_stack = (
+            np.stack(node_rows, axis=0)
+            if node_rows and int(node_dim) > 0
+            else np.zeros((1, int(max(node_dim, 0))), dtype=np.float32)
+        )
+        topo_mean = topo_stack.mean(axis=0).astype(np.float32)
+        topo_scale = topo_stack.std(axis=0).astype(np.float32)
+        topo_scale = np.where(topo_scale > 1e-6, topo_scale, 1.0).astype(np.float32)
+        node_mean = node_stack.mean(axis=0).astype(np.float32)
+        node_scale = node_stack.std(axis=0).astype(np.float32)
+        node_scale = np.where(node_scale > 1e-6, node_scale, 1.0).astype(np.float32)
+        return cls(topo_mean, topo_scale, node_mean, node_scale)
+
+    def transform_topology(self, vec: np.ndarray) -> np.ndarray:
+        x = self._precondition_topology(vec)
+        return ((x - self.topology_mean) / self.topology_scale).astype(np.float32)
+
+    def transform_nodes(self, mat: np.ndarray) -> np.ndarray:
+        x = self._precondition_nodes(mat)
+        if x.shape[-1] == 0:
+            return x
+        return ((x - self.node_mean) / self.node_scale).astype(np.float32)
+
+
 def _pad_or_trunc_matrix_dim(mat: np.ndarray, dim: int) -> np.ndarray:
     mat = np.asarray(mat, dtype=np.float32)
     if int(dim) <= 0 or mat.shape[-1] == int(dim):
@@ -320,7 +399,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
     This dataset intentionally does not use the legacy flat ``ClinicalEncoder``
     or ``RadiomicsEncoder`` outputs.  It returns semantic clinical token
     matrices, habitat radiomics token matrices, optional node tokens, and an
-    optional topology token for the 2.0.7 habitat-aligned model.
+    optional topology token for the 2.0.8 habitat-aligned model.
     """
 
     def __init__(
@@ -339,6 +418,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         radiomics_token_encoder=None,
         use_radiomics: bool = True,
         node_topology_dir: Optional[str] = None,
+        node_topology_scaler: Optional[NodeTopologyScaler] = None,
         max_nodes: int = 0,
         node_token_dim: int = 0,
         clinical_token_dim: int = 0,
@@ -347,7 +427,9 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         expected_dhw: Optional[Tuple[int, int, int]] = None,
         data_root: Optional[str] = None,
         mode: str = "eval",
+        spatial_augment: Optional[bool] = None,
     ):
+        allow_spatial_augment = (not bool(node_topology_dir)) if spatial_augment is None else bool(spatial_augment)
         super().__init__(
             meta,
             id_col=id_col,
@@ -365,10 +447,12 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
             expected_dhw=expected_dhw,
             data_root=data_root,
             mode=mode,
+            spatial_augment=allow_spatial_augment,
         )
         self.clinical_token_encoder = clinical_token_encoder
         self.radiomics_token_encoder = radiomics_token_encoder
         self.node_topology_dir = str(node_topology_dir or "")
+        self.node_topology_scaler = node_topology_scaler
         self.max_nodes = int(max_nodes)
         self.node_token_dim = int(node_token_dim)
         self.clinical_token_dim = int(clinical_token_dim)
@@ -394,6 +478,9 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
             max_nodes=self.max_nodes,
             node_dim=self.node_token_dim,
         )
+        if self.node_topology_scaler is not None:
+            topology_vec = self.node_topology_scaler.transform_topology(topology_vec)
+            node_mat = self.node_topology_scaler.transform_nodes(node_mat)
 
         return {
             "x": torch.tensor(ct[None, ...], dtype=torch.float32),

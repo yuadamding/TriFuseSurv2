@@ -1,4 +1,4 @@
-"""Core utilities for TriFuseSurv2 2.0.7 v2 Grad-CAM generation."""
+"""Core utilities for TriFuseSurv2 2.0.8 v2 Grad-CAM generation."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import torch.nn.functional as F
 
 from trifusesurv2.schema import IMAGE_HABITATS
 
-SOFTWARE_VERSION = "2.0.7"
-TARGET_COMMIT_SHA = "9b6e4da7db94ab92d8b246454552fa48722352db"
+SOFTWARE_VERSION = "2.0.8"
+TARGET_COMMIT_SHA = "a3de12d6fa7b426995b859cd9574f5a6355a01d2"
 MODEL_CLASS = "ContourAwareHabitatSurvivalModel"
 
 
@@ -39,13 +39,13 @@ def normalized_state_dict(ck: dict[str, Any]) -> dict[str, torch.Tensor]:
     return out
 
 
-def assert_v207_v2_checkpoint(
+def assert_v208_v2_checkpoint(
     ck: dict[str, Any],
     *,
     checkpoint_path: str | Path = "",
     require_commit: bool = False,
 ) -> None:
-    """Fail unless a checkpoint looks like the 2.0.7 habitat-aligned v2 model."""
+    """Fail unless a checkpoint looks like the 2.0.8 habitat-aligned v2 model."""
 
     args = checkpoint_args_to_dict(ck)
     state = normalized_state_dict(ck)
@@ -78,13 +78,13 @@ def assert_v207_v2_checkpoint(
     if model_version != "v2":
         raise RuntimeError(
             f"{checkpoint_path}: checkpoint args model_version={model_version!r}; expected 'v2'. "
-            "A repository version of 2.0.7 is not sufficient if the run used --model_version v1."
+            "A repository version of 2.0.8 is not sufficient if the run used --model_version v1."
         )
 
     commit_sha = str(ck.get("commit_sha", args.get("commit_sha", args.get("git_commit", "")))).strip()
     if require_commit and commit_sha != TARGET_COMMIT_SHA:
         raise RuntimeError(
-            f"{checkpoint_path}: checkpoint commit_sha={commit_sha}, expected {TARGET_COMMIT_SHA} for 2.0.7."
+            f"{checkpoint_path}: checkpoint commit_sha={commit_sha}, expected {TARGET_COMMIT_SHA} for 2.0.8."
         )
 
 
@@ -185,16 +185,23 @@ def supports_from_backbone_aux(aux: dict[str, torch.Tensor]) -> dict[str, torch.
     ln_shell = aux["ln_shell"].detach().clamp(0, 1)
     body = aux.get("body", torch.ones_like(pt)).detach().clamp(0, 1)
     habitat_union = (pt + pt_shell + ln + ln_shell).clamp(0, 1)
+    pt_peri_disjoint = (pt_shell - pt - ln - ln_shell).clamp(0, 1)
+    ln_peri_disjoint = (ln_shell - ln - pt - pt_shell).clamp(0, 1)
+    habitat_union_disjoint = (pt + ln + pt_peri_disjoint + ln_peri_disjoint).clamp(0, 1)
     return {
         "full_volume": torch.ones_like(body),
         "body": body,
         "pt_intra": pt,
         "pt_peri": pt_shell,
+        "pt_peri_disjoint": pt_peri_disjoint,
         "ln_intra": ln,
         "ln_peri": ln_shell,
+        "ln_peri_disjoint": ln_peri_disjoint,
         "pt_ln_union": (pt + ln).clamp(0, 1),
         "habitat_union": habitat_union,
+        "habitat_union_disjoint": habitat_union_disjoint,
         "off_habitat_body": (body - habitat_union).clamp(0, 1),
+        "off_habitat_body_disjoint": (body - habitat_union_disjoint).clamp(0, 1),
     }
 
 
@@ -328,5 +335,10 @@ def pid_slug(pid: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in str(pid))
 
 
-def image_habitat_names() -> tuple[str, ...]:
+def image_habitat_names(model: Any = None) -> tuple[str, ...]:
+    if model is not None:
+        habitat_model = getattr(model, "habitat_model", model)
+        names = getattr(habitat_model, "image_habitats", None)
+        if names:
+            return tuple(str(x) for x in names)
     return tuple(IMAGE_HABITATS)

@@ -54,9 +54,10 @@ from trifusesurv2.utils.clinical import (
 from trifusesurv2.utils.radiomics import RadiomicsEncoder
 from trifusesurv2.encoders.clinical import SemanticClinicalTokenEncoder
 from trifusesurv2.encoders.radiomics import HabitatRadiomicsTokenEncoder
-from trifusesurv2.utils.data import PreprocessedContourAwareDataset, PreprocessedHabitatSurvivalDataset
+from trifusesurv2.utils.data import NodeTopologyScaler, PreprocessedContourAwareDataset, PreprocessedHabitatSurvivalDataset
 from trifusesurv2.utils.data import resolve_preprocessed_case_path
 from trifusesurv2.schema import NODE_TOPOLOGY_FEATURES
+from trifusesurv2 import __version__ as TRIFUSESURV2_VERSION
 
 
 # =============================================================================
@@ -385,8 +386,8 @@ def _unpack_surv_batch(batch):
             rad_presence=batch.get("radiomics_presence"),
             node_tokens=batch.get("node_tokens"),
             node_presence=batch.get("node_presence"),
-            topo_token=batch.get("topology_token"),
-            topo_presence=batch.get("topology_presence"),
+            topology_token=batch.get("topology_token"),
+            topology_presence=batch.get("topology_presence"),
             pid=batch["pid"],
         )
     if len(batch) == 6:
@@ -403,7 +404,7 @@ def _unpack_surv_batch(batch):
         return dict(
             x=x, mask_pt=mask_pt, mask_ln=mask_ln, t=t, e=e, t_all=t_all, e_all=e_all,
             clin=clin, clin_presence=clin_pres, rad=rad, rad_presence=rad_pres,
-            topo_token=topo, topo_presence=topo_pres, pid=pid,
+            topology_token=topo, topology_presence=topo_pres, pid=pid,
         )
     raise RuntimeError(f"[BATCH] Unexpected batch structure of length {len(batch)}")
 
@@ -502,6 +503,19 @@ def _drop_optional_modality(
         return tokens, presence
     if tokens.dim() < 2:
         return tokens, presence
+
+    if tokens.dim() == 2:
+        pres = presence.to(torch.bool) if presence is not None else torch.ones(
+            (tokens.shape[0], 1),
+            dtype=torch.bool,
+            device=tokens.device,
+        )
+        if pres.dim() == 1:
+            pres = pres.unsqueeze(1)
+        keep_rows = (torch.rand((tokens.shape[0],), device=tokens.device) >= prob).unsqueeze(1)
+        new_pres = pres & keep_rows
+        return tokens * new_pres.to(tokens.dtype), new_pres
+
     pres_shape = tokens.shape[:2]
     pres = presence.to(torch.bool) if presence is not None else torch.ones(
         pres_shape,
@@ -538,8 +552,8 @@ def _model_forward_eval(model, payload, device, autocast_ctx):
                 radiomics_presence=rad_pres,
                 node_tokens=_prep_optional_token_tensor(payload, "node_tokens", device) if node_enabled else None,
                 node_presence=_prep_optional_token_tensor(payload, "node_presence", device) if node_enabled else None,
-                topology_token=_prep_optional_token_tensor(payload, "topo_token", device) if topology_enabled else None,
-                topology_presence=_prep_optional_token_tensor(payload, "topo_presence", device) if topology_enabled else None,
+                topology_token=_prep_optional_token_tensor(payload, "topology_token", device) if topology_enabled else None,
+                topology_presence=_prep_optional_token_tensor(payload, "topology_presence", device) if topology_enabled else None,
                 teacher_force_alpha=0.0,
             )
     else:
@@ -1005,17 +1019,21 @@ def save_endpoint_risk_dict_csv(
     id_col: str,
     endpoint: str,
     risk_horizon_days: float,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
+    metadata = dict(metadata or {})
     rows = [
         {
             id_col: pid,
             "risk_score": float(score),
             "risk_endpoint": str(endpoint).upper(),
             "risk_horizon_days": float(risk_horizon_days),
+            **metadata,
         }
         for pid, score in risk_dict.items()
     ]
-    pd.DataFrame(rows, columns=[id_col, "risk_score", "risk_endpoint", "risk_horizon_days"]).to_csv(out_path, index=False)
+    columns = [id_col, "risk_score", "risk_endpoint", "risk_horizon_days", *metadata.keys()]
+    pd.DataFrame(rows, columns=columns).to_csv(out_path, index=False)
     print(f"[RISK] wrote {len(rows)} rows -> {out_path}")
 
 
@@ -1129,8 +1147,8 @@ def train_one_epoch(
                 topology_enabled = getattr(mm.habitat_model, "topology_proj", None) is not None
                 node_tokens = _prep_optional_token_tensor(payload, "node_tokens", device) if node_enabled else None
                 node_pres = _prep_optional_token_tensor(payload, "node_presence", device) if node_enabled else None
-                topo_token = _prep_optional_token_tensor(payload, "topo_token", device) if topology_enabled else None
-                topo_pres = _prep_optional_token_tensor(payload, "topo_presence", device) if topology_enabled else None
+                topo_token = _prep_optional_token_tensor(payload, "topology_token", device) if topology_enabled else None
+                topo_pres = _prep_optional_token_tensor(payload, "topology_presence", device) if topology_enabled else None
                 clin, clin_pres = _drop_grouped_tokens(
                     clin,
                     clin_pres,
@@ -1420,10 +1438,11 @@ def save_checkpoint(
     ema: Optional[H.EMAWeights],
     swa: Optional[H.SWAWeights],
     include_training_state: bool = True,
+    encoders: Optional[Dict[str, Any]] = None,
 ):
     ck_args = dict(vars(args))
-    ck_args.setdefault("software_version", "2.0.7")
-    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "9b6e4da7db94ab92d8b246454552fa48722352db"))
+    ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
+    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "a3de12d6fa7b426995b859cd9574f5a6355a01d2"))
     state = {
         "epoch": int(epoch),
         "num_time_bins": int(num_time_bins),
@@ -1432,7 +1451,10 @@ def save_checkpoint(
         "args": ck_args,
         "software_version": ck_args["software_version"],
         "commit_sha": ck_args["commit_sha"],
+        "model_class": _unwrap_model(model).__class__.__name__,
     }
+    if encoders is not None:
+        state["encoders"] = encoders
     if include_training_state:
         state["optimizer_state"] = optimizer.state_dict()
         state["scaler_state"] = (scaler.state_dict() if scaler is not None else None)
@@ -1808,6 +1830,7 @@ def run_one_fold(
     print(f"[fold {fold:02d}] train={len(tr_df)} val={len(va_df)} test={len(te_df)}")
 
     v2_requested = str(getattr(args, "model_version", "v2")).strip().lower() == "v2"
+    train_ids = tr_df[args.id_col].astype(str).tolist()
 
     if v2_requested:
         clin_enc = SemanticClinicalTokenEncoder.fit(tr_df)
@@ -1819,7 +1842,6 @@ def run_one_fold(
     rad_dim = 0
     if args.use_radiomics:
         all_ids = pd.concat([tr_df[args.id_col], va_df[args.id_col], te_df[args.id_col]]).astype(str).unique().tolist()
-        train_ids = tr_df[args.id_col].astype(str).tolist()
         if v2_requested:
             rad_enc = HabitatRadiomicsTokenEncoder.fit_from_wide_csv(
                 radiomics_csv=_v2_radiomics_csv_path(args),
@@ -1833,6 +1855,15 @@ def run_one_fold(
             rad_enc = RadiomicsEncoder.fit(train_ids, all_ids, args.radiomics_root, args.radiomics_pca_total_components, args.seed)
         rad_dim = rad_enc.output_dim
         print(f"[RAD] radiomics_dim={rad_dim}")
+
+    node_topology_scaler = None
+    if v2_requested and str(getattr(args, "node_topology_dir", "") or "").strip():
+        node_topology_scaler = NodeTopologyScaler.fit(
+            node_topology_dir=str(args.node_topology_dir),
+            train_ids=train_ids,
+            max_nodes=int(getattr(args, "v2_max_nodes", 16)),
+            node_dim=int(getattr(args, "v2_node_token_dim", 0)),
+        )
 
     expected_dhw = tuple(int(x) for x in args.img_size)
     mode = _image_encoder_mode(args)
@@ -1870,6 +1901,7 @@ def run_one_fold(
                 clinical_token_encoder=clin_enc,
                 radiomics_token_encoder=rad_enc,
                 node_topology_dir=str(getattr(args, "node_topology_dir", "") or ""),
+                node_topology_scaler=node_topology_scaler,
                 max_nodes=int(getattr(args, "v2_max_nodes", 16)),
                 node_token_dim=int(getattr(args, "v2_node_token_dim", 0)),
                 clinical_token_dim=int(clin_dim),
@@ -2091,6 +2123,15 @@ def run_one_fold(
     if is_main_rank:
         _reset_metrics_log_if_needed(metrics_csv, start_epoch=start_epoch, fully_restored=fully_restored, args=args)
 
+    checkpoint_encoders = {
+        "clinical": clin_enc,
+        "radiomics": rad_enc,
+        "node_topology": node_topology_scaler,
+        "clinical_token_dim": int(clin_dim),
+        "radiomics_token_dim": int(rad_dim),
+        "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
+    }
+
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
     save_full_training_state = bool(args.resume) and (not bool(args.lightweight_checkpoints))
 
@@ -2236,6 +2277,7 @@ def run_one_fold(
                 ema=ema,
                 swa=swa,
                 include_training_state=save_full_training_state,
+                encoders=checkpoint_encoders,
             )
             if np.isfinite(report_metric) and report_metric > best_report_metric:
                 save_checkpoint(
@@ -2251,6 +2293,7 @@ def run_one_fold(
                     ema=ema,
                     swa=swa,
                     include_training_state=save_full_training_state,
+                    encoders=checkpoint_encoders,
                 )
                 best_report_metric = float(report_metric)
                 print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
@@ -2334,12 +2377,20 @@ def run_one_fold(
 
     export_suffix = "ema" if (risks_ema is not None) else "last"
     export_risks = risks_ema if (risks_ema is not None) else risks_last
+    risk_metadata_base = {
+        "fold": int(fold),
+        "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
+        "software_version": TRIFUSESURV2_VERSION,
+        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "a3de12d6fa7b426995b859cd9574f5a6355a01d2"),
+        "time_bin_width_days": float(args.time_bin_width_days),
+    }
     save_endpoint_risk_dict_csv(
         export_risks,
         fold_dir / f"test_risks_{export_suffix}.csv",
         id_col=args.id_col,
         endpoint=str(args.endpoint),
         risk_horizon_days=float(args.risk_horizon_days),
+        metadata={**risk_metadata_base, "checkpoint": "last", "weights": str(export_suffix)},
     )
 
     if risks_best is not None:
@@ -2349,6 +2400,7 @@ def run_one_fold(
             id_col=args.id_col,
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
+            metadata={**risk_metadata_base, "checkpoint": "best", "weights": "best"},
         )
 
     if args.export_extra_risks:
@@ -2358,6 +2410,7 @@ def run_one_fold(
             id_col=args.id_col,
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
+            metadata={**risk_metadata_base, "checkpoint": "last", "weights": "last"},
         )
         if risks_ema is not None:
             save_endpoint_risk_dict_csv(
@@ -2366,6 +2419,7 @@ def run_one_fold(
                 id_col=args.id_col,
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
+                metadata={**risk_metadata_base, "checkpoint": "last", "weights": "ema"},
             )
         if risks_swa is not None:
             save_endpoint_risk_dict_csv(
@@ -2374,6 +2428,7 @@ def run_one_fold(
                 id_col=args.id_col,
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
+                metadata={**risk_metadata_base, "checkpoint": "last", "weights": "swa"},
             )
 
     met_export = ema_test if (export_suffix == "ema") else last_test

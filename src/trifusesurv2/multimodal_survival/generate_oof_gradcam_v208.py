@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate OOF Grad-CAM packages for TriFuseSurv2 2.0.7 v2 checkpoints."""
+"""Generate OOF Grad-CAM packages for TriFuseSurv2 2.0.8 v2 checkpoints."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from trifusesurv2.explain.gradcam_v2_core import (
     SOFTWARE_VERSION,
     TARGET_COMMIT_SHA,
     append_manifest,
-    assert_v207_v2_checkpoint,
+    assert_v208_v2_checkpoint,
     cam_from_features,
     cam_mass_summary,
     checkpoint_args_to_dict,
@@ -241,10 +241,49 @@ def _apply_checkpoint_weight_variant(model: torch.nn.Module, ck: dict[str, Any],
     return f"{variant}_shadow_applied_{applied}"
 
 
-def _oof_lookup(df: Optional[pd.DataFrame], pid: str, *, endpoint: str, horizon_days: float) -> tuple[Optional[float], str]:
+def _filter_oof_column(
+    rows: pd.DataFrame,
+    *,
+    column: str,
+    expected: Any,
+    notes: list[str],
+    aliases: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    actual_col = ""
+    for candidate in (column, *aliases):
+        if candidate in rows.columns:
+            actual_col = candidate
+            break
+    if not actual_col:
+        notes.append(f"oof_missing_{column}")
+        return rows
+    if column == "fold":
+        values = pd.to_numeric(rows[actual_col], errors="coerce")
+        out = rows[values == int(expected)]
+    else:
+        out = rows[rows[actual_col].astype(str).str.lower() == str(expected).lower()]
+    if out.empty:
+        raise RuntimeError(f"OOF CSV has no row with {actual_col}={expected!r}")
+    return out
+
+
+def _oof_lookup(
+    df: Optional[pd.DataFrame],
+    pid: str,
+    *,
+    id_col: str = "patient_id",
+    endpoint: str,
+    horizon_days: float,
+    fold: int,
+    checkpoint: str,
+    weights: str,
+) -> tuple[Optional[float], str]:
     if df is None:
         return None, "unchecked"
-    rows = df[df["patient_id"].astype(str) == str(pid)]
+    pid_col = str(id_col) if str(id_col) in df.columns else "patient_id"
+    if pid_col not in df.columns:
+        raise RuntimeError(f"OOF CSV is missing patient identifier column: {id_col!r} or 'patient_id'")
+    rows = df[df[pid_col].astype(str) == str(pid)]
     if rows.empty:
         raise RuntimeError(f"OOF CSV has no row for patient_id={pid}")
     if "risk_endpoint" in rows.columns:
@@ -254,12 +293,15 @@ def _oof_lookup(df: Optional[pd.DataFrame], pid: str, *, endpoint: str, horizon_
         rows = rows[(h - float(horizon_days)).abs() <= 1e-3]
     if rows.empty:
         raise RuntimeError(f"OOF CSV has no endpoint/horizon-matched row for patient_id={pid}")
+    notes: list[str] = []
+    rows = _filter_oof_column(rows, column="fold", expected=int(fold), notes=notes)
+    rows = _filter_oof_column(rows, column="checkpoint", expected=str(checkpoint), notes=notes)
+    rows = _filter_oof_column(rows, column="weights", expected=str(weights), notes=notes, aliases=("weights_type",))
+    rows = _filter_oof_column(rows, column="model_version", expected="v2", notes=notes)
+    rows = _filter_oof_column(rows, column="software_version", expected=SOFTWARE_VERSION, notes=notes)
+    rows = _filter_oof_column(rows, column="commit_sha", expected=TARGET_COMMIT_SHA, notes=notes)
     if len(rows) > 1 and len(rows["risk_score"].astype(float).round(12).unique()) > 1:
         raise RuntimeError(f"OOF lookup ambiguous for patient_id={pid}: matched rows={len(rows)}")
-    notes = []
-    for col in ("fold", "checkpoint", "weights", "model_version", "commit_sha"):
-        if col not in rows.columns:
-            notes.append(f"oof_missing_{col}")
     return float(rows.iloc[0]["risk_score"]), ";".join(notes)
 
 
@@ -300,7 +342,7 @@ def _to_device(batch: dict[str, Any], device: torch.device, key: str) -> Optiona
 def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[str, Any]:
     ck_path = _checkpoint_for_fold(args.run_dir, fold, args.checkpoint)
     ck = torch.load(ck_path, map_location="cpu", weights_only=False)
-    assert_v207_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
+    assert_v208_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
     ck_args = checkpoint_args_to_dict(ck)
     state = normalized_state_dict(ck)
     model = _build_model_from_checkpoint(ck, state)
@@ -324,6 +366,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
     if int(args.max_model_patients) > 0:
         te_df = te_df.head(int(args.max_model_patients)).reset_index(drop=True)
 
+    saved_encoders = ck.get("encoders", {}) if isinstance(ck.get("encoders", {}), dict) else {}
     clinical_groups = _clinical_groups_from_state(state)
     clinical_token_dim = _linear_in_dim(state, "habitat_model.clinical_proj.biology.weight") or _linear_in_dim(
         state,
@@ -333,18 +376,21 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
         state,
         "habitat_model.radiomics_proj.ln_intra.weight",
     )
-    clinical_encoder = SemanticClinicalTokenEncoder.fit(tr_df, clinical_groups)
-    radiomics_encoder = None
+    clinical_encoder = saved_encoders.get("clinical")
+    if clinical_encoder is None:
+        clinical_encoder = SemanticClinicalTokenEncoder.fit(tr_df, clinical_groups)
+    radiomics_encoder = saved_encoders.get("radiomics")
     if model.habitat_model.radiomics_proj is not None and args.radiomics_csv:
-        all_ids = pd.concat([tr_df[id_col], te_df[id_col]]).astype(str).unique().tolist()
-        radiomics_encoder = HabitatRadiomicsTokenEncoder.fit_from_wide_csv(
-            radiomics_csv=args.radiomics_csv,
-            train_ids=tr_df[id_col].astype(str).tolist(),
-            all_ids=all_ids,
-            total_pcs_per_group=int(radiomics_token_dim or args.radiomics_pcs_per_group),
-            require_presence_columns=bool(args.require_radiomics_presence_columns),
-            random_state=int(ck_args.get("seed", args.seed)),
-        )
+        if radiomics_encoder is None:
+            all_ids = pd.concat([tr_df[id_col], te_df[id_col]]).astype(str).unique().tolist()
+            radiomics_encoder = HabitatRadiomicsTokenEncoder.fit_from_wide_csv(
+                radiomics_csv=args.radiomics_csv,
+                train_ids=tr_df[id_col].astype(str).tolist(),
+                all_ids=all_ids,
+                total_pcs_per_group=int(radiomics_token_dim or args.radiomics_pcs_per_group),
+                require_presence_columns=bool(args.require_radiomics_presence_columns),
+                random_state=int(ck_args.get("seed", args.seed)),
+            )
 
     dataset = PreprocessedHabitatOOFDataset(
         te_df,
@@ -360,6 +406,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
         radiomics_token_encoder=radiomics_encoder,
         use_radiomics=radiomics_encoder is not None,
         node_topology_dir=str(args.node_topology_dir or ""),
+        node_topology_scaler=saved_encoders.get("node_topology"),
         max_nodes=int(args.max_nodes),
         node_token_dim=_linear_in_dim(state, "habitat_model.node_proj.weight"),
         clinical_token_dim=int(clinical_token_dim),
@@ -423,22 +470,44 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 pt_shell_t = pt_shell_t * body_t
                 ln_shell_t = ln_shell_t * body_t
             habitat_union_t = (pt_native_t + pt_shell_t + ln_native_t + ln_shell_t).clamp(0, 1)
+            pt_peri_disjoint_t = (pt_shell_t - pt_native_t - ln_native_t - ln_shell_t).clamp(0, 1)
+            ln_peri_disjoint_t = (ln_shell_t - ln_native_t - pt_native_t - pt_shell_t).clamp(0, 1)
+            habitat_union_disjoint_t = (pt_native_t + ln_native_t + pt_peri_disjoint_t + ln_peri_disjoint_t).clamp(0, 1)
             supports_t = {
                 "full_volume": torch.ones_like(body_t),
                 "body": body_t,
                 "pt_intra": pt_native_t,
                 "pt_peri": pt_shell_t.clamp(0, 1),
+                "pt_peri_disjoint": pt_peri_disjoint_t,
                 "ln_intra": ln_native_t,
                 "ln_peri": ln_shell_t.clamp(0, 1),
+                "ln_peri_disjoint": ln_peri_disjoint_t,
                 "pt_ln_union": (pt_native_t + ln_native_t).clamp(0, 1),
                 "habitat_union": habitat_union_t,
+                "habitat_union_disjoint": habitat_union_disjoint_t,
                 "off_habitat_body": (body_t - habitat_union_t).clamp(0, 1),
+                "off_habitat_body_disjoint": (body_t - habitat_union_disjoint_t).clamp(0, 1),
             }
         pred_supports_np = {name: value.detach().cpu().numpy()[0, 0].astype(np.float32) for name, value in pred_supports_t.items()}
         supports_np = {name: value.detach().cpu().numpy()[0, 0].astype(np.float32) for name, value in supports_t.items()}
         ct_np = x.detach().cpu().numpy()[0, 0].astype(np.float32)
         native_pt_np = mask_pt_native.detach().cpu().numpy()[0, 0].astype(np.float32)
         native_ln_np = mask_ln_native.detach().cpu().numpy()[0, 0].astype(np.float32)
+        ct_path = _find_ct_path(meta_by_pid, pid, args.meta_csv.parent, ct_col)
+
+        audit_dir_rel = Path(f"fold_{fold:02d}") / pid_slug(pid) / config_tag / "model_inputs"
+        model_input_ct_rel = audit_dir_rel / "model_input_ct.nii.gz"
+        pt_used_rel = audit_dir_rel / "pt_used.nii.gz"
+        ln_used_rel = audit_dir_rel / "ln_used.nii.gz"
+        pt_shell_rel = audit_dir_rel / "pt_shell.nii.gz"
+        ln_shell_rel = audit_dir_rel / "ln_shell.nii.gz"
+        body_mask_rel = audit_dir_rel / "body_mask.nii.gz"
+        save_nifti(ct_np, args.out_dir / model_input_ct_rel, ct_path, clip=False)
+        save_nifti(pred_supports_np["pt_intra"], args.out_dir / pt_used_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["ln_intra"], args.out_dir / ln_used_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["pt_peri"], args.out_dir / pt_shell_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["ln_peri"], args.out_dir / ln_shell_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["body"], args.out_dir / body_mask_rel, ct_path, clip=True)
 
         with torch.no_grad():
             logits_full, aux_full = model.forward_from_image_tokens(
@@ -456,7 +525,16 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 return_attention=bool(args.save_attention),
             )
             risk_full = float(risk_vector(model, logits_full, endpoint=endpoint, horizon_days=horizon).detach().cpu()[0])
-        saved, oof_notes = _oof_lookup(oof_df, pid, endpoint=endpoint, horizon_days=horizon)
+        saved, oof_notes = _oof_lookup(
+            oof_df,
+            pid,
+            endpoint=endpoint,
+            horizon_days=horizon,
+            id_col=id_col,
+            fold=int(fold),
+            checkpoint=str(args.checkpoint),
+            weights=str(args.weights),
+        )
         risk_absdiff = "" if saved is None else abs(risk_full - float(saved))
         if saved is not None and float(risk_absdiff) > float(args.risk_match_tol):
             raise RuntimeError(
@@ -487,7 +565,8 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             )
             write_json(args.out_dir / ablation_rel, ablations)
 
-        map_specs = [("full_model", None), *[(name, idx) for idx, name in enumerate(image_habitat_names())]]
+        habitat_names = image_habitat_names(model)
+        map_specs = [("full_model", None), *[(name, idx) for idx, name in enumerate(habitat_names)]]
         for map_i, (habitat_name, habitat_idx) in enumerate(map_specs):
             model.zero_grad(set_to_none=True)
             for feat in bb_aux["cam_features"]:
@@ -534,7 +613,6 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             pos_raw_rel = case_dir_rel / "raw_risk_increasing_gradcam.nii.gz"
             neg_raw_rel = case_dir_rel / "raw_risk_decreasing_gradcam.nii.gz"
             overlay_rel = case_dir_rel / f"{pid_slug(focus_name)}_focus_risk_increasing_overlay.png"
-            ct_path = _find_ct_path(meta_by_pid, pid, args.meta_csv.parent, ct_col)
             geom = save_nifti(signed_cam, args.out_dir / signed_rel, ct_path, clip=False)
             save_nifti(pos_focus, args.out_dir / pos_rel, ct_path, clip=True)
             save_nifti(neg_focus, args.out_dir / neg_rel, ct_path, clip=True)
@@ -583,6 +661,12 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 "risk_increasing_raw_cam_path": str(pos_raw_rel),
                 "risk_decreasing_raw_cam_path": str(neg_raw_rel),
                 "overlay_png_path": str(overlay_rel),
+                "model_input_ct_path": str(model_input_ct_rel),
+                "pt_used_path": str(pt_used_rel),
+                "ln_used_path": str(ln_used_rel),
+                "pt_shell_path": str(pt_shell_rel),
+                "ln_shell_path": str(ln_shell_rel),
+                "body_mask_path": str(body_mask_rel),
                 "attention_json_path": str(attention_rel) if args.save_attention else "",
                 "ablation_json_path": str(ablation_rel) if args.save_ablations else "",
                 "activation_shapes": ";".join(scale_shapes),
@@ -617,7 +701,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run_dir", type=Path, required=True)
-    p.add_argument("--checkpoint", type=str, default="best", choices=["best", "last"])
+    p.add_argument("--checkpoint", type=str, default="last", choices=["best", "last"])
     p.add_argument("--weights", type=str, default="ema", choices=["best", "ema", "last", "swa"])
     p.add_argument("--meta_csv", type=Path, required=True)
     p.add_argument("--splits_dir", type=Path, required=True)
@@ -655,7 +739,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    manifest = args.out_dir / "gradcam_v207_manifest.csv"
+    manifest = args.out_dir / "gradcam_v208_manifest.csv"
     statuses = []
     endpoints = tuple(SURVIVAL_ENDPOINTS) if str(args.endpoint).upper() == "ALL" else (str(args.endpoint).upper(),)
     for endpoint in endpoints:
@@ -664,7 +748,7 @@ def main() -> None:
         for fold in [int(x) for x in args.folds]:
             statuses.append(run_fold(endpoint_args, fold, manifest))
     status = {
-        "kind": "v207_oof_gradcam",
+        "kind": "v208_oof_gradcam",
         "software_version": SOFTWARE_VERSION,
         "commit_sha": TARGET_COMMIT_SHA,
         "model_class": MODEL_CLASS,
@@ -674,7 +758,7 @@ def main() -> None:
         "manifest": _relative_path(manifest),
         "fold_status": statuses,
     }
-    write_json(args.out_dir / "gradcam_v207_status.json", status)
+    write_json(args.out_dir / "gradcam_v208_status.json", status)
     print(json.dumps(status, indent=2), flush=True)
 
 

@@ -26,6 +26,7 @@ if _HAVE_DEPS:
         write_node_topology_json,
         read_node_topology_json,
     )
+    from trifusesurv2.utils.data import NodeTopologyScaler
 
 
 @unittest.skipUnless(_HAVE_DEPS, "numpy/SimpleITK are not available in this runtime")
@@ -144,6 +145,74 @@ class NodeTopologyTest(unittest.TestCase):
         data = serialize_node_topology(nodes, summary)
         self.assertIsNone(data["topology_summary"]["pt_ln_min_distance_mm"])
         self.assertIsNone(data["topology_summary"]["pt_ln_mean_distance_mm"])
+
+    def test_node_topology_scaler_preconditions_and_scales(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload_a = {
+                "topology_summary": {
+                    "node_count": 1,
+                    "node_total_volume_mm3": 100.0,
+                    "node_largest_volume_mm3": 100.0,
+                    "node_bilateral_flag": 0,
+                    "node_laterality_known_flag": 1,
+                    "node_centroid_spread_mm": 0.0,
+                    "pt_ln_distance_known_flag": 1,
+                    "pt_ln_min_distance_mm": 12.0,
+                    "pt_ln_mean_distance_mm": 12.0,
+                },
+                "node_instances": [
+                    {
+                        "voxel_count": 10,
+                        "volume_mm3": 100.0,
+                        "centroid_xyz_mm": [1.0, 2.0, 3.0],
+                        "laterality": "left",
+                    }
+                ],
+            }
+            payload_b = {
+                "topology_summary": {
+                    "node_count": 3,
+                    "node_total_volume_mm3": 900.0,
+                    "node_largest_volume_mm3": 500.0,
+                    "node_bilateral_flag": 1,
+                    "node_laterality_known_flag": 1,
+                    "node_centroid_spread_mm": 9.0,
+                    "pt_ln_distance_known_flag": 1,
+                    "pt_ln_min_distance_mm": 40.0,
+                    "pt_ln_mean_distance_mm": 55.0,
+                },
+                "node_instances": [
+                    {
+                        "voxel_count": 30,
+                        "volume_mm3": 900.0,
+                        "centroid_xyz_mm": [4.0, 5.0, 6.0],
+                        "laterality": "right",
+                    }
+                ],
+            }
+            for pid, payload in (("A", payload_a), ("B", payload_b)):
+                with open(f"{tmp}/{pid}.json", "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+
+            scaler = NodeTopologyScaler.fit(
+                node_topology_dir=tmp,
+                train_ids=["A", "B"],
+                max_nodes=4,
+                node_dim=9,
+            )
+            transformed_topology = scaler.transform_topology(
+                np.asarray(list(payload_a["topology_summary"].values()), dtype=np.float32)
+            )
+            nodes = np.zeros((1, 9), dtype=np.float32)
+            nodes[0, :9] = [10, 100.0, 1.0, 2.0, 3.0, 1, 0, 0, 1]
+            transformed_nodes = scaler.transform_nodes(nodes)
+
+        self.assertEqual(transformed_topology.shape, (9,))
+        self.assertEqual(transformed_nodes.shape, (1, 9))
+        self.assertTrue(np.isfinite(transformed_topology).all())
+        self.assertTrue(np.isfinite(transformed_nodes).all())
+        self.assertTrue((scaler.topology_scale > 0).all())
+        self.assertTrue((scaler.node_scale > 0).all())
 
 
 if __name__ == "__main__":

@@ -122,6 +122,39 @@ class ContourAwareHabitatSurvivalModelTest(unittest.TestCase):
         self.assertTrue(presence[:, 0].all().item())
         self.assertFalse(presence[:, 1:].any().item())
 
+    def test_optional_modality_dropout_preserves_2d_topology_shape(self):
+        from trifusesurv2.multimodal_survival.train import _drop_optional_modality
+
+        tokens, presence = _drop_optional_modality(
+            torch.ones(3, 9),
+            torch.ones(3),
+            p=1.0,
+        )
+        self.assertEqual(tokens.shape, (3, 9))
+        self.assertEqual(presence.shape, (3, 1))
+        self.assertEqual(float(tokens.sum().item()), 0.0)
+
+    def test_training_batch_uses_topology_key(self):
+        from trifusesurv2.multimodal_survival.train import _unpack_surv_batch
+
+        topology = torch.randn(2, 1, 9)
+        presence = torch.ones(2, 1)
+        payload = _unpack_surv_batch(
+            {
+                "x": torch.randn(2, 1, 8, 8, 8),
+                "t": torch.ones(2),
+                "e": torch.ones(2),
+                "clinical_tokens": torch.randn(2, 3, 6),
+                "radiomics_tokens": torch.randn(2, 4, 5),
+                "topology_token": topology,
+                "topology_presence": presence,
+                "pid": ["A", "B"],
+            }
+        )
+        self.assertIs(payload["topology_token"], topology)
+        self.assertIs(payload["topology_presence"], presence)
+        self.assertNotIn("topo_token", payload)
+
     def test_return_gate_raises(self):
         model = self._make_model()
         x = torch.randn(2, 1, 8, 8, 8)
