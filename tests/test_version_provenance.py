@@ -18,15 +18,19 @@ class VersionProvenanceTest(unittest.TestCase):
         match = re.search(r"^version\s*=\s*\"([^\"]+)\"", text, flags=re.MULTILINE)
         self.assertIsNotNone(match)
         project_version = match.group(1)
-        self.assertEqual(project_version, "2.0.8")
+        self.assertEqual(project_version, "2.0.9")
         self.assertEqual(__version__, project_version)
         self.assertEqual(SOFTWARE_VERSION, project_version)
-        self.assertEqual(TARGET_COMMIT_SHA, "a3de12d6fa7b426995b859cd9574f5a6355a01d2")
+        self.assertEqual(TARGET_COMMIT_SHA, "e40c9b4a25f06a2f5003e16b903cc245cce34251")
 
     def test_current_gradcam_cli_module_exists_and_old_module_is_absent(self):
-        self.assertIsNotNone(importlib.util.find_spec("trifusesurv2.multimodal_survival.generate_oof_gradcam_v208"))
-        old_name = "trifusesurv2.multimodal_survival.generate_oof_gradcam_" + "v20" + "7"
-        self.assertIsNone(importlib.util.find_spec(old_name))
+        self.assertIsNotNone(importlib.util.find_spec("trifusesurv2.multimodal_survival.generate_oof_gradcam_v209"))
+        old_names = [
+            "trifusesurv2.multimodal_survival.generate_oof_gradcam_" + suffix
+            for suffix in ("v20" + "7", "v20" + "8")
+        ]
+        for old_name in old_names:
+            self.assertIsNone(importlib.util.find_spec(old_name))
 
 
 if __name__ == "__main__":

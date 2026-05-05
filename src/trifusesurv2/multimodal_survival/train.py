@@ -1442,7 +1442,7 @@ def save_checkpoint(
 ):
     ck_args = dict(vars(args))
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
-    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "a3de12d6fa7b426995b859cd9574f5a6355a01d2"))
+    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "e40c9b4a25f06a2f5003e16b903cc245cce34251"))
     state = {
         "epoch": int(epoch),
         "num_time_bins": int(num_time_bins),
@@ -2381,7 +2381,7 @@ def run_one_fold(
         "fold": int(fold),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
         "software_version": TRIFUSESURV2_VERSION,
-        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "a3de12d6fa7b426995b859cd9574f5a6355a01d2"),
+        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "e40c9b4a25f06a2f5003e16b903cc245cce34251"),
         "time_bin_width_days": float(args.time_bin_width_days),
     }
     save_endpoint_risk_dict_csv(

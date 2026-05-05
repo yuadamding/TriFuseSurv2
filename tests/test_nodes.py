@@ -27,6 +27,7 @@ if _HAVE_DEPS:
         read_node_topology_json,
     )
     from trifusesurv2.utils.data import NodeTopologyScaler
+    from trifusesurv2.utils.data import PreprocessedHabitatSurvivalDataset
 
 
 @unittest.skipUnless(_HAVE_DEPS, "numpy/SimpleITK are not available in this runtime")
@@ -213,6 +214,27 @@ class NodeTopologyTest(unittest.TestCase):
         self.assertTrue(np.isfinite(transformed_nodes).all())
         self.assertTrue((scaler.topology_scale > 0).all())
         self.assertTrue((scaler.node_scale > 0).all())
+
+    def test_spatial_augment_with_topology_hard_errors(self):
+        class _Clinical:
+            output_dim = 1
+
+            def encode_row_token_matrix(self, row):
+                return np.zeros((1, 1), dtype=np.float32), np.ones((1,), dtype=np.float32)
+
+        with self.assertRaises(ValueError):
+            PreprocessedHabitatSurvivalDataset(
+                meta=[],
+                id_col="patient_id",
+                time_col="time",
+                event_col="event",
+                ct_col="ct",
+                mask_pt_col="pt",
+                mask_ln_col="ln",
+                clinical_token_encoder=_Clinical(),
+                node_topology_dir="node_json",
+                spatial_augment=True,
+            )
 
 
 if __name__ == "__main__":

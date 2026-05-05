@@ -45,6 +45,8 @@ class GroupPCASpec:
     name: str
     input_dim: int
     output_dim: int
+    lower: np.ndarray
+    upper: np.ndarray
     mean: np.ndarray
     scale: np.ndarray
     pca_mean: np.ndarray
@@ -196,16 +198,22 @@ class HabitatRadiomicsTokenEncoder:
             x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
             n_samples, dim = x.shape
             n_comp = max(1, min(int(total_pcs_per_group), n_samples, dim))
-            feature_mean = x.mean(axis=0).astype(np.float32)
-            feature_scale = x.std(axis=0).astype(np.float32)
+            feature_lower = np.percentile(x, 1.0, axis=0).astype(np.float32)
+            feature_upper = np.percentile(x, 99.0, axis=0).astype(np.float32)
+            feature_upper = np.maximum(feature_upper, feature_lower).astype(np.float32)
+            x_clipped = np.clip(x, feature_lower, feature_upper).astype(np.float32)
+            feature_mean = x_clipped.mean(axis=0).astype(np.float32)
+            feature_scale = x_clipped.std(axis=0).astype(np.float32)
             feature_scale = np.where(feature_scale > 1e-6, feature_scale, 1.0).astype(np.float32)
-            x_scaled = ((x - feature_mean) / feature_scale).astype(np.float32)
+            x_scaled = ((x_clipped - feature_mean) / feature_scale).astype(np.float32)
             pca = PCA(n_components=n_comp, svd_solver="full", random_state=int(random_state))
             pca.fit(x_scaled)
             pca_specs[group_name] = GroupPCASpec(
                 name=group_name,
                 input_dim=dim,
                 output_dim=n_comp,
+                lower=feature_lower,
+                upper=feature_upper,
                 mean=feature_mean,
                 scale=feature_scale,
                 pca_mean=pca.mean_.astype(np.float32),
@@ -228,7 +236,8 @@ class HabitatRadiomicsTokenEncoder:
                     token = np.zeros((spec.output_dim,), dtype=np.float32)
                 else:
                     raw = _pad_or_trunc_1d(raw, spec.input_dim)
-                    scaled = ((raw - spec.mean) / spec.scale).astype(np.float32)
+                    clipped = np.clip(raw, spec.lower, spec.upper).astype(np.float32)
+                    scaled = ((clipped - spec.mean) / spec.scale).astype(np.float32)
                     token = (spec.components @ (scaled - spec.pca_mean)).astype(np.float32)
                 token_map[group_name] = token
             patient_vectors[pid] = token_map

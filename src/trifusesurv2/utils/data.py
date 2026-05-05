@@ -399,7 +399,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
     This dataset intentionally does not use the legacy flat ``ClinicalEncoder``
     or ``RadiomicsEncoder`` outputs.  It returns semantic clinical token
     matrices, habitat radiomics token matrices, optional node tokens, and an
-    optional topology token for the 2.0.8 habitat-aligned model.
+    optional topology token for the 2.0.9 habitat-aligned model.
     """
 
     def __init__(
@@ -429,6 +429,11 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         mode: str = "eval",
         spatial_augment: Optional[bool] = None,
     ):
+        if bool(node_topology_dir) and bool(spatial_augment):
+            raise ValueError(
+                "Spatial augmentation with node_topology_dir is disabled until node centroids/laterality "
+                "and topology summaries are transformed with the image."
+            )
         allow_spatial_augment = (not bool(node_topology_dir)) if spatial_augment is None else bool(spatial_augment)
         super().__init__(
             meta,

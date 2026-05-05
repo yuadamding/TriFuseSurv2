@@ -96,6 +96,11 @@ class HabitatRadiomicsTokenEncoderTest(unittest.TestCase):
             self.assertEqual(mat.shape, (4, 1))
             self.assertTrue(np.array_equal(pres, np.asarray([1.0, 1.0, 0.0, 0.0], dtype=np.float32)))
             for spec in enc.pca_specs.values():
+                self.assertEqual(spec.lower.shape, (spec.input_dim,))
+                self.assertEqual(spec.upper.shape, (spec.input_dim,))
+                self.assertTrue(np.all(np.isfinite(spec.lower)))
+                self.assertTrue(np.all(np.isfinite(spec.upper)))
+                self.assertTrue(np.all(spec.upper >= spec.lower))
                 self.assertEqual(spec.scale.shape, (spec.input_dim,))
                 self.assertTrue(np.all(np.isfinite(spec.scale)))
                 self.assertTrue(np.all(spec.scale > 0.0))

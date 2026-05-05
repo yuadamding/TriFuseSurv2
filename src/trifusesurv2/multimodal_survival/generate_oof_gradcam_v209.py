@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate OOF Grad-CAM packages for TriFuseSurv2 2.0.8 v2 checkpoints."""
+"""Generate OOF Grad-CAM packages for TriFuseSurv2 2.0.9 v2 checkpoints."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from trifusesurv2.explain.gradcam_v2_core import (
     SOFTWARE_VERSION,
     TARGET_COMMIT_SHA,
     append_manifest,
-    assert_v208_v2_checkpoint,
+    assert_v209_v2_checkpoint,
     cam_from_features,
     cam_mass_summary,
     checkpoint_args_to_dict,
@@ -342,7 +342,7 @@ def _to_device(batch: dict[str, Any], device: torch.device, key: str) -> Optiona
 def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[str, Any]:
     ck_path = _checkpoint_for_fold(args.run_dir, fold, args.checkpoint)
     ck = torch.load(ck_path, map_location="cpu", weights_only=False)
-    assert_v208_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
+    assert_v209_v2_checkpoint(ck, checkpoint_path=_relative_path(ck_path), require_commit=bool(args.require_commit_sha))
     ck_args = checkpoint_args_to_dict(ck)
     state = normalized_state_dict(ck)
     model = _build_model_from_checkpoint(ck, state)
@@ -391,6 +391,11 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 require_presence_columns=bool(args.require_radiomics_presence_columns),
                 random_state=int(ck_args.get("seed", args.seed)),
             )
+    if model.habitat_model.radiomics_proj is not None and radiomics_encoder is None:
+        raise RuntimeError(
+            "This v2 checkpoint expects radiomics tokens, but no saved radiomics encoder was found "
+            "and --radiomics_csv was not provided. Refusing to generate non-OOF-matched explanations."
+        )
 
     dataset = PreprocessedHabitatOOFDataset(
         te_df,
@@ -501,12 +506,24 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
         ln_used_rel = audit_dir_rel / "ln_used.nii.gz"
         pt_shell_rel = audit_dir_rel / "pt_shell.nii.gz"
         ln_shell_rel = audit_dir_rel / "ln_shell.nii.gz"
+        pt_peri_disjoint_rel = audit_dir_rel / "pt_peri_disjoint.nii.gz"
+        ln_peri_disjoint_rel = audit_dir_rel / "ln_peri_disjoint.nii.gz"
+        habitat_union_rel = audit_dir_rel / "habitat_union.nii.gz"
+        habitat_union_disjoint_rel = audit_dir_rel / "habitat_union_disjoint.nii.gz"
+        off_habitat_body_rel = audit_dir_rel / "off_habitat_body.nii.gz"
+        off_habitat_body_disjoint_rel = audit_dir_rel / "off_habitat_body_disjoint.nii.gz"
         body_mask_rel = audit_dir_rel / "body_mask.nii.gz"
         save_nifti(ct_np, args.out_dir / model_input_ct_rel, ct_path, clip=False)
         save_nifti(pred_supports_np["pt_intra"], args.out_dir / pt_used_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["ln_intra"], args.out_dir / ln_used_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["pt_peri"], args.out_dir / pt_shell_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["ln_peri"], args.out_dir / ln_shell_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["pt_peri_disjoint"], args.out_dir / pt_peri_disjoint_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["ln_peri_disjoint"], args.out_dir / ln_peri_disjoint_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["habitat_union"], args.out_dir / habitat_union_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["habitat_union_disjoint"], args.out_dir / habitat_union_disjoint_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["off_habitat_body"], args.out_dir / off_habitat_body_rel, ct_path, clip=True)
+        save_nifti(pred_supports_np["off_habitat_body_disjoint"], args.out_dir / off_habitat_body_disjoint_rel, ct_path, clip=True)
         save_nifti(pred_supports_np["body"], args.out_dir / body_mask_rel, ct_path, clip=True)
 
         with torch.no_grad():
@@ -666,6 +683,12 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 "ln_used_path": str(ln_used_rel),
                 "pt_shell_path": str(pt_shell_rel),
                 "ln_shell_path": str(ln_shell_rel),
+                "pt_peri_disjoint_path": str(pt_peri_disjoint_rel),
+                "ln_peri_disjoint_path": str(ln_peri_disjoint_rel),
+                "habitat_union_path": str(habitat_union_rel),
+                "habitat_union_disjoint_path": str(habitat_union_disjoint_rel),
+                "off_habitat_body_path": str(off_habitat_body_rel),
+                "off_habitat_body_disjoint_path": str(off_habitat_body_disjoint_rel),
                 "body_mask_path": str(body_mask_rel),
                 "attention_json_path": str(attention_rel) if args.save_attention else "",
                 "ablation_json_path": str(ablation_rel) if args.save_ablations else "",
@@ -739,7 +762,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    manifest = args.out_dir / "gradcam_v208_manifest.csv"
+    manifest = args.out_dir / "gradcam_v209_manifest.csv"
     statuses = []
     endpoints = tuple(SURVIVAL_ENDPOINTS) if str(args.endpoint).upper() == "ALL" else (str(args.endpoint).upper(),)
     for endpoint in endpoints:
@@ -748,7 +771,7 @@ def main() -> None:
         for fold in [int(x) for x in args.folds]:
             statuses.append(run_fold(endpoint_args, fold, manifest))
     status = {
-        "kind": "v208_oof_gradcam",
+        "kind": "v209_oof_gradcam",
         "software_version": SOFTWARE_VERSION,
         "commit_sha": TARGET_COMMIT_SHA,
         "model_class": MODEL_CLASS,
@@ -758,7 +781,7 @@ def main() -> None:
         "manifest": _relative_path(manifest),
         "fold_status": statuses,
     }
-    write_json(args.out_dir / "gradcam_v208_status.json", status)
+    write_json(args.out_dir / "gradcam_v209_status.json", status)
     print(json.dumps(status, indent=2), flush=True)
 
 

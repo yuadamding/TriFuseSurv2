@@ -81,13 +81,13 @@ pip install -e .
 ```bash
 trifusesurv2-train                   # Joint contour-aware survival training
 trifusesurv2-evaluate-oof            # Out-of-fold c-index evaluation
-trifusesurv2-gradcam-v208            # v2 habitat Grad-CAM/attention/ablation export
+trifusesurv2-gradcam-v209            # v2 habitat Grad-CAM/attention/ablation export
 trifusesurv2-preprocess-export       # DICOM to NIfTI preprocessing
 trifusesurv2-make-cv-splits          # Cross-validation split generation
 trifusesurv2-prepare-opscc-tabular   # Tabular data preparation
 ```
 
-`trifusesurv2-gradcam-v208` defaults to `--checkpoint last --weights ema`,
+`trifusesurv2-gradcam-v209` defaults to `--checkpoint last --weights ema`,
 matching the default `test_risks_ema.csv` export from training. Use
 `--checkpoint best --weights best` when explaining `test_risks_best.csv`.
 
