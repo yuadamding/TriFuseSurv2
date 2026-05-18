@@ -22,17 +22,8 @@ dependencies = [
   "torch==2.9.1",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest"]
-explain = ["matplotlib"]
-
 [project.scripts]
 trifusesurv2-train = "trifusesurv2.multimodal_survival.train:main"
-trifusesurv2-evaluate-oof = "trifusesurv2.multimodal_survival.evaluate_oof_cindex:main"
-trifusesurv2-gradcam-v211 = "trifusesurv2.multimodal_survival.generate_oof_gradcam_v211:main"
-trifusesurv2-preprocess-export = "trifusesurv2.preprocessing.export_swinunetr:main"
-trifusesurv2-make-cv-splits = "trifusesurv2.preprocessing.make_cv_splits:main"
-trifusesurv2-prepare-opscc-tabular = "trifusesurv2.preprocessing.prepare_opscc_tabular:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

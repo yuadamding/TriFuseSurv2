@@ -46,6 +46,58 @@ if [[ -n "$REQUESTED_DEVICE" && "$REQUESTED_DEVICE" != "cuda" && "$REQUESTED_DEV
 fi
 JOB_DEVICE="cuda:0"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-50}"
+RESUME="${RESUME:-0}"
+EPOCHS="${EPOCHS:-60}"
+ROI_FOCUS_WARMUP_EPOCHS="${ROI_FOCUS_WARMUP_EPOCHS:-30}"
+ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT="${ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT:-0.0}"
+SURVIVAL_USE_GT_MASKS="${SURVIVAL_USE_GT_MASKS:-1}"
+MASK_GUIDANCE_ALPHA="${MASK_GUIDANCE_ALPHA:-1.0}"
+TEACHER_FORCE_EPOCHS="${TEACHER_FORCE_EPOCHS:-0}"
+TEACHER_FORCE_START="${TEACHER_FORCE_START:-1.0}"
+TEACHER_FORCE_END="${TEACHER_FORCE_END:-1.0}"
+LOC_LOSS_PT_LAMBDA="${LOC_LOSS_PT_LAMBDA:-4.0}"
+LOC_LOSS_LN_LAMBDA="${LOC_LOSS_LN_LAMBDA:-4.0}"
+LOC_PRESENCE_LAMBDA="${LOC_PRESENCE_LAMBDA:-0.20}"
+LOC_BCE_WEIGHT="${LOC_BCE_WEIGHT:-1.0}"
+LOC_DICE_WEIGHT="${LOC_DICE_WEIGHT:-1.0}"
+LOC_POS_WEIGHT_CAP="${LOC_POS_WEIGHT_CAP:-1000.0}"
+MASK_SUPPORT_LAMBDA="${MASK_SUPPORT_LAMBDA:-2.0}"
+MASK_SUPPORT_BCE_WEIGHT="${MASK_SUPPORT_BCE_WEIGHT:-1.0}"
+MASK_SUPPORT_DICE_WEIGHT="${MASK_SUPPORT_DICE_WEIGHT:-1.0}"
+MASK_SUPPORT_POS_WEIGHT_CAP="${MASK_SUPPORT_POS_WEIGHT_CAP:-1000.0}"
+MASK_FOCUS_LAMBDA="${MASK_FOCUS_LAMBDA:-8.0}"
+LOC_FEATURE_FROM_END="${LOC_FEATURE_FROM_END:-4}"
+ROI_SUPPORT_THRESHOLD="${ROI_SUPPORT_THRESHOLD:-0.50}"
+ROI_SUPPORT_FALLBACK_THRESHOLD="${ROI_SUPPORT_FALLBACK_THRESHOLD:-0.05}"
+ROI_SUPPORT_FALLBACK_RELMAX="${ROI_SUPPORT_FALLBACK_RELMAX:-0.50}"
+SWA_START_EPOCH="${SWA_START_EPOCH:-$((10#$ROI_FOCUS_WARMUP_EPOCHS + 5))}"
+LR_BACKBONE="${LR_BACKBONE:-3e-4}"
+WD_BACKBONE="${WD_BACKBONE:-1e-4}"
+LR_HEAD="${LR_HEAD:-1e-4}"
+WD_RAD="${WD_RAD:-2e-3}"
+PRIMARY_SURV_LOSS_WEIGHT="${PRIMARY_SURV_LOSS_WEIGHT:-1.0}"
+AUX_SURV_LOSS_WEIGHT="${AUX_SURV_LOSS_WEIGHT:-0.35}"
+EMA_DECAY="${EMA_DECAY:-0.9995}"
+PT_SHELL_RADIUS="${PT_SHELL_RADIUS:-5}"
+LN_SHELL_RADIUS="${LN_SHELL_RADIUS:-5}"
+MODALITY_DROPOUT_CLIN_P="${MODALITY_DROPOUT_CLIN_P:-0.20}"
+MODALITY_DROPOUT_RAD_P="${MODALITY_DROPOUT_RAD_P:-0.20}"
+RAD_PROJ_DROPOUT_P="${RAD_PROJ_DROPOUT_P:-0.30}"
+PROJ_DROPOUT_P="${PROJ_DROPOUT_P:-0.35}"
+EXPERT_DROPOUT_P="${EXPERT_DROPOUT_P:-0.15}"
+TOKEN_MLP_DROPOUT="${TOKEN_MLP_DROPOUT:-0.55}"
+TOKEN_DROPOUT="${TOKEN_DROPOUT:-0.10}"
+ATTN_DROPOUT_P="${ATTN_DROPOUT_P:-0.15}"
+V2_DROPOUT="${V2_DROPOUT:-0.10}"
+V2_IMAGE_HABITAT_DROPOUT_P="${V2_IMAGE_HABITAT_DROPOUT_P:-0.05}"
+V2_NODE_DROPOUT_P="${V2_NODE_DROPOUT_P:-0.10}"
+V2_TOPOLOGY_DROPOUT_P="${V2_TOPOLOGY_DROPOUT_P:-0.10}"
+V2_DROPOUT_RAMP_EPOCHS="${V2_DROPOUT_RAMP_EPOCHS:-12}"
+
+resume_args=(--no_resume)
+if [[ "$RESUME" == "1" || "$RESUME" == "true" || "$RESUME" == "yes" ]]; then
+  resume_args=(--resume)
+fi
 
 extra_args=()
 if [[ -n "$CONTOUR_WARMSTART_CKPT" ]]; then
@@ -55,6 +107,16 @@ elif [[ -n "$CONTOUR_WARMSTART_DIR" ]]; then
 else
   extra_args+=(--no_align_swin_cfg_from_contour_warmstart)
 fi
+
+survival_tf_args=(--mask_guidance_alpha "$MASK_GUIDANCE_ALPHA")
+if [[ "$SURVIVAL_USE_GT_MASKS" == "1" || "$SURVIVAL_USE_GT_MASKS" == "true" || "$SURVIVAL_USE_GT_MASKS" == "yes" ]]; then
+  survival_tf_args=(--survival_uses_teacher_forced_masks --mask_guidance_alpha "$MASK_GUIDANCE_ALPHA")
+fi
+
+echo "[train] resume=$RESUME epochs=$EPOCHS roi_focus_warmup_epochs=$ROI_FOCUS_WARMUP_EPOCHS survival_warmup_weight=$ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT swa_start=$SWA_START_EPOCH"
+echo "[train] survival_use_gt_masks=$SURVIVAL_USE_GT_MASKS mask_guidance_alpha=$MASK_GUIDANCE_ALPHA teacher_force_epochs=$TEACHER_FORCE_EPOCHS"
+echo "[train] loc_feature_from_end=$LOC_FEATURE_FROM_END loc_loss_pt=$LOC_LOSS_PT_LAMBDA loc_loss_ln=$LOC_LOSS_LN_LAMBDA mask_support=$MASK_SUPPORT_LAMBDA mask_focus=$MASK_FOCUS_LAMBDA balanced_bce=1"
+echo "[train] lr_backbone=$LR_BACKBONE lr_head=$LR_HEAD aux_w=$AUX_SURV_LOSS_WEIGHT pt_shell=$PT_SHELL_RADIUS ln_shell=$LN_SHELL_RADIUS"
 
 CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" \
 PYTHONUNBUFFERED=1 \
@@ -71,10 +133,11 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --out_dir "$OUT_DIR" \
   --exp_name "$EXP_NAME" \
   --img_size 128 256 256 \
-  --epochs 60 \
+  --epochs "$EPOCHS" \
   --batch_size 1 \
   --workers "$WORKERS" \
   --log_every_batches "$LOG_EVERY_BATCHES" \
+  "${resume_args[@]}" \
   --amp \
   --use_checkpoint \
   --device "$JOB_DEVICE" \
@@ -83,18 +146,19 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --use_ema \
   --use_swa \
   --export_extra_risks \
-  --lr_backbone 3e-4 \
-  --wd_backbone 1e-4 \
-  --lr_head 1e-4 \
-  --wd_rad 2e-3 \
-  --modality_dropout_rad_p 0.20 \
-  --primary_surv_loss_weight 1.0 \
-  --aux_surv_loss_weight 0.35 \
-  --ema_decay 0.9995 \
-  --swa_start_epoch 10 \
+  --lr_backbone "$LR_BACKBONE" \
+  --wd_backbone "$WD_BACKBONE" \
+  --lr_head "$LR_HEAD" \
+  --wd_rad "$WD_RAD" \
+  --modality_dropout_clin_p "$MODALITY_DROPOUT_CLIN_P" \
+  --modality_dropout_rad_p "$MODALITY_DROPOUT_RAD_P" \
+  --primary_surv_loss_weight "$PRIMARY_SURV_LOSS_WEIGHT" \
+  --aux_surv_loss_weight "$AUX_SURV_LOSS_WEIGHT" \
+  --ema_decay "$EMA_DECAY" \
+  --swa_start_epoch "$SWA_START_EPOCH" \
   --swa_update_freq_epochs 1 \
-  --pt_shell_radius 5 \
-  --ln_shell_radius 5 \
+  --pt_shell_radius "$PT_SHELL_RADIUS" \
+  --ln_shell_radius "$LN_SHELL_RADIUS" \
   --radiomics_pca_total_components 100 \
   --img_token_dim 768 \
   --token_mlp_hidden_dim 1536 \
@@ -104,20 +168,41 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --img_attn_heads 4 \
   --gate_hidden_dim 512 \
   --rad_hidden_dim 1024 \
-  --rad_proj_dropout_p 0.30 \
-  --proj_dropout_p 0.35 \
-  --expert_dropout_p 0.15 \
-  --token_mlp_dropout 0.55 \
-  --token_dropout 0.10 \
-  --attn_dropout_p 0.15 \
-  --teacher_force_epochs 12 \
-  --teacher_force_start 0.0 \
-  --teacher_force_end 0.0 \
-  --loc_loss_pt_lambda 0.25 \
-  --loc_loss_ln_lambda 0.25 \
-  --loc_presence_lambda 0.05 \
-  --loc_bce_weight 0.5 \
-  --loc_dice_weight 0.5 \
+  --rad_proj_dropout_p "$RAD_PROJ_DROPOUT_P" \
+  --proj_dropout_p "$PROJ_DROPOUT_P" \
+  --expert_dropout_p "$EXPERT_DROPOUT_P" \
+  --token_mlp_dropout "$TOKEN_MLP_DROPOUT" \
+  --token_dropout "$TOKEN_DROPOUT" \
+  --attn_dropout_p "$ATTN_DROPOUT_P" \
+  --v2_dropout "$V2_DROPOUT" \
+  --v2_image_habitat_dropout_p "$V2_IMAGE_HABITAT_DROPOUT_P" \
+  --v2_node_dropout_p "$V2_NODE_DROPOUT_P" \
+  --v2_topology_dropout_p "$V2_TOPOLOGY_DROPOUT_P" \
+  --v2_dropout_ramp_epochs "$V2_DROPOUT_RAMP_EPOCHS" \
+  --use_multiscale \
+  --mask_interp trilinear \
+  --loc_feature_from_end "$LOC_FEATURE_FROM_END" \
+  --min_roi_voxels_deep 0 \
+  --teacher_force_epochs "$TEACHER_FORCE_EPOCHS" \
+  --teacher_force_start "$TEACHER_FORCE_START" \
+  --teacher_force_end "$TEACHER_FORCE_END" \
+  "${survival_tf_args[@]}" \
+  --roi_focus_warmup_epochs "$ROI_FOCUS_WARMUP_EPOCHS" \
+  --roi_focus_warmup_survival_weight "$ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT" \
+  --loc_loss_pt_lambda "$LOC_LOSS_PT_LAMBDA" \
+  --loc_loss_ln_lambda "$LOC_LOSS_LN_LAMBDA" \
+  --loc_presence_lambda "$LOC_PRESENCE_LAMBDA" \
+  --loc_bce_weight "$LOC_BCE_WEIGHT" \
+  --loc_dice_weight "$LOC_DICE_WEIGHT" \
+  --loc_pos_weight_cap "$LOC_POS_WEIGHT_CAP" \
+  --mask_support_lambda "$MASK_SUPPORT_LAMBDA" \
+  --mask_support_bce_weight "$MASK_SUPPORT_BCE_WEIGHT" \
+  --mask_support_dice_weight "$MASK_SUPPORT_DICE_WEIGHT" \
+  --mask_support_pos_weight_cap "$MASK_SUPPORT_POS_WEIGHT_CAP" \
+  --mask_focus_lambda "$MASK_FOCUS_LAMBDA" \
+  --roi_support_threshold "$ROI_SUPPORT_THRESHOLD" \
+  --roi_support_fallback_threshold "$ROI_SUPPORT_FALLBACK_THRESHOLD" \
+  --roi_support_fallback_relmax "$ROI_SUPPORT_FALLBACK_RELMAX" \
   --shell_body_from_ct \
   "${extra_args[@]}" \
   "$@"

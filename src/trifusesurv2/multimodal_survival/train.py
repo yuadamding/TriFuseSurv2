@@ -4,9 +4,9 @@
 Recommended workflow:
 - CT-only shared SwinUNETR encoder
 - internal PT/LN localization heads
-- ROI tokens built from soft predicted masks
-- survival loss on deployment-like predicted-mask tokens
-- GT masks used for localization/support supervision by default
+- ROI tokens built from PT/LN and PT/LN peritumoral supports
+- GT masks used for localization/support supervision
+- optional GT-mask teacher forcing for survival ROI tokens
 """
 
 from __future__ import annotations
@@ -47,6 +47,7 @@ from trifusesurv2.models.lora import (
     is_lora_param_name,
 )
 from trifusesurv2.utils import survival as H
+from trifusesurv2.utils.roi_focus import ROI_FOCUS_METRIC_NAMES, finite_scalar, roi_focus_metrics
 from trifusesurv2.utils.clinical import (
     ClinicalEncoder,
     DEFAULT_CLINICAL_COLS,
@@ -59,6 +60,8 @@ from trifusesurv2.utils.data import NodeTopologyScaler, PreprocessedContourAware
 from trifusesurv2.utils.data import resolve_preprocessed_case_path
 from trifusesurv2.schema import NODE_TOPOLOGY_FEATURES
 from trifusesurv2 import __version__ as TRIFUSESURV2_VERSION
+
+ROI_FOCUS_ROI_NAMES = ("pt", "ln", "pt_peri")
 
 
 # =============================================================================
@@ -591,7 +594,7 @@ def _teacher_force_alpha_for_epoch(epoch: int, args) -> float:
 
 
 def _survival_teacher_force_alpha(train_teacher_force_alpha: float, args_or_flag) -> float:
-    """Deployment-faithful default: survival loss sees predicted-mask tokens."""
+    """Survival teacher-forcing alpha after the feature flag is applied."""
 
     if isinstance(args_or_flag, bool):
         enabled = bool(args_or_flag)
@@ -752,10 +755,94 @@ def _soft_dice_loss_from_logits(logits: torch.Tensor, target: torch.Tensor, eps:
     return 1.0 - dice.mean()
 
 
-def _localization_loss_from_logits(logits: torch.Tensor, target: torch.Tensor, bce_weight: float, dice_weight: float) -> torch.Tensor:
+def _balanced_binary_cross_entropy_with_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    pos_weight_cap: float = 500.0,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Voxel-balanced BCE so tiny ROIs cannot be overwhelmed by background."""
+
+    target = target.float().clamp(0, 1)
+    bce = F.binary_cross_entropy_with_logits(logits.float(), target, reduction="none")
+    reduce_dims = tuple(range(1, target.ndim))
+    voxels_per_sample = float(target[0].numel())
+    pos = target.sum(dim=reduce_dims, keepdim=True)
+    neg = target.new_full(pos.shape, voxels_per_sample) - pos
+    pos_w = (voxels_per_sample / (2.0 * pos.clamp_min(float(eps)))).clamp(min=1.0, max=float(pos_weight_cap))
+    neg_w = (voxels_per_sample / (2.0 * neg.clamp_min(float(eps)))).clamp(max=1.0)
+    weights = torch.where(target >= 0.5, pos_w, neg_w)
+    return (bce * weights).mean()
+
+
+@contextlib.contextmanager
+def _autocast_disabled_for(tensor: torch.Tensor):
+    """Run probability-space BCE in fp32; PyTorch forbids BCE under AMP autocast."""
+
+    autocast = getattr(getattr(torch, "amp", None), "autocast", None)
+    if callable(autocast):
+        with autocast(device_type=str(tensor.device.type), enabled=False):
+            yield
+        return
+    if tensor.is_cuda:
+        with torch.cuda.amp.autocast(enabled=False):
+            yield
+        return
+    with contextlib.nullcontext():
+        yield
+
+
+def _binary_cross_entropy_from_probs(
+    probs: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    with _autocast_disabled_for(probs):
+        return F.binary_cross_entropy(probs.float(), target.float(), reduction=reduction)
+
+
+def _balanced_binary_cross_entropy_from_probs(
+    probs: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    pos_weight_cap: float = 500.0,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    target = target.float().clamp(0, 1)
+    probs = probs.float().clamp(float(eps), 1.0 - float(eps))
+    bce = _binary_cross_entropy_from_probs(probs, target, reduction="none")
+    reduce_dims = tuple(range(1, target.ndim))
+    voxels_per_sample = float(target[0].numel())
+    pos = target.sum(dim=reduce_dims, keepdim=True)
+    neg = target.new_full(pos.shape, voxels_per_sample) - pos
+    pos_w = (voxels_per_sample / (2.0 * pos.clamp_min(float(eps)))).clamp(min=1.0, max=float(pos_weight_cap))
+    neg_w = (voxels_per_sample / (2.0 * neg.clamp_min(float(eps)))).clamp(max=1.0)
+    weights = torch.where(target >= 0.5, pos_w, neg_w)
+    return (bce * weights).mean()
+
+
+def _localization_loss_from_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    bce_weight: float,
+    dice_weight: float,
+    *,
+    balanced_bce: bool = True,
+    pos_weight_cap: float = 500.0,
+) -> torch.Tensor:
     loss = logits.new_tensor(0.0)
     if float(bce_weight) > 0.0:
-        loss = loss + float(bce_weight) * F.binary_cross_entropy_with_logits(logits, target)
+        if bool(balanced_bce):
+            bce = _balanced_binary_cross_entropy_with_logits(
+                logits,
+                target,
+                pos_weight_cap=float(pos_weight_cap),
+            )
+        else:
+            bce = F.binary_cross_entropy_with_logits(logits, target)
+        loss = loss + float(bce_weight) * bce
     if float(dice_weight) > 0.0:
         loss = loss + float(dice_weight) * _soft_dice_loss_from_logits(logits, target)
     return loss
@@ -776,6 +863,8 @@ def _mask_support_loss_from_probs(
     *,
     bce_weight: float,
     dice_weight: float,
+    balanced_bce: bool = True,
+    pos_weight_cap: float = 500.0,
 ) -> torch.Tensor:
     target = target.float().clamp(0, 1)
     if tuple(int(x) for x in probs.shape[2:]) != tuple(int(x) for x in target.shape[2:]):
@@ -783,10 +872,65 @@ def _mask_support_loss_from_probs(
     probs = probs.float().clamp(1e-5, 1.0 - 1e-5)
     loss = probs.new_tensor(0.0)
     if float(bce_weight) > 0.0:
-        loss = loss + float(bce_weight) * F.binary_cross_entropy(probs, target)
+        if bool(balanced_bce):
+            bce = _balanced_binary_cross_entropy_from_probs(
+                probs,
+                target,
+                pos_weight_cap=float(pos_weight_cap),
+            )
+        else:
+            bce = _binary_cross_entropy_from_probs(probs, target)
+        loss = loss + float(bce_weight) * bce
     if float(dice_weight) > 0.0:
         loss = loss + float(dice_weight) * _soft_dice_loss_from_probs(probs, target)
     return loss
+
+
+def _prob_mass_inside_target_loss_from_probs(
+    probs: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Directly penalize probability spread outside the ground-truth ROI."""
+
+    if tuple(int(x) for x in probs.shape[2:]) != tuple(int(x) for x in target.shape[2:]):
+        target = _resize_mask_target(target, tuple(int(x) for x in probs.shape[2:]))
+    prob = probs.float().clamp(0, 1)
+    target_bin = (target.float().clamp(0, 1) >= 0.5).float()
+    prob_f = prob.flatten(1)
+    target_f = target_bin.flatten(1)
+    target_sum = target_f.sum(dim=1)
+    present = target_sum > float(eps)
+    if not bool(present.any().item()):
+        return probs.new_tensor(0.0)
+    prob_inside = (prob_f * target_f).sum(dim=1)
+    prob_total = prob_f.sum(dim=1).clamp_min(float(eps))
+    mass_inside = (prob_inside / prob_total).clamp_min(float(eps))
+    return -torch.log(mass_inside[present]).mean()
+
+
+def _peritumoral_shell_target(
+    mask: torch.Tensor,
+    *,
+    radius: int,
+    body: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Native-space shell around a GT ROI, matching the backbone shell token."""
+
+    r = int(max(0, radius))
+    m = mask.float().clamp(0, 1)
+    if r <= 0:
+        shell = m.new_zeros(m.shape)
+    else:
+        k = 2 * r + 1
+        shell = (F.max_pool3d(m, kernel_size=k, stride=1, padding=r) - m).clamp(0, 1)
+    if body is not None:
+        b = body.float().clamp(0, 1)
+        if tuple(int(x) for x in b.shape[2:]) != tuple(int(x) for x in shell.shape[2:]):
+            b = _resize_mask_target(b, tuple(int(x) for x in shell.shape[2:]))
+        shell = shell * b
+    return shell
 
 
 def materialize_lazy_modules(model: nn.Module, loader: DataLoader, device: torch.device, autocast_ctx):
@@ -1338,14 +1482,21 @@ def train_one_epoch(
     gate_loadbal_lambda: float,
     teacher_force_alpha: float,
     survival_uses_teacher_forced_masks: bool,
+    survival_loss_weight: float,
     loc_loss_pt_lambda: float,
     loc_loss_ln_lambda: float,
     loc_presence_lambda: float,
     mask_support_lambda: float,
     mask_support_bce_weight: float,
     mask_support_dice_weight: float,
+    mask_support_balanced_bce: bool,
+    mask_support_pos_weight_cap: float,
+    mask_focus_lambda: float,
+    pt_shell_radius: int,
     loc_bce_weight: float,
     loc_dice_weight: float,
+    loc_balanced_bce: bool,
+    loc_pos_weight_cap: float,
     log_every_batches: int,
     ema: Optional[H.EMAWeights],
     autocast_ctx,
@@ -1356,6 +1507,7 @@ def train_one_epoch(
     v2_topology_dropout_p: float = 0.0,
     v2_image_habitat_dropout_p: float = 0.0,
     v2_dropout_ramp_epochs: int = 0,
+    roi_focus_live_csv: Optional[Path] = None,
 ) -> Dict[str, float]:
     model.train()
     mm = _unwrap_model(model)
@@ -1375,6 +1527,7 @@ def train_one_epoch(
         "loss_loc_ln": 0.0,
         "loss_loc_presence": 0.0,
         "loss_mask_support": 0.0,
+        "loss_mask_focus": 0.0,
         "loss_gate_entropy": 0.0,
         "loss_gate_loadbal": 0.0,
         "loss_hazard_smooth": 0.0,
@@ -1383,6 +1536,22 @@ def train_one_epoch(
     for endpoint in SURVIVAL_ENDPOINTS:
         stats_sum[f"surv_{endpoint.lower()}_nll"] = 0.0
         stats_sum[f"surv_{endpoint.lower()}_count"] = 0.0
+    roi_focus_sum: Dict[str, float] = {}
+    roi_focus_count: Dict[str, int] = {}
+
+    def _roi_focus_scalars(prefix: str, metrics: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for suffix, tensor_value in metrics.items():
+            scalar = finite_scalar(tensor_value)
+            if scalar is not None:
+                out[f"roi_focus_{prefix}_{suffix}"] = float(scalar)
+        return out
+
+    def _accumulate_roi_focus(prefix: str, metrics: Dict[str, torch.Tensor]) -> None:
+        for key, scalar in _roi_focus_scalars(prefix, metrics).items():
+            roi_focus_sum[key] = roi_focus_sum.get(key, 0.0) + float(scalar)
+            roi_focus_count[key] = roi_focus_count.get(key, 0) + 1
+
     n_batches = 0
     try:
         planned_batches = int(len(loader))
@@ -1400,12 +1569,14 @@ def train_one_epoch(
         float(teacher_force_alpha),
         bool(survival_uses_teacher_forced_masks),
     )
+    effective_survival_loss_weight = float(max(0.0, survival_loss_weight))
 
     _log(
         f"[fold {fold:02d}] epoch {epoch:03d} starting"
         + (f" | batches={planned_batches}" if planned_batches > 0 else "")
         + f" | teacher_force_schedule={teacher_force_alpha:.2f}"
         + f" | survival_teacher_force={survival_teacher_force_alpha:.2f}"
+        + f" | surv_loss_w={effective_survival_loss_weight:.2f}"
         + (
             f" | v2_drop(img={eff_v2_image_drop:.3f},clin={eff_v2_clin_drop:.3f},"
             f"rad={eff_v2_rad_drop:.3f},node={eff_v2_node_drop:.3f},topo={eff_v2_topology_drop:.3f})"
@@ -1426,6 +1597,7 @@ def train_one_epoch(
         mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
         mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
         batches_since_step += 1
+        batch_roi_focus: Dict[str, float] = {}
 
         with autocast_ctx():
             if v2_mode:
@@ -1526,7 +1698,7 @@ def train_one_epoch(
                 aux_weight=float(aux_surv_loss_weight),
                 ref_tensor=primary_logits,
             )
-            loss = loss_surv
+            loss = loss_surv * effective_survival_loss_weight
             primary_key = str(primary_endpoint).strip().upper()
             primary_surv_unweighted = endpoint_losses.get(primary_key, primary_logits.new_tensor(0.0))
             aux_endpoint_losses = {endpoint: loss_ep for endpoint, loss_ep in endpoint_losses.items() if endpoint != primary_key}
@@ -1547,12 +1719,13 @@ def train_one_epoch(
             loss_loc_ln = primary_logits.new_tensor(0.0)
             loss_loc_presence = primary_logits.new_tensor(0.0)
             loss_mask_support = primary_logits.new_tensor(0.0)
+            loss_mask_focus = primary_logits.new_tensor(0.0)
             if hazard_smooth_lambda > 0:
                 hazard_terms = {
                     endpoint: H.hazard_smoothness_penalty(_extract_endpoint_logits(logits, endpoint).float())
                     for endpoint in endpoint_losses
                 }
-                loss_hazard_smooth = float(hazard_smooth_lambda) * _weighted_multitask_mean(
+                loss_hazard_smooth = effective_survival_loss_weight * float(hazard_smooth_lambda) * _weighted_multitask_mean(
                     hazard_terms,
                     endpoint_counts,
                     primary_endpoint=primary_key,
@@ -1566,7 +1739,7 @@ def train_one_epoch(
                     endpoint: (_extract_endpoint_logits(logits, endpoint).float() ** 2).mean()
                     for endpoint in endpoint_losses
                 }
-                loss_logit_l2 = float(logit_l2_lambda) * _weighted_multitask_mean(
+                loss_logit_l2 = effective_survival_loss_weight * float(logit_l2_lambda) * _weighted_multitask_mean(
                     l2_terms,
                     endpoint_counts,
                     primary_endpoint=primary_key,
@@ -1576,10 +1749,10 @@ def train_one_epoch(
                 )
                 loss = loss + loss_logit_l2
             if gate_entropy_lambda > 0 and gate is not None:
-                loss_gate_entropy = float(gate_entropy_lambda) * gate_entropy_penalty_presence(gate, pres)
+                loss_gate_entropy = effective_survival_loss_weight * float(gate_entropy_lambda) * gate_entropy_penalty_presence(gate, pres)
                 loss = loss + loss_gate_entropy
             if gate_loadbal_lambda > 0 and gate is not None:
-                loss_gate_loadbal = float(gate_loadbal_lambda) * gate_load_balance_penalty_presence(gate, pres)
+                loss_gate_loadbal = effective_survival_loss_weight * float(gate_loadbal_lambda) * gate_load_balance_penalty_presence(gate, pres)
                 loss = loss + loss_gate_loadbal
 
             loc_aux = aux.get("backbone_aux", aux) if isinstance(aux, dict) else None
@@ -1592,6 +1765,8 @@ def train_one_epoch(
                         loc_pt_target.float(),
                         bce_weight=float(loc_bce_weight),
                         dice_weight=float(loc_dice_weight),
+                        balanced_bce=bool(loc_balanced_bce),
+                        pos_weight_cap=float(loc_pos_weight_cap),
                     )
                     loss = loss + loss_loc_pt
                 if float(loc_loss_ln_lambda) > 0.0:
@@ -1600,6 +1775,8 @@ def train_one_epoch(
                         loc_ln_target.float(),
                         bce_weight=float(loc_bce_weight),
                         dice_weight=float(loc_dice_weight),
+                        balanced_bce=bool(loc_balanced_bce),
+                        pos_weight_cap=float(loc_pos_weight_cap),
                     )
                     loss = loss + loss_loc_ln
                 if float(loc_presence_lambda) > 0.0 and ("pt_presence_logits" in loc_aux) and ("ln_presence_logits" in loc_aux):
@@ -1615,15 +1792,56 @@ def train_one_epoch(
                         mask_pt,
                         bce_weight=float(mask_support_bce_weight),
                         dice_weight=float(mask_support_dice_weight),
+                        balanced_bce=bool(mask_support_balanced_bce),
+                        pos_weight_cap=float(mask_support_pos_weight_cap),
                     )
                     support_loss = support_loss + _mask_support_loss_from_probs(
                         loc_aux["ln_prob"],
                         mask_ln,
                         bce_weight=float(mask_support_bce_weight),
                         dice_weight=float(mask_support_dice_weight),
+                        balanced_bce=bool(mask_support_balanced_bce),
+                        pos_weight_cap=float(mask_support_pos_weight_cap),
                     )
                     loss_mask_support = float(mask_support_lambda) * support_loss
                     loss = loss + loss_mask_support
+                if float(mask_focus_lambda) > 0.0 and "pt_prob" in loc_aux and "ln_prob" in loc_aux:
+                    focus_loss = _prob_mass_inside_target_loss_from_probs(loc_aux["pt_prob"], mask_pt)
+                    focus_loss = focus_loss + _prob_mass_inside_target_loss_from_probs(loc_aux["ln_prob"], mask_ln)
+                    loss_mask_focus = float(mask_focus_lambda) * focus_loss
+                    loss = loss + loss_mask_focus
+                with torch.no_grad():
+                    if "pt_prob" in loc_aux:
+                        pt_focus_prob = loc_aux.get("pt_soft_used", loc_aux["pt_prob"])
+                        pt_focus = roi_focus_metrics(
+                            pred_prob=pt_focus_prob.detach(),
+                            used_support=loc_aux.get("pt_used", loc_aux["pt_prob"]).detach(),
+                            target_mask=mask_pt.detach(),
+                        )
+                        _accumulate_roi_focus("pt", pt_focus)
+                        batch_roi_focus.update(_roi_focus_scalars("pt", pt_focus))
+                    if "ln_prob" in loc_aux:
+                        ln_focus_prob = loc_aux.get("ln_soft_used", loc_aux["ln_prob"])
+                        ln_focus = roi_focus_metrics(
+                            pred_prob=ln_focus_prob.detach(),
+                            used_support=loc_aux.get("ln_used", loc_aux["ln_prob"]).detach(),
+                            target_mask=mask_ln.detach(),
+                        )
+                        _accumulate_roi_focus("ln", ln_focus)
+                        batch_roi_focus.update(_roi_focus_scalars("ln", ln_focus))
+                    if "pt_shell" in loc_aux:
+                        pt_peri_target = _peritumoral_shell_target(
+                            mask_pt,
+                            radius=int(pt_shell_radius),
+                            body=loc_aux.get("body"),
+                        )
+                        pt_peri_focus = roi_focus_metrics(
+                            pred_prob=loc_aux["pt_shell"].detach(),
+                            used_support=loc_aux["pt_shell"].detach(),
+                            target_mask=pt_peri_target.detach(),
+                        )
+                        _accumulate_roi_focus("pt_peri", pt_peri_focus)
+                        batch_roi_focus.update(_roi_focus_scalars("pt_peri", pt_peri_focus))
 
         if not torch.isfinite(loss).item():
             pid_preview = [str(x) for x in list(payload["pid"])[:8]]
@@ -1640,6 +1858,7 @@ def train_one_epoch(
                 f"loss_loc_ln={float(loss_loc_ln.detach().cpu().item())} "
                 f"loss_loc_presence={float(loss_loc_presence.detach().cpu().item())} "
                 f"loss_mask_support={float(loss_mask_support.detach().cpu().item())} "
+                f"loss_mask_focus={float(loss_mask_focus.detach().cpu().item())} "
                 f"loss_gate_entropy={float(loss_gate_entropy.detach().cpu().item())} "
                 f"loss_gate_loadbal={float(loss_gate_loadbal.detach().cpu().item())} "
                 f"loss_hazard_smooth={float(loss_hazard_smooth.detach().cpu().item())} "
@@ -1680,6 +1899,7 @@ def train_one_epoch(
         stats_sum["loss_loc_ln"] += float(loss_loc_ln.detach().cpu().item())
         stats_sum["loss_loc_presence"] += float(loss_loc_presence.detach().cpu().item())
         stats_sum["loss_mask_support"] += float(loss_mask_support.detach().cpu().item())
+        stats_sum["loss_mask_focus"] += float(loss_mask_focus.detach().cpu().item())
         stats_sum["loss_gate_entropy"] += float(loss_gate_entropy.detach().cpu().item())
         stats_sum["loss_gate_loadbal"] += float(loss_gate_loadbal.detach().cpu().item())
         stats_sum["loss_hazard_smooth"] += float(loss_hazard_smooth.detach().cpu().item())
@@ -1696,14 +1916,45 @@ def train_one_epoch(
         )
         if should_log_batch:
             batch_total = planned_batches if planned_batches > 0 else "?"
+            roi_msg = ""
+            if batch_roi_focus:
+                roi_msg = (
+                    f" roi_pt_mass={batch_roi_focus.get('roi_focus_pt_prob_mass_inside_gt', float('nan')):.3f}"
+                    f" roi_ln_mass={batch_roi_focus.get('roi_focus_ln_prob_mass_inside_gt', float('nan')):.3f}"
+                    f" roi_pt_peri_mass={batch_roi_focus.get('roi_focus_pt_peri_prob_mass_inside_gt', float('nan')):.3f}"
+                    f" roi_pt_dice={batch_roi_focus.get('roi_focus_pt_support_dice', float('nan')):.3f}"
+                    f" roi_ln_dice={batch_roi_focus.get('roi_focus_ln_support_dice', float('nan')):.3f}"
+                    f" roi_pt_peri_dice={batch_roi_focus.get('roi_focus_pt_peri_support_dice', float('nan')):.3f}"
+                )
             _log(
                 f"[fold {fold:02d}] epoch {epoch:03d} batch {batch_idx}/{batch_total} "
                 f"loss={float(loss.detach().cpu().item()):.4f} "
                 f"surv={float(loss_surv.detach().cpu().item()):.4f} "
                 f"loc_pt={float(loss_loc_pt.detach().cpu().item()):.4f} "
                 f"loc_ln={float(loss_loc_ln.detach().cpu().item()):.4f} "
-                f"mask_sup={float(loss_mask_support.detach().cpu().item()):.4f}"
+                f"mask_sup={float(loss_mask_support.detach().cpu().item()):.4f} "
+                f"mask_focus={float(loss_mask_focus.detach().cpu().item()):.4f}"
+                f"{roi_msg}"
             )
+            if roi_focus_live_csv is not None and batch_roi_focus and ((not _DDP_INITIALIZED) or _is_main_process()):
+                live_row = {
+                    "epoch": int(epoch),
+                    "batch": int(batch_idx),
+                    "planned_batches": int(planned_batches),
+                    "survival_teacher_force_alpha": float(survival_teacher_force_alpha),
+                    "survival_loss_weight": float(effective_survival_loss_weight),
+                }
+                for roi_name in ROI_FOCUS_ROI_NAMES:
+                    for suffix in ROI_FOCUS_METRIC_NAMES:
+                        key = f"roi_focus_{roi_name}_{suffix}"
+                        live_row[f"train_{key}"] = float(batch_roi_focus.get(key, float("nan")))
+                roi_focus_live_csv.parent.mkdir(parents=True, exist_ok=True)
+                pd.DataFrame([live_row]).to_csv(
+                    roi_focus_live_csv,
+                    mode="a",
+                    header=not roi_focus_live_csv.is_file(),
+                    index=False,
+                )
 
     if batches_since_step > 0:
         if device.type == "cuda" and scaler is not None:
@@ -1727,6 +1978,11 @@ def train_one_epoch(
             stats_mean[key] = float(value / n_batches)
         else:
             stats_mean[key] = float(value / n_batches)
+    for roi_name in ROI_FOCUS_ROI_NAMES:
+        for suffix in ROI_FOCUS_METRIC_NAMES:
+            key = f"roi_focus_{roi_name}_{suffix}"
+            count = int(roi_focus_count.get(key, 0))
+            stats_mean[key] = float(roi_focus_sum[key] / count) if count > 0 else float("nan")
     return stats_mean
 
 
@@ -1799,6 +2055,16 @@ def checkpoint_report_metric(path: Path) -> float:
         return metric if np.isfinite(metric) else float("-inf")
     except Exception:
         return float("-inf")
+
+
+def checkpoint_epoch(path: Path) -> int:
+    if not path.is_file():
+        return -1
+    try:
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        return int(ck.get("epoch", -1))
+    except Exception:
+        return -1
 
 
 def load_model_state_only(path: Path, model: nn.Module) -> bool:
@@ -2090,6 +2356,24 @@ def _reset_metrics_log_if_needed(metrics_csv: Path, start_epoch: int, fully_rest
     """
     if not metrics_csv.is_file():
         return
+    required_roi_focus_cols = {
+        "train_roi_focus_pt_prob_mass_inside_gt",
+        "train_roi_focus_ln_prob_mass_inside_gt",
+        "train_roi_focus_pt_peri_prob_mass_inside_gt",
+        "train_roi_focus_pt_support_dice",
+        "train_roi_focus_ln_support_dice",
+        "train_roi_focus_pt_peri_support_dice",
+    }
+    try:
+        existing_cols = set(pd.read_csv(metrics_csv, nrows=0).columns)
+    except Exception:
+        existing_cols = set()
+    if not required_roi_focus_cols.issubset(existing_cols):
+        ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        dst = metrics_csv.with_name(f"metrics_archived_missing_roi_focus_{ts}.csv")
+        metrics_csv.rename(dst)
+        print(f"[LOG] archived old metrics without ROI-focus columns -> {dst}")
+        return
     if start_epoch > 1 and fully_restored:
         return
     # archive
@@ -2097,6 +2381,33 @@ def _reset_metrics_log_if_needed(metrics_csv: Path, start_epoch: int, fully_rest
     dst = metrics_csv.with_name(f"metrics_archived_{ts}.csv")
     metrics_csv.rename(dst)
     print(f"[LOG] archived old metrics -> {dst}")
+
+
+def _reset_roi_focus_live_log_if_needed(roi_focus_live_csv: Path, start_epoch: int, fully_restored: bool):
+    """Keep the live ROI monitor from reading rows from an older interrupted run."""
+
+    if not roi_focus_live_csv.is_file():
+        return
+    if start_epoch > 1 and fully_restored:
+        return
+    ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    dst = roi_focus_live_csv.with_name(f"roi_focus_live_archived_{ts}.csv")
+    roi_focus_live_csv.rename(dst)
+    print(f"[LOG] archived old live ROI-focus log -> {dst}")
+
+
+def _archive_checkpoints_for_fresh_run(ckpt_paths: Sequence[Path], args) -> None:
+    """Avoid reusing old best/last checkpoints when --no_resume starts fresh."""
+
+    if bool(getattr(args, "resume", False)):
+        return
+    ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    for ckpt_path in ckpt_paths:
+        if not ckpt_path.is_file():
+            continue
+        dst = ckpt_path.with_name(f"{ckpt_path.stem}_archived_fresh_start_{ts}{ckpt_path.suffix}")
+        ckpt_path.rename(dst)
+        print(f"[CKPT] archived old checkpoint for fresh run -> {dst}")
 
 
 # =============================================================================
@@ -2120,9 +2431,10 @@ def run_one_fold(
     fold_dir = out_root / f"fold_{fold:02d}"
     fold_dir.mkdir(parents=True, exist_ok=True)
     metrics_csv = fold_dir / "metrics.csv"
+    roi_focus_live_csv = fold_dir / "roi_focus_live.csv"
     ckpt_last = fold_dir / "last.pt"
     ckpt_best = fold_dir / "best.pt"
-    best_report_metric = checkpoint_report_metric(ckpt_best)
+    best_report_metric = float("-inf")
 
     tr_df = select_df_by_ids(meta, split["train"], args.id_col, args.strict_splits, f"fold{fold:02d}/train")
     va_df = select_df_by_ids(meta, split["val"],   args.id_col, args.strict_splits, f"fold{fold:02d}/val")
@@ -2288,6 +2600,7 @@ def run_one_fold(
         attn_pool_mask_mode=str(args.attn_pool_mask_mode),
         use_multiscale=bool(args.use_multiscale),
         mask_interp=str(args.mask_interp),
+        loc_feature_from_end=int(args.loc_feature_from_end),
         roi_support_threshold=float(args.roi_support_threshold),
         roi_support_fallback_threshold=float(args.roi_support_fallback_threshold),
         roi_support_fallback_relmax=float(args.roi_support_fallback_relmax),
@@ -2421,21 +2734,54 @@ def run_one_fold(
         wd_rad=float(args.wd_rad),
     )
     optimizer = torch.optim.AdamW(groups, betas=(0.9, 0.999), weight_decay=0.0)
-    scheduler = CosineAnnealingLR(optimizer, T_max=int(args.epochs), eta_min=float(args.min_lr))
+    lr_scheduler_t_max = int(args.epochs)
+    if (
+        int(getattr(args, "roi_focus_warmup_epochs", 0)) > 0
+        and float(getattr(args, "roi_focus_warmup_survival_weight", 1.0)) <= 0.0
+    ):
+        lr_scheduler_t_max = max(
+            1,
+            int(args.epochs) - int(getattr(args, "roi_focus_warmup_epochs", 0)),
+        )
+    scheduler = CosineAnnealingLR(optimizer, T_max=int(lr_scheduler_t_max), eta_min=float(args.min_lr))
 
-    ema = H.EMAWeights(mm, decay=float(args.ema_decay), track_trainable_only=True) if args.use_ema else None
+    ema = H.EMAWeights(mm, decay=float(args.ema_decay), track_trainable_only=True) if (args.use_ema and args.resume) else None
+    ema_started = False
     swa = H.SWAWeights(mm, track_trainable_only=True) if args.use_swa else None
 
     start_epoch = 1
     fully_restored = False
     if args.resume:
         start_epoch, fully_restored = load_checkpoint(ckpt_last, int(fold_num_time_bins), model, optimizer, scaler, scheduler, ema, swa)
+        ema_started = bool(ema is not None and int(getattr(ema, "num_updates", 0)) > 0)
+        resumed_epoch = int(start_epoch) - 1
+        resumed_from_localization_only_warmup = (
+            resumed_epoch <= int(max(0, getattr(args, "roi_focus_warmup_epochs", 0)))
+            and float(getattr(args, "roi_focus_warmup_survival_weight", 1.0)) <= 0.0
+        )
+        if bool(args.use_ema) and ((not ema_started) or resumed_from_localization_only_warmup):
+            ema = None
+            ema_started = False
         if start_epoch > 1:
             print(f"[fold {fold:02d}] resumed from epoch {start_epoch} (fully_restored={fully_restored})")
 
     is_main_rank = (not _DDP_INITIALIZED) or _is_main_process()
     if is_main_rank:
+        _archive_checkpoints_for_fresh_run([ckpt_last, ckpt_best], args)
         _reset_metrics_log_if_needed(metrics_csv, start_epoch=start_epoch, fully_restored=fully_restored, args=args)
+        _reset_roi_focus_live_log_if_needed(roi_focus_live_csv, start_epoch=start_epoch, fully_restored=fully_restored)
+        best_report_metric = checkpoint_report_metric(ckpt_best)
+        best_epoch = checkpoint_epoch(ckpt_best)
+        if (
+            best_epoch > 0
+            and best_epoch <= int(max(0, getattr(args, "roi_focus_warmup_epochs", 0)))
+            and float(getattr(args, "roi_focus_warmup_survival_weight", 1.0)) <= 0.0
+        ):
+            print(
+                f"[fold {fold:02d}] ignoring warmup best checkpoint for report-metric tracking: "
+                f"epoch={best_epoch} path={ckpt_best}"
+            )
+            best_report_metric = float("-inf")
 
     checkpoint_encoders = {
         "clinical": clin_enc,
@@ -2448,11 +2794,25 @@ def run_one_fold(
 
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
     save_full_training_state = bool(args.resume) and (not bool(args.lightweight_checkpoints))
+    scheduler_warmup_pause_reported = False
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
         if tr_sampler is not None:
             tr_sampler.set_epoch(epoch)
         teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args)
+        roi_focus_warmup_epochs = int(max(0, getattr(args, "roi_focus_warmup_epochs", 0)))
+        survival_loss_weight = 1.0
+        if int(epoch) <= roi_focus_warmup_epochs:
+            survival_loss_weight = float(getattr(args, "roi_focus_warmup_survival_weight", 1.0))
+        survival_phase_active = float(survival_loss_weight) > 0.0
+        if bool(args.use_ema) and survival_phase_active and ema is None:
+            ema = H.EMAWeights(mm, decay=float(args.ema_decay), track_trainable_only=True)
+            ema_started = True
+            if is_main_rank:
+                print(
+                    f"[fold {fold:02d}] EMA started at epoch {int(epoch):03d}; "
+                    "localization-only warmup excluded from EMA weights"
+                )
         train_stats = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
             fold=int(fold),
@@ -2468,14 +2828,21 @@ def run_one_fold(
             gate_loadbal_lambda=float(args.gate_loadbal_lambda),
             teacher_force_alpha=float(teacher_force_alpha),
             survival_uses_teacher_forced_masks=bool(args.survival_uses_teacher_forced_masks),
+            survival_loss_weight=float(survival_loss_weight),
             loc_loss_pt_lambda=float(args.loc_loss_pt_lambda),
             loc_loss_ln_lambda=float(args.loc_loss_ln_lambda),
             loc_presence_lambda=float(args.loc_presence_lambda),
             mask_support_lambda=float(args.mask_support_lambda),
             mask_support_bce_weight=float(args.mask_support_bce_weight),
             mask_support_dice_weight=float(args.mask_support_dice_weight),
+            mask_support_balanced_bce=bool(args.mask_support_balanced_bce),
+            mask_support_pos_weight_cap=float(args.mask_support_pos_weight_cap),
+            mask_focus_lambda=float(args.mask_focus_lambda),
+            pt_shell_radius=int(args.pt_shell_radius),
             loc_bce_weight=float(args.loc_bce_weight),
             loc_dice_weight=float(args.loc_dice_weight),
+            loc_balanced_bce=bool(args.loc_balanced_bce),
+            loc_pos_weight_cap=float(args.loc_pos_weight_cap),
             log_every_batches=int(args.log_every_batches),
             ema=ema,
             autocast_ctx=autocast_ctx,
@@ -2494,12 +2861,14 @@ def run_one_fold(
             v2_topology_dropout_p=float(getattr(args, "v2_topology_dropout_p", 0.0)),
             v2_image_habitat_dropout_p=float(getattr(args, "v2_image_habitat_dropout_p", 0.0)),
             v2_dropout_ramp_epochs=int(getattr(args, "v2_dropout_ramp_epochs", 0)),
+            roi_focus_live_csv=roi_focus_live_csv,
         )
 
         # In DDP, evaluate on the unwrapped model (no all-reduce) and only on rank 0.
         # All ranks must reach this point — we do NOT skip or barrier here.
         _eval_model = mm if _DDP_INITIALIZED else model
         if not _DDP_INITIALIZED or _is_main_process():
+            epoch_eval_teacher_force_alpha = _survival_teacher_force_alpha(teacher_force_alpha, args)
             train_met = evaluate_model(
                 _eval_model, tr_eval_loader, device,
                 endpoint=str(args.endpoint),
@@ -2508,7 +2877,7 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
             )
             val_met = evaluate_model(
                 _eval_model, va_loader, device,
@@ -2518,7 +2887,7 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
             )
         else:
             train_met = {"c_index": 0.0, "ibs": 0.0, "auc_mean": 0.0, "nb_mean": 0.0, "nll": 0.0}
@@ -2543,18 +2912,27 @@ def run_one_fold(
                 f"loc_pt={train_stats.get('loss_loc_pt', float('nan')):.4f} "
                 f"loc_ln={train_stats.get('loss_loc_ln', float('nan')):.4f} "
                 f"loc_pres={train_stats.get('loss_loc_presence', float('nan')):.4f} | "
-                f"mask_sup={train_stats.get('loss_mask_support', float('nan')):.4f} | "
+                f"mask_sup={train_stats.get('loss_mask_support', float('nan')):.4f} "
+                f"mask_focus={train_stats.get('loss_mask_focus', float('nan')):.4f} | "
+                f"roi_pt_mass={train_stats.get('roi_focus_pt_prob_mass_inside_gt', float('nan')):.3f} "
+                f"roi_ln_mass={train_stats.get('roi_focus_ln_prob_mass_inside_gt', float('nan')):.3f} "
+                f"roi_pt_peri_mass={train_stats.get('roi_focus_pt_peri_prob_mass_inside_gt', float('nan')):.3f} "
+                f"roi_pt_dice={train_stats.get('roi_focus_pt_support_dice', float('nan')):.3f} "
+                f"roi_ln_dice={train_stats.get('roi_focus_ln_support_dice', float('nan')):.3f} "
+                f"roi_pt_peri_dice={train_stats.get('roi_focus_pt_peri_support_dice', float('nan')):.3f} | "
                 f"val_nll={val_met.get('nll', float('nan')):.4f} | "
                 f"train_c={train_met.get('c_index', float('nan')):.3f} val_c={val_met.get('c_index', float('nan')):.3f} "
                 f"val_{args.report_metric}={report_metric:.3f} "
                 f"teacher_force_schedule={teacher_force_alpha:.2f} "
-                f"survival_tf={_survival_teacher_force_alpha(teacher_force_alpha, args):.2f}"
+                f"survival_tf={_survival_teacher_force_alpha(teacher_force_alpha, args):.2f} "
+                f"surv_loss_w={survival_loss_weight:.2f}"
             )
 
         row = {
             "epoch": int(epoch),
             "teacher_force_alpha": float(teacher_force_alpha),
             "survival_teacher_force_alpha": float(_survival_teacher_force_alpha(teacher_force_alpha, args)),
+            "survival_loss_weight": float(survival_loss_weight),
             "train_loss": float(train_stats.get("loss_total", float("nan"))),
             "train_surv_loss": float(train_stats.get("loss_surv_total", float("nan"))),
             "train_surv_primary_loss": float(train_stats.get("loss_surv_primary", float("nan"))),
@@ -2569,6 +2947,7 @@ def run_one_fold(
             "train_loc_ln_loss": float(train_stats.get("loss_loc_ln", float("nan"))),
             "train_loc_presence_loss": float(train_stats.get("loss_loc_presence", float("nan"))),
             "train_mask_support_loss": float(train_stats.get("loss_mask_support", float("nan"))),
+            "train_mask_focus_loss": float(train_stats.get("loss_mask_focus", float("nan"))),
             "train_gate_entropy_loss": float(train_stats.get("loss_gate_entropy", float("nan"))),
             "train_gate_loadbal_loss": float(train_stats.get("loss_gate_loadbal", float("nan"))),
             "train_hazard_smooth_loss": float(train_stats.get("loss_hazard_smooth", float("nan"))),
@@ -2582,10 +2961,23 @@ def run_one_fold(
             "train_nb_mean": float(train_met.get("nb_mean", float("nan"))),
             "val_nb_mean": float(val_met.get("nb_mean", float("nan"))),
         }
+        for roi_name in ROI_FOCUS_ROI_NAMES:
+            for suffix in ROI_FOCUS_METRIC_NAMES:
+                key = f"roi_focus_{roi_name}_{suffix}"
+                row[f"train_{key}"] = float(train_stats.get(key, float("nan")))
         for tday in args.auc_times_days:
             key = f"auc_{int(round(float(tday)))}d"
             row[f"train_{key}"] = float(train_met.get(key, float("nan")))
             row[f"val_{key}"] = float(val_met.get(key, float("nan")))
+        if survival_phase_active:
+            scheduler.step()
+        else:
+            if is_main_rank and not scheduler_warmup_pause_reported:
+                print(
+                    f"[fold {fold:02d}] LR scheduler paused while surv_loss_w=0.00; "
+                    f"active-phase cosine T_max={int(lr_scheduler_t_max)}"
+                )
+                scheduler_warmup_pause_reported = True
         if is_main_rank:
             pd.DataFrame([row]).to_csv(metrics_csv, mode="a", header=not metrics_csv.is_file(), index=False)
 
@@ -2604,7 +2996,8 @@ def run_one_fold(
                 include_training_state=save_full_training_state,
                 encoders=checkpoint_encoders,
             )
-            if np.isfinite(report_metric) and report_metric > best_report_metric:
+            best_checkpoint_eligible = float(survival_loss_weight) > 0.0
+            if best_checkpoint_eligible and np.isfinite(report_metric) and report_metric > best_report_metric:
                 save_checkpoint(
                     ckpt_best,
                     epoch=int(epoch),
@@ -2658,7 +3051,6 @@ def run_one_fold(
                         if bool(getattr(args, "epoch_gradcam_strict", False)):
                             raise RuntimeError(msg) from exc
                         print(msg)
-        scheduler.step()
         # No barrier needed here — DDP synchronizes during forward/backward,
         # and DistributedSampler.set_epoch() at the top of each epoch is enough.
         # A barrier would deadlock when rank 0 eval takes >600s (NCCL timeout).
@@ -2681,6 +3073,11 @@ def run_one_fold(
             "train_max_time_days": float(fold_max_time),
         }
 
+    final_eval_teacher_force_alpha = _survival_teacher_force_alpha(
+        _teacher_force_alpha_for_epoch(int(args.epochs), args),
+        args,
+    )
+
     last_test = evaluate_model(
         _eval_model, te_loader, device,
         endpoint=str(args.endpoint),
@@ -2689,7 +3086,7 @@ def run_one_fold(
         eval_times_days=args.auc_times_days,
         dca_thresholds=args.dca_thresholds,
         autocast_ctx=autocast_ctx,
-        teacher_force_alpha=0.0,
+        teacher_force_alpha=float(final_eval_teacher_force_alpha),
     )
     risks_last = predict_risk_scores(
         _eval_model,
@@ -2698,7 +3095,7 @@ def run_one_fold(
         endpoint=str(args.endpoint),
         risk_horizon_days=float(args.risk_horizon_days),
         autocast_ctx=autocast_ctx,
-        teacher_force_alpha=0.0,
+        teacher_force_alpha=float(final_eval_teacher_force_alpha),
     )
 
     ema_test = None
@@ -2713,7 +3110,7 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(final_eval_teacher_force_alpha),
             )
             risks_ema = predict_risk_scores(
                 _eval_model,
@@ -2722,7 +3119,7 @@ def run_one_fold(
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
                 autocast_ctx=autocast_ctx,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(final_eval_teacher_force_alpha),
             )
 
     swa_test = None
@@ -2737,7 +3134,7 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(final_eval_teacher_force_alpha),
             )
             risks_swa = predict_risk_scores(
                 _eval_model,
@@ -2746,7 +3143,7 @@ def run_one_fold(
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
                 autocast_ctx=autocast_ctx,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(final_eval_teacher_force_alpha),
             )
 
     best_test = None
@@ -2760,7 +3157,7 @@ def run_one_fold(
             eval_times_days=args.auc_times_days,
             dca_thresholds=args.dca_thresholds,
             autocast_ctx=autocast_ctx,
-            teacher_force_alpha=0.0,
+            teacher_force_alpha=float(final_eval_teacher_force_alpha),
         )
         risks_best = predict_risk_scores(
             _eval_model,
@@ -2769,7 +3166,7 @@ def run_one_fold(
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
             autocast_ctx=autocast_ctx,
-            teacher_force_alpha=0.0,
+            teacher_force_alpha=float(final_eval_teacher_force_alpha),
         )
 
     export_suffix = "ema" if (risks_ema is not None) else "last"
@@ -2780,7 +3177,7 @@ def run_one_fold(
         "software_version": TRIFUSESURV2_VERSION,
         "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "daaaa363020b7e27b93981f62dfa17821489e1ea"),
         "time_bin_width_days": float(args.time_bin_width_days),
-        "eval_teacher_force_alpha": 0.0,
+        "eval_teacher_force_alpha": float(final_eval_teacher_force_alpha),
         "survival_uses_teacher_forced_masks": bool(args.survival_uses_teacher_forced_masks),
         "include_roi_volume": bool(args.include_roi_volume),
         "include_shell_volume": bool(args.include_shell_volume),
@@ -3031,8 +3428,12 @@ def parse_args():
 
     p.add_argument("--attn_mask_bias", type=float, default=2.0)
     p.add_argument("--attn_pool_mask_mode", type=str, default="masked", choices=["masked", "weighted", "bias"])
-    p.add_argument("--use_multiscale", action="store_true")
+    p.add_argument("--use_multiscale", dest="use_multiscale", action="store_true")
+    p.add_argument("--no_use_multiscale", dest="use_multiscale", action="store_false")
+    p.set_defaults(use_multiscale=True)
     p.add_argument("--mask_interp", type=str, default="nearest", choices=["nearest", "trilinear"])
+    p.add_argument("--loc_feature_from_end", type=int, default=4,
+                   help="Which multiscale Swin feature to use for PT/LN localization, counted from deepest=1. Larger values use higher-resolution features.")
     p.add_argument("--roi_support_threshold", type=float, default=0.5)
     p.add_argument("--roi_support_fallback_threshold", type=float, default=0.05)
     p.add_argument("--roi_support_fallback_relmax", type=float, default=0.5)
@@ -3059,16 +3460,20 @@ def parse_args():
     p.add_argument("--teacher_force_epochs", type=int, default=0)
     p.add_argument("--teacher_force_start", type=float, default=0.0)
     p.add_argument("--teacher_force_end", type=float, default=0.0)
+    p.add_argument("--roi_focus_warmup_epochs", type=int, default=0,
+                   help="For the first N epochs, keep localization/support supervision active while scaling survival loss by --roi_focus_warmup_survival_weight.")
+    p.add_argument("--roi_focus_warmup_survival_weight", type=float, default=1.0,
+                   help="Survival loss multiplier during ROI-focus warmup epochs. Use 0.0 for localization-only warmup.")
     p.add_argument(
         "--survival_uses_teacher_forced_masks",
         action="store_true",
-        help="Legacy mode: allow survival loss to see GT-mask-blended ROI tokens. Default keeps survival deployment-like.",
+        help="Allow survival train/eval/export forward passes to see GT-mask-blended ROI tokens.",
     )
     p.add_argument(
         "--mask_guidance_alpha",
         type=float,
         default=0.0,
-        help="Legacy teacher-force floor, only active with --survival_uses_teacher_forced_masks.",
+        help="Teacher-force floor for GT-mask blending, only active with --survival_uses_teacher_forced_masks.",
     )
     p.add_argument("--loc_loss_pt_lambda", type=float, default=0.25)
     p.add_argument("--loc_loss_ln_lambda", type=float, default=0.25)
@@ -3076,8 +3481,18 @@ def parse_args():
     p.add_argument("--mask_support_lambda", type=float, default=0.10)
     p.add_argument("--mask_support_bce_weight", type=float, default=0.0)
     p.add_argument("--mask_support_dice_weight", type=float, default=1.0)
+    p.add_argument("--mask_support_balanced_bce", dest="mask_support_balanced_bce", action="store_true")
+    p.add_argument("--no_mask_support_balanced_bce", dest="mask_support_balanced_bce", action="store_false")
+    p.set_defaults(mask_support_balanced_bce=True)
+    p.add_argument("--mask_support_pos_weight_cap", type=float, default=500.0)
+    p.add_argument("--mask_focus_lambda", type=float, default=0.0,
+                   help="Directly penalize low predicted probability mass inside the ground-truth ROI.")
     p.add_argument("--loc_bce_weight", type=float, default=0.5)
     p.add_argument("--loc_dice_weight", type=float, default=0.5)
+    p.add_argument("--loc_balanced_bce", dest="loc_balanced_bce", action="store_true")
+    p.add_argument("--no_loc_balanced_bce", dest="loc_balanced_bce", action="store_false")
+    p.set_defaults(loc_balanced_bce=True)
+    p.add_argument("--loc_pos_weight_cap", type=float, default=500.0)
 
     p.add_argument("--shell_body_from_ct", action="store_true")
     p.add_argument("--body_ct_thr", type=str, default="auto")
@@ -3179,12 +3594,24 @@ def parse_args():
         raise ValueError("--primary_surv_loss_weight and --aux_surv_loss_weight must be >= 0.")
     if not (0.0 <= float(args.mask_guidance_alpha) <= 1.0):
         raise ValueError("--mask_guidance_alpha must be in [0,1].")
+    if int(args.roi_focus_warmup_epochs) < 0:
+        raise ValueError("--roi_focus_warmup_epochs must be >= 0.")
+    if float(args.roi_focus_warmup_survival_weight) < 0.0:
+        raise ValueError("--roi_focus_warmup_survival_weight must be >= 0.")
+    if int(args.loc_feature_from_end) < 1:
+        raise ValueError("--loc_feature_from_end must be >= 1.")
     if float(args.epoch_gradcam_teacher_force_alpha) > 1.0:
         raise ValueError("--epoch_gradcam_teacher_force_alpha must be <= 1, or negative for deployment-like auto mode.")
     if float(args.mask_support_lambda) < 0.0:
         raise ValueError("--mask_support_lambda must be >= 0.")
     if float(args.mask_support_bce_weight) < 0.0 or float(args.mask_support_dice_weight) < 0.0:
         raise ValueError("--mask_support_bce_weight and --mask_support_dice_weight must be >= 0.")
+    if float(args.mask_support_pos_weight_cap) < 1.0:
+        raise ValueError("--mask_support_pos_weight_cap must be >= 1.")
+    if float(args.mask_focus_lambda) < 0.0:
+        raise ValueError("--mask_focus_lambda must be >= 0.")
+    if float(args.loc_pos_weight_cap) < 1.0:
+        raise ValueError("--loc_pos_weight_cap must be >= 1.")
     if not (0.0 <= float(args.roi_support_threshold) <= 1.0):
         raise ValueError("--roi_support_threshold must be in [0,1].")
     if not (0.0 <= float(args.roi_support_fallback_threshold) <= 1.0):
@@ -3253,7 +3680,14 @@ def main():
         f"aux_w={float(args.aux_surv_loss_weight):.2f} "
         f"survival_uses_teacher_forced_masks={bool(args.survival_uses_teacher_forced_masks)} "
         f"mask_guidance_alpha={float(args.mask_guidance_alpha):.2f} "
-        f"mask_support_lambda={float(args.mask_support_lambda):.2f}"
+        f"mask_support_lambda={float(args.mask_support_lambda):.2f} "
+        f"mask_focus_lambda={float(args.mask_focus_lambda):.2f} "
+        f"roi_focus_warmup={int(args.roi_focus_warmup_epochs)} "
+        f"warmup_surv_w={float(args.roi_focus_warmup_survival_weight):.2f} "
+        f"use_multiscale={bool(args.use_multiscale)} "
+        f"loc_feature_from_end={int(args.loc_feature_from_end)} "
+        f"loc_balanced_bce={bool(args.loc_balanced_bce)} "
+        f"mask_support_balanced_bce={bool(args.mask_support_balanced_bce)}"
     )
 
     out_root = Path(args.out_dir) / args.exp_name
@@ -3339,6 +3773,10 @@ def main():
     for r in fold_results:
         met = r["test_metrics_export"] or {}
         test_c.append(float(met.get("c_index", float("nan"))))
+    summary_eval_teacher_force_alpha = _survival_teacher_force_alpha(
+        _teacher_force_alpha_for_epoch(int(args.epochs), args),
+        args,
+    )
 
     summary = {
         "exp_name": args.exp_name,
@@ -3361,10 +3799,14 @@ def main():
         "teacher_force_epochs": int(args.teacher_force_epochs),
         "teacher_force_start": float(args.teacher_force_start),
         "teacher_force_end": float(args.teacher_force_end),
+        "roi_focus_warmup_epochs": int(args.roi_focus_warmup_epochs),
+        "roi_focus_warmup_survival_weight": float(args.roi_focus_warmup_survival_weight),
         "survival_uses_teacher_forced_masks": bool(args.survival_uses_teacher_forced_masks),
-        "eval_teacher_force_alpha": 0.0,
+        "eval_teacher_force_alpha": float(summary_eval_teacher_force_alpha),
         "mask_guidance_alpha": float(args.mask_guidance_alpha),
         "attn_pool_mask_mode": str(args.attn_pool_mask_mode),
+        "mask_interp": str(args.mask_interp),
+        "loc_feature_from_end": int(args.loc_feature_from_end),
         "roi_support_threshold": float(args.roi_support_threshold),
         "roi_support_fallback_threshold": float(args.roi_support_fallback_threshold),
         "roi_support_fallback_relmax": float(args.roi_support_fallback_relmax),
@@ -3376,6 +3818,13 @@ def main():
         "mask_support_lambda": float(args.mask_support_lambda),
         "mask_support_bce_weight": float(args.mask_support_bce_weight),
         "mask_support_dice_weight": float(args.mask_support_dice_weight),
+        "mask_support_balanced_bce": bool(args.mask_support_balanced_bce),
+        "mask_support_pos_weight_cap": float(args.mask_support_pos_weight_cap),
+        "mask_focus_lambda": float(args.mask_focus_lambda),
+        "loc_balanced_bce": bool(args.loc_balanced_bce),
+        "loc_pos_weight_cap": float(args.loc_pos_weight_cap),
+        "loc_bce_weight": float(args.loc_bce_weight),
+        "loc_dice_weight": float(args.loc_dice_weight),
         "epoch_gradcam": bool(args.epoch_gradcam),
         "epoch_gradcam_every": int(args.epoch_gradcam_every),
         "epoch_gradcam_split": str(args.epoch_gradcam_split),

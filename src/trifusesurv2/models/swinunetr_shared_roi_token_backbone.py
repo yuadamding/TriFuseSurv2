@@ -3,7 +3,7 @@
 
 Recommended end-to-end survival image path:
 - CT-only shared SwinUNETR encoder
-- low-resolution PT/LN localization heads on deep encoder features
+- PT/LN localization heads on a configurable higher-resolution Swin feature
 - ROI tokenization from explicit PT/LN support masks
 - optional teacher forcing with GT PT/LN masks during training
 
@@ -101,11 +101,11 @@ class AttnPool3D(nn.Module):
                 logits = logits + self.mask_bias * mask_flat
             elif self.mask_mode == "weighted":
                 logits = logits + torch.log(mask_flat.clamp_min(self.eps))
-                logits = torch.where(has_support.unsqueeze(1), logits, raw_logits)
+                logits = torch.where(has_support, logits, raw_logits)
             else:
                 support = mask_flat > self.eps
                 masked_logits = logits.masked_fill(~support, torch.finfo(logits.dtype).min)
-                logits = torch.where(has_support.unsqueeze(1), masked_logits, logits)
+                logits = torch.where(has_support, masked_logits, logits)
         w = torch.softmax(logits / self.temperature, dim=-1)
         feat_flat = feat.flatten(2)
         return (feat_flat * w).sum(dim=-1)
@@ -148,6 +148,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         attn_pool_mask_mode: str = "masked",
         use_multiscale: bool = True,
         mask_interp: str = "nearest",
+        loc_feature_from_end: int = 4,
         roi_support_threshold: float = 0.5,
         roi_support_fallback_threshold: float = 0.05,
         roi_support_fallback_relmax: float = 0.5,
@@ -173,6 +174,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         self.normalize = bool(normalize)
         self.use_multiscale = bool(use_multiscale)
         self.mask_interp = str(mask_interp)
+        self.loc_feature_from_end = int(max(1, loc_feature_from_end))
         self.roi_support_threshold = float(roi_support_threshold)
         self.roi_support_fallback_threshold = float(roi_support_fallback_threshold)
         self.roi_support_fallback_relmax = float(roi_support_fallback_relmax)
@@ -408,13 +410,15 @@ class ContourAwareROITokenBackbone(nn.Module):
 
         use_feats = list(feats[-4:]) if (self.use_multiscale and len(feats) >= 4) else [feats[-1]]
         fdeep = use_feats[-1]
+        loc_idx = max(0, len(use_feats) - min(self.loc_feature_from_end, len(use_feats)))
+        floc = use_feats[loc_idx]
         deep_size = tuple(int(x) for x in fdeep.shape[2:])
 
         loc_pt_logits = self._sanitize_tensor(
-            self.loc_pt_head(fdeep), name="loc_pt_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
+            self.loc_pt_head(floc), name="loc_pt_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
         )
         loc_ln_logits = self._sanitize_tensor(
-            self.loc_ln_head(fdeep), name="loc_ln_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
+            self.loc_ln_head(floc), name="loc_ln_logits", posinf=30.0, neginf=-30.0, clamp_abs=30.0
         )
         loc_pt_prob = torch.sigmoid(loc_pt_logits)
         loc_ln_prob = torch.sigmoid(loc_ln_logits)

@@ -1,193 +1,93 @@
-# TriFuseSurv2 Package
+# TriFuseSurv2 Runtime Package
 
-Unified operational package for habitat-aligned, node-aware OPSCC survival modeling.
+Minimal runtime package for contour-aware OPSCC survival training with strict
+ROI-focus monitoring.
 
-## What this package contains
+## Contents
 
-This package merges two codebases:
-
-1. **v2 foundations** (schema, encoders, habitat model, node utilities) — from `TriFuseSurv2/`
-2. **Operational pipeline** (backbone, training, evaluation, preprocessing) — from `TriFuseSurv_package/`
-
-All modules live under the `trifusesurv2` namespace.
-
-Preprocessing outputs and stage-2 metafiles are written with relative path
-fields so the package remains relocatable across machines and workspaces.
-
-## Package structure
-
-```
+```text
 src/trifusesurv2/
-  schema.py                          # Shared constants: habitats, endpoints, clinical groups
-  data/
-    batch.py                         # HabitatBatch, TokenBlock, SurvivalTargets
-  encoders/
-    clinical.py                      # SemanticClinicalTokenEncoder (v2 grouped tokens)
-    radiomics.py                     # HabitatRadiomicsTokenEncoder (v2 per-habitat PCA)
-  models/
-    habitat_survival.py              # HabitatAlignedSurvivalModel, PTNodeCrossAttention
-    contour_habitat_survival.py      # ContourAwareHabitatSurvivalModel (backbone wrapper)
-    survival_model.py                # SwinUNETRTokenMoEDiscrete (v1 late-fusion model)
-    swinunetr_shared_roi_token_backbone.py  # ContourAwareROITokenBackbone
-    swinunetr_backbone_utils.py      # Pretrained weight loading
-    lora.py                          # LoRA adaptation
-  multimodal_survival/
-    train.py                         # Training pipeline
-    evaluate_oof_cindex.py           # Out-of-fold evaluation
-  preprocessing/
-    nodes.py                         # Node-instance extraction, topology, serialization
-    export_swinunetr.py              # DICOM → NIfTI preprocessing
-    make_cv_splits.py                # Cross-validation split generation
-    prepare_opscc_tabular.py         # Tabular data preparation
-  utils/
-    clinical.py                      # ClinicalEncoder (v1 flat encoding)
-    radiomics.py                     # RadiomicsEncoder (v1 flat encoding)
-    data.py                          # PreprocessedContourAwareDataset
-    survival.py                      # Loss functions, metrics (c-index, IBS, AUC, DCA)
+  multimodal_survival/train.py       # training entrypoint
+  models/                            # survival and ROI-token models
+  encoders/                          # clinical and radiomics token encoders
+  utils/                             # data loading, survival metrics, ROI focus metrics
+  data/                              # lightweight token batch containers
+  explain/gradcam_v2_core.py         # optional epoch Grad-CAM core
+  schema.py
+
+scripts/
+  lib/gpu_utils.sh
+  survival/search_roi_constrained_h100.sh
+  survival/train_contour_aware_survival.sh
+  survival/train_with_roi_focus_watch.sh
+  survival/watch_roi_focus_training.sh
 ```
 
-## Installation
+Everything else from the earlier developer bundle has been removed from this
+runtime package: tests, preprocessing commands, legacy search wrappers, DDP/LoRA
+alternate launchers, OOF evaluation scripts, and developer build helpers.
 
-Compact archive setup:
+## Install
+
+From the package directory:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Full workspace setup, when the `scripts/` directory is present:
+If the environment already has the heavy dependencies installed, refresh code
+without dependency resolution:
 
 ```bash
-bash scripts/install_env.sh
-```
-
-The full installer keeps the environment local to the package:
-- virtualenv in `./.venv`
-- pip cache in `./.install_env/pip-cache`
-- temp/build files in `./.install_env/tmp`
-
-Fast package refresh after code changes:
-
-```bash
-source .venv/bin/activate
 python -m pip install -e . --no-deps
 ```
 
-Avoid using `python -m pip install --upgrade -e .` for routine refreshes,
-because pip may spend a long time re-resolving and upgrading heavyweight
-dependencies like `torch` and `monai`.
-
-If you need a manual full install inside an already-active environment:
+## ROI-Constrained 4-H100 Search
 
 ```bash
-pip install -e .
+GPU_IDS=0,1,2,3 \
+OUT_ROOT=runs/roi_constrained_h100_search_os_fold03 \
+DEBUG_FOLD=3 \
+WATCH_INTERVAL_SECONDS=60 \
+bash scripts/survival/search_roi_constrained_h100.sh
 ```
 
-## CLI entry points
+The search launcher runs one trial per GPU slot and enforces the same ROI
+constraints on every trial:
+
+- `SURVIVAL_USE_GT_MASKS=1`
+- `MASK_GUIDANCE_ALPHA=1.0`
+- `STRICT=1`
+- `MIN_PROB_MASS_INSIDE_GT=0.95`
+- `MIN_SUPPORT_RECALL=0.95`
+- `MIN_SUPPORT_DICE=0.02`
+
+It monitors PT, LN, and PT peritumoral ROI support. Results are aggregated into:
+
+```text
+<OUT_ROOT>/search_summary.csv
+```
+
+## Single Trial
 
 ```bash
-trifusesurv2-train                   # Joint contour-aware survival training
-trifusesurv2-evaluate-oof            # Out-of-fold c-index evaluation
-trifusesurv2-gradcam-v211            # v2 habitat Grad-CAM/attention/ablation export
-trifusesurv2-preprocess-export       # DICOM to NIfTI preprocessing
-trifusesurv2-make-cv-splits          # Cross-validation split generation
-trifusesurv2-prepare-opscc-tabular   # Tabular data preparation
+OUT_DIR=runs/contour_aware_survival_os_roi_focus \
+DEBUG_FOLD=3 \
+WATCH_INTERVAL_SECONDS=60 \
+STRICT=1 \
+bash scripts/survival/train_with_roi_focus_watch.sh
 ```
 
-`trifusesurv2-gradcam-v211` defaults to `--checkpoint last --weights ema`,
-matching the default `test_risks_ema.csv` export from training. Use
-`--checkpoint best --weights best` when explaining `test_risks_best.csv`.
-OOF Grad-CAM now requires matching OOF predictions and complete provenance
-metadata by default; use `--allow_unchecked_oof`, `--allow_commit_mismatch`,
-or `--allow_incomplete_oof_metadata` only for exploratory debugging.
+The default training launcher starts fresh (`RESUME=0`), runs a localization-only
+warmup, then enables survival loss. Survival train/eval/export passes use
+GT-mask ROI teacher forcing by default.
 
-Survival training is deployment-like by default: ground-truth PT/LN masks
-supervise localization/support losses, but the survival loss and evaluation
-risk exports use predicted-mask ROI tokens with `teacher_force_alpha=0.0`.
-The legacy behavior can only be re-enabled explicitly with
-`--survival_uses_teacher_forced_masks`. ROI and shell volume scalars are also
-configurable with `--include_roi_volume/--no_include_roi_volume` and
-`--include_shell_volume/--no_include_shell_volume` for contour-morphology
-ablation experiments.
+## ROI Metrics
 
-## Archive Profiles
+- `pt_mass`, `ln_mass`, `ptp_mass`: fraction of effective ROI probability mass
+  inside the corresponding GT region.
+- `pt_rec`, `ln_rec`, `ptp_rec`: fraction of GT support covered by the support
+  map.
+- `pt_dice`, `ln_dice`, `ptp_dice`: support Dice against GT.
 
-The distributable zip is compact by default and contains only:
-
-- `README.md`
-- `pyproject.toml`
-- `src/trifusesurv2`
-
-Build it from the full workspace with:
-
-```bash
-bash scripts/build_zip_package.sh
-```
-
-To include tests and all operational shell launchers:
-
-```bash
-PACKAGE_PROFILE=full bash scripts/build_zip_package.sh
-```
-
-## Operational Search Scripts
-
-The compact archive uses the CLI entry points above. The full workspace also
-keeps search wrappers and fixed-setting CV launchers in `scripts/`:
-
-- `scripts/run_contour_aware_cindex_search_75gb_30ep.sh`
-  - broad 75 GB / 30 epoch multitask search
-- `scripts/run_contour_aware_cindex_search_75gb_tf24_followup.sh`
-  - tighter search around the strongest `tf24` window
-- `scripts/run_massive_testing_20hr_75gb_30ep.sh`
-  - larger around-the-winner search, sized for roughly 20 hours on 4 GPUs
-- `scripts/run_v75_tri_h1095_tf24_4fold.sh`
-  - fixed 4-fold rerun of the strongest anchor setting
-- `scripts/run_optimal_setting_search_75gb_30ep.sh`
-  - v2 habitat-aligned two-phase launcher with `quick`, `balanced`, and `broad`
-    profiles; use `DRY_RUN=1` to print the candidate settings without training
-  - ranks trials from validation metrics by default; set
-    `ALLOW_OUTER_TEST_SCORING=1 LOCKED_CONFIG_HASH=<hash>` only for final
-    held-out audit reporting
-- `scripts/run_dual_h100_140gb_best_perf_20hr.sh`
-  - dual-H100 best-performance search; resumable by default with full checkpoints
-- `scripts/run_dual_h100_140gb_diverse_search_20hr.sh`
-  - dual-H100 diverse search with deliberately different settings around the current winner
-
-For the dual-H100 search, interrupted runs now restart from `last.pt` by default.
-To force a clean rerun instead of resuming:
-
-```bash
-RESUME=0 SKIP_FINISHED=0 bash scripts/run_dual_h100_140gb_best_perf_20hr.sh
-```
-
-## Two model paths
-
-### v2 (habitat-aligned fusion, default)
-```bash
-PYTHONPATH=src python3 -m trifusesurv2.multimodal_survival.train \
-  --meta_csv ... --splits_csv ...
-```
-
-Uses `ContourAwareHabitatSurvivalModel` with `SemanticClinicalTokenEncoder`
-and `HabitatRadiomicsTokenEncoder`. By default, v2 radiomics expects the
-patient-wide habitat CSV `cohort_radiomics_patient_wide.csv`; pass
-`--no_radiomics` to train without radiomics, or `--radiomics_root ...` to use a
-different wide CSV. Node/topology projections are enabled by default and use
-`--node_topology_dir` when JSON summaries are available. Training also applies a
-ramped structured v2 dropout curriculum over image habitats, clinical groups,
-radiomics habitats, node tokens, and topology tokens; tune it with
-`--v2_*_dropout_p` and `--v2_dropout_ramp_epochs`.
-
-### v1 (late-fusion legacy)
-```bash
-PYTHONPATH=src python3 -m trifusesurv2.multimodal_survival.train \
-  --meta_csv ... --splits_csv ... --model_version v1
-```
-
-## Running tests
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
+`ptp_*` refers to the primary-tumor peritumoral shell.
