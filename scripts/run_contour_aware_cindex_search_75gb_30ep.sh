@@ -29,6 +29,12 @@ SKIP_FINISHED="${SKIP_FINISHED:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 ALLOW_OUTER_TEST_SCORING="${ALLOW_OUTER_TEST_SCORING:-0}"
 LOCKED_CONFIG_HASH="${LOCKED_CONFIG_HASH:-}"
+EPOCH_GRADCAM="${EPOCH_GRADCAM:-0}"
+EPOCH_GRADCAM_EVERY="${EPOCH_GRADCAM_EVERY:-1}"
+EPOCH_GRADCAM_SPLIT="${EPOCH_GRADCAM_SPLIT:-val}"
+EPOCH_GRADCAM_MAX_SLICES="${EPOCH_GRADCAM_MAX_SLICES:-6}"
+EPOCH_GRADCAM_TEACHER_FORCE_ALPHA="${EPOCH_GRADCAM_TEACHER_FORCE_ALPHA:-0.0}"
+EPOCH_GRADCAM_STRICT="${EPOCH_GRADCAM_STRICT:-0}"
 
 if [[ "$DRY_RUN" != "1" ]]; then
   tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom rt_utils cv2
@@ -358,8 +364,10 @@ configure_trial() {
   local pt_shell_radius="5"
   local ln_shell_radius="5"
   local teacher_force_epochs="16"
-  local teacher_force_start="1.0"
+  local teacher_force_start="0.0"
   local teacher_force_end="0.0"
+  local mask_guidance_alpha="0.0"
+  local mask_support_lambda="0.10"
   local loc_loss_pt_lambda="0.25"
   local loc_loss_ln_lambda="0.25"
   local loc_presence_lambda="0.05"
@@ -580,6 +588,8 @@ configure_trial() {
     --teacher_force_epochs "$teacher_force_epochs"
     --teacher_force_start "$teacher_force_start"
     --teacher_force_end "$teacher_force_end"
+    --mask_guidance_alpha "$mask_guidance_alpha"
+    --mask_support_lambda "$mask_support_lambda"
     --loc_loss_pt_lambda "$loc_loss_pt_lambda"
     --loc_loss_ln_lambda "$loc_loss_ln_lambda"
     --loc_presence_lambda "$loc_presence_lambda"
@@ -636,6 +646,18 @@ configure_trial() {
   fi
   if [[ -n "$NODE_TOPOLOGY_DIR" ]]; then
     TRIAL_ARGS+=(--node_topology_dir "$NODE_TOPOLOGY_DIR")
+  fi
+  if [[ "$EPOCH_GRADCAM" == "1" ]]; then
+    TRIAL_ARGS+=(
+      --epoch_gradcam
+      --epoch_gradcam_every "$EPOCH_GRADCAM_EVERY"
+      --epoch_gradcam_split "$EPOCH_GRADCAM_SPLIT"
+      --epoch_gradcam_max_slices "$EPOCH_GRADCAM_MAX_SLICES"
+      --epoch_gradcam_teacher_force_alpha "$EPOCH_GRADCAM_TEACHER_FORCE_ALPHA"
+    )
+    if [[ "$EPOCH_GRADCAM_STRICT" == "1" ]]; then
+      TRIAL_ARGS+=(--epoch_gradcam_strict)
+    fi
   fi
 }
 

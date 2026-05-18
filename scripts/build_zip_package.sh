@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 PACKAGE_NAME="${PACKAGE_NAME:-TriFuseSurv2_package}"
 TOP_LEVEL_ZIP_PATH="${TOP_LEVEL_ZIP_PATH:-../${PACKAGE_NAME}.zip}"
+PACKAGE_PROFILE="${PACKAGE_PROFILE:-compact}"
 TMP_DIR="$(mktemp -d)"
 STAGE_DIR="$TMP_DIR/$PACKAGE_NAME"
 
@@ -16,15 +17,31 @@ trap cleanup EXIT
 
 mkdir -p "$STAGE_DIR"
 
-copy_items=(
-  README.md
-  pyproject.toml
-  scripts
-  src
-)
-if [[ -d docs ]]; then
-  copy_items+=(docs)
-fi
+case "$PACKAGE_PROFILE" in
+  compact)
+    copy_items=(
+      README.md
+      pyproject.toml
+      src
+    )
+    ;;
+  full)
+    copy_items=(
+      README.md
+      pyproject.toml
+      scripts
+      src
+      tests
+    )
+    if [[ -d docs ]]; then
+      copy_items+=(docs)
+    fi
+    ;;
+  *)
+    echo "[error] PACKAGE_PROFILE must be compact or full, got: $PACKAGE_PROFILE" >&2
+    exit 1
+    ;;
+esac
 
 mkdir -p "$(dirname "$TOP_LEVEL_ZIP_PATH")"
 TOP_LEVEL_ZIP_PATH="$(cd "$(dirname "$TOP_LEVEL_ZIP_PATH")" && pwd)/$(basename "$TOP_LEVEL_ZIP_PATH")"
@@ -42,4 +59,4 @@ rm -f "$TOP_LEVEL_ZIP_PATH"
   zip -qr "$TOP_LEVEL_ZIP_PATH" "$PACKAGE_NAME"
 )
 
-echo "[done] wrote $TOP_LEVEL_ZIP_PATH"
+echo "[done] wrote $TOP_LEVEL_ZIP_PATH (profile=$PACKAGE_PROFILE)"

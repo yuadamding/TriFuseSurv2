@@ -237,7 +237,7 @@ configure_trial() {
   local pt_shell_radius="5"
   local ln_shell_radius="5"
   local teacher_force_epochs="24"
-  local teacher_force_start="1.0"
+  local teacher_force_start="0.0"
   local teacher_force_end="0.0"
   local loc_loss_pt_lambda="0.25"
   local loc_loss_ln_lambda="0.25"

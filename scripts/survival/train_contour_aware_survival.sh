@@ -111,7 +111,7 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --token_dropout 0.10 \
   --attn_dropout_p 0.15 \
   --teacher_force_epochs 12 \
-  --teacher_force_start 1.0 \
+  --teacher_force_start 0.0 \
   --teacher_force_end 0.0 \
   --loc_loss_pt_lambda 0.25 \
   --loc_loss_ln_lambda 0.25 \

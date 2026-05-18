@@ -151,8 +151,14 @@ def _backbone_cfg(ck_args: dict[str, Any], image_token_dim: int) -> dict[str, An
         token_mlp_dropout=float(ck_args.get("token_mlp_dropout", 0.0)),
         token_mlp_hidden_dim=int(ck_args.get("token_mlp_hidden_dim", 0)),
         attn_mask_bias=float(ck_args.get("attn_mask_bias", 2.0)),
+        attn_pool_mask_mode=str(ck_args.get("attn_pool_mask_mode", "masked")),
         use_multiscale=bool(ck_args.get("use_multiscale", False)),
         mask_interp=str(ck_args.get("mask_interp", "nearest")),
+        roi_support_threshold=float(ck_args.get("roi_support_threshold", 0.5)),
+        roi_support_fallback_threshold=float(ck_args.get("roi_support_fallback_threshold", 0.05)),
+        roi_support_fallback_relmax=float(ck_args.get("roi_support_fallback_relmax", 0.5)),
+        include_roi_volume=bool(ck_args.get("include_roi_volume", True)),
+        include_shell_volume=bool(ck_args.get("include_shell_volume", True)),
         min_roi_frac=float(ck_args.get("min_roi_frac", 1e-5)),
         min_roi_voxels_deep=int(ck_args.get("min_roi_voxels_deep", 8)),
         token_dropout=0.0,
@@ -358,6 +364,9 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
         require_commit=not bool(args.allow_commit_mismatch),
     )
     ck_args = checkpoint_args_to_dict(ck)
+    if float(args.teacher_force_alpha) < 0.0:
+        args = copy.copy(args)
+        args.teacher_force_alpha = float(ck_args.get("eval_teacher_force_alpha", 0.0))
     state = normalized_state_dict(ck)
     model = _build_model_from_checkpoint(ck, state)
     device = torch.device(args.device)
@@ -465,6 +474,8 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             topology_presence = None
 
         use_native = bool(args.native_use_masks)
+        effective_teacher_force_alpha = float(args.teacher_force_alpha if use_native else 0.0)
+        effective_model_mask_source = "native_blend" if (use_native and effective_teacher_force_alpha > 0.0) else "predicted"
         mask_pt_model = mask_pt_native if use_native else None
         mask_ln_model = mask_ln_native if use_native else None
 
@@ -473,7 +484,7 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
             x,
             mask_pt=mask_pt_model,
             mask_ln=mask_ln_model,
-            teacher_force_alpha=float(args.teacher_force_alpha if use_native else 0.0),
+            teacher_force_alpha=effective_teacher_force_alpha,
             return_aux=True,
             return_cam_features=True,
         )
@@ -689,10 +700,10 @@ def run_fold(args: argparse.Namespace, fold: int, manifest_path: Path) -> dict[s
                 "risk_saved_oof": "" if saved is None else float(saved),
                 "risk_absdiff": risk_absdiff,
                 "oof_validation_notes": str(oof_notes),
-                "model_mask_source": "native" if use_native else "predicted",
+                "model_mask_source": effective_model_mask_source,
                 "support_source": str(args.support_source),
                 "display_contour_source": str(args.display_contours),
-                "teacher_force_alpha": float(args.teacher_force_alpha if use_native else 0.0),
+                "teacher_force_alpha": effective_teacher_force_alpha,
                 "image_habitat": habitat_name,
                 "gradient_path_isolated": bool(habitat_idx is not None),
                 "raw_signed_cam_path": str(signed_rel),
@@ -761,10 +772,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--endpoint", type=str, required=True, choices=[*SURVIVAL_ENDPOINTS, "ALL"])
     p.add_argument("--risk_horizon_days", type=float, required=True)
     p.add_argument("--target", type=str, default="cumulative_risk", choices=["cumulative_risk", "hazard_logit"])
-    p.add_argument("--support_source", type=str, default="predicted", choices=["predicted", "native"])
+    p.add_argument("--support_source", type=str, default="native", choices=["predicted", "native"])
     p.add_argument("--display_contours", type=str, default="native", choices=["native", "predicted"])
-    p.add_argument("--native_use_masks", action="store_true")
-    p.add_argument("--teacher_force_alpha", type=float, default=1.0)
+    p.add_argument("--native_use_masks", dest="native_use_masks", action="store_true")
+    p.add_argument("--no_native_use_masks", dest="native_use_masks", action="store_false")
+    p.set_defaults(native_use_masks=True)
+    p.add_argument(
+        "--teacher_force_alpha",
+        type=float,
+        default=0.0,
+        help="Native-mask blend for Grad-CAM forward. Keep 0.0 for deployment-like risk matching; negative uses checkpoint eval_teacher_force_alpha or 0.0.",
+    )
     p.add_argument("--save_attention", action="store_true")
     p.add_argument("--save_ablations", action="store_true")
     p.add_argument("--save_per_scale_cams", action="store_true")
@@ -785,8 +803,8 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
     if args.oof_predictions_csv is None and not bool(args.allow_unchecked_oof):
         raise ValueError("Provide --oof_predictions_csv for OOF-matched Grad-CAM, or pass --allow_unchecked_oof for exploratory exports.")
-    if not (0.0 <= float(args.teacher_force_alpha) <= 1.0):
-        raise ValueError("--teacher_force_alpha must be in [0,1]")
+    if float(args.teacher_force_alpha) > 1.0:
+        raise ValueError("--teacher_force_alpha must be <= 1, or negative for checkpoint/default auto mode.")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     return args
 

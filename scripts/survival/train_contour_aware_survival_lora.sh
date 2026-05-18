@@ -110,7 +110,7 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --hazard_smooth_lambda 0.005 \
   --logit_l2_lambda 0.0 \
   --teacher_force_epochs 12 \
-  --teacher_force_start 1.0 \
+  --teacher_force_start 0.0 \
   --teacher_force_end 0.0 \
   --loc_loss_pt_lambda 0.25 \
   --loc_loss_ln_lambda 0.25 \

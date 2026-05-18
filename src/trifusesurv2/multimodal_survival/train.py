@@ -5,7 +5,8 @@ Recommended workflow:
 - CT-only shared SwinUNETR encoder
 - internal PT/LN localization heads
 - ROI tokens built from soft predicted masks
-- survival plus localization losses in one graph
+- survival loss on deployment-like predicted-mask tokens
+- GT masks used for localization/support supervision by default
 """
 
 from __future__ import annotations
@@ -529,7 +530,7 @@ def _drop_optional_modality(
     return tokens * new_pres.unsqueeze(-1).to(tokens.dtype), new_pres
 
 
-def _model_forward_eval(model, payload, device, autocast_ctx):
+def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_alpha: float = 0.0):
     """Dispatch model forward for evaluation (no gate, no aux)."""
     x = payload["x"].to(device, non_blocking=True)
 
@@ -554,7 +555,7 @@ def _model_forward_eval(model, payload, device, autocast_ctx):
                 node_presence=_prep_optional_token_tensor(payload, "node_presence", device) if node_enabled else None,
                 topology_token=_prep_optional_token_tensor(payload, "topology_token", device) if topology_enabled else None,
                 topology_presence=_prep_optional_token_tensor(payload, "topology_presence", device) if topology_enabled else None,
-                teacher_force_alpha=0.0,
+                teacher_force_alpha=float(teacher_force_alpha),
             )
     else:
         clin = _prep_optional_tensor(payload, "clin", device)
@@ -564,24 +565,39 @@ def _model_forward_eval(model, payload, device, autocast_ctx):
                 x_img=x,
                 clinical=clin,
                 radiomics=rad,
-                teacher_force_alpha=0.0,
+                mask_pt=_to_optional_device_tensor(payload.get("mask_pt"), device),
+                mask_ln=_to_optional_device_tensor(payload.get("mask_ln"), device),
+                teacher_force_alpha=float(teacher_force_alpha),
                 return_gate=False,
             )
     return logits
 
 
 def _teacher_force_alpha_for_epoch(epoch: int, args) -> float:
+    if not bool(getattr(args, "survival_uses_teacher_forced_masks", False)):
+        return 0.0
     epochs = int(max(0, getattr(args, "teacher_force_epochs", 0)))
     start = float(getattr(args, "teacher_force_start", 1.0))
     end = float(getattr(args, "teacher_force_end", 0.0))
+    mask_floor = float(getattr(args, "mask_guidance_alpha", 0.0))
     if epochs <= 0:
-        return 0.0
+        return float(mask_floor)
     if epochs == 1:
-        return float(start)
+        return float(max(start, mask_floor))
     if int(epoch) > epochs:
-        return float(end)
+        return float(max(end, mask_floor))
     frac = float(max(0.0, min(1.0, (int(epoch) - 1) / float(epochs - 1))))
-    return float(start + frac * (end - start))
+    return float(max(start + frac * (end - start), mask_floor))
+
+
+def _survival_teacher_force_alpha(train_teacher_force_alpha: float, args_or_flag) -> float:
+    """Deployment-faithful default: survival loss sees predicted-mask tokens."""
+
+    if isinstance(args_or_flag, bool):
+        enabled = bool(args_or_flag)
+    else:
+        enabled = bool(getattr(args_or_flag, "survival_uses_teacher_forced_masks", False))
+    return float(train_teacher_force_alpha) if enabled else 0.0
 
 
 def _v2_radiomics_csv_path(args) -> str:
@@ -742,6 +758,34 @@ def _localization_loss_from_logits(logits: torch.Tensor, target: torch.Tensor, b
         loss = loss + float(bce_weight) * F.binary_cross_entropy_with_logits(logits, target)
     if float(dice_weight) > 0.0:
         loss = loss + float(dice_weight) * _soft_dice_loss_from_logits(logits, target)
+    return loss
+
+
+def _soft_dice_loss_from_probs(probs: torch.Tensor, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    probs = probs.float().clamp(0, 1)
+    target = target.float().clamp(0, 1)
+    numer = 2.0 * (probs * target).sum(dim=(1, 2, 3, 4))
+    denom = probs.sum(dim=(1, 2, 3, 4)) + target.sum(dim=(1, 2, 3, 4))
+    dice = (numer + eps) / (denom + eps)
+    return 1.0 - dice.mean()
+
+
+def _mask_support_loss_from_probs(
+    probs: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    bce_weight: float,
+    dice_weight: float,
+) -> torch.Tensor:
+    target = target.float().clamp(0, 1)
+    if tuple(int(x) for x in probs.shape[2:]) != tuple(int(x) for x in target.shape[2:]):
+        target = _resize_mask_target(target, tuple(int(x) for x in probs.shape[2:]))
+    probs = probs.float().clamp(1e-5, 1.0 - 1e-5)
+    loss = probs.new_tensor(0.0)
+    if float(bce_weight) > 0.0:
+        loss = loss + float(bce_weight) * F.binary_cross_entropy(probs, target)
+    if float(dice_weight) > 0.0:
+        loss = loss + float(dice_weight) * _soft_dice_loss_from_probs(probs, target)
     return loss
 
 
@@ -915,6 +959,7 @@ def evaluate_model(
     eval_times_days: Sequence[float],
     dca_thresholds: Sequence[float],
     autocast_ctx,
+    teacher_force_alpha: float = 0.0,
 ) -> Dict[str, float]:
     model.eval()
     mm = _unwrap_model(model)
@@ -931,7 +976,7 @@ def evaluate_model(
         t_dev = t.to(device, non_blocking=True)
         e_dev = e.to(device, non_blocking=True)
 
-        logits = _model_forward_eval(model, payload, device, autocast_ctx)
+        logits = _model_forward_eval(model, payload, device, autocast_ctx, teacher_force_alpha=float(teacher_force_alpha))
         logits = _extract_endpoint_logits(logits, endpoint)
 
         lf = logits.float()
@@ -989,6 +1034,7 @@ def predict_risk_scores(
     endpoint: str,
     risk_horizon_days: float,
     autocast_ctx,
+    teacher_force_alpha: float = 0.0,
 ) -> Dict[str, float]:
     model.eval()
     mm = _unwrap_model(model)
@@ -996,12 +1042,236 @@ def predict_risk_scores(
 
     for batch in loader:
         payload = _unpack_surv_batch(batch)
-        logits = _model_forward_eval(model, payload, device, autocast_ctx)
+        logits = _model_forward_eval(model, payload, device, autocast_ctx, teacher_force_alpha=float(teacher_force_alpha))
         logits = _extract_endpoint_logits(logits, endpoint)
         risks = mm.hazards_to_risk(logits, horizon_days=float(risk_horizon_days)).detach().cpu().numpy()
         for i, p in enumerate(payload["pid"]):
             out[str(p)] = float(risks[i])
     return out
+
+
+def generate_epoch_gradcam_probe(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    fold: int,
+    epoch: int,
+    endpoint: str,
+    risk_horizon_days: float,
+    out_dir: Path,
+    split_name: str,
+    teacher_force_alpha: float = 0.0,
+    target_type: str = "cumulative_risk",
+    max_slices: int = 6,
+) -> Dict[str, Any]:
+    """Write one lightweight v2 Grad-CAM sanity artifact for an epoch."""
+    mm = _unwrap_model(model)
+    if not _is_v2_model(mm):
+        return {
+            "status": "skipped",
+            "reason": "epoch Grad-CAM is implemented for v2 ContourAwareHabitatSurvivalModel only",
+        }
+
+    batch = next(iter(loader), None)
+    if batch is None:
+        return {"status": "skipped", "reason": f"{split_name} loader is empty"}
+
+    from trifusesurv2.explain.gradcam_v2_core import (
+        cam_from_features,
+        make_overlay_png,
+        normalize_component,
+        pid_slug,
+        risk_vector,
+        save_nifti,
+        select_survival_target,
+        split_signed_cam,
+        supports_from_backbone_aux,
+        write_json,
+    )
+
+    def _first_pid(payload: Dict[str, Any]) -> str:
+        raw = payload.get("pid", "unknown")
+        if isinstance(raw, (list, tuple)):
+            return str(raw[0]) if raw else "unknown"
+        return str(raw)
+
+    def _slice_first_case(payload: Dict[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if torch.is_tensor(value) and value.shape[:1]:
+                out[key] = value[:1]
+            elif key == "pid" and isinstance(value, (list, tuple)):
+                out[key] = list(value[:1])
+            else:
+                out[key] = value
+        return out
+
+    def _tensor_to_case_np(t: Optional[torch.Tensor]) -> Optional[np.ndarray]:
+        if t is None:
+            return None
+        arr = t.detach().float().cpu().numpy()
+        if arr.ndim >= 5:
+            return arr[0, 0].astype(np.float32)
+        if arr.ndim >= 4:
+            return arr[0].astype(np.float32)
+        return arr.astype(np.float32)
+
+    payload = _slice_first_case(_unpack_surv_batch(batch))
+    pid = _first_pid(payload)
+    case_dir = (
+        Path(out_dir)
+        / "epoch_gradcam"
+        / f"epoch_{int(epoch):03d}_{str(split_name)}_{pid_slug(pid)}"
+    )
+
+    was_training = model.training
+    model.eval()
+    model.zero_grad(set_to_none=True)
+
+    try:
+        x = payload["x"].to(device, non_blocking=True)
+        mask_pt = _to_optional_device_tensor(payload.get("mask_pt"), device)
+        mask_ln = _to_optional_device_tensor(payload.get("mask_ln"), device)
+        clinical_tokens = _prep_optional_token_tensor(payload, "clin", device)
+        radiomics_tokens = _prep_optional_token_tensor(payload, "rad", device)
+        clinical_presence = _to_optional_device_tensor(payload.get("clin_presence"), device)
+        radiomics_presence = _to_optional_device_tensor(payload.get("rad_presence"), device)
+
+        node_enabled = getattr(mm.habitat_model, "node_proj", None) is not None
+        topology_enabled = getattr(mm.habitat_model, "topology_proj", None) is not None
+        node_tokens = _prep_optional_token_tensor(payload, "node_tokens", device) if node_enabled else None
+        node_presence = _prep_optional_token_tensor(payload, "node_presence", device) if node_enabled else None
+        topology_token = _prep_optional_token_tensor(payload, "topology_token", device) if topology_enabled else None
+        topology_presence = _prep_optional_token_tensor(payload, "topology_presence", device) if topology_enabled else None
+
+        with torch.enable_grad():
+            image_tokens, image_presence, bb_aux = mm.backbone(
+                x,
+                mask_pt=mask_pt,
+                mask_ln=mask_ln,
+                teacher_force_alpha=float(teacher_force_alpha),
+                return_aux=True,
+                return_cam_features=True,
+            )
+            logits = mm.forward_from_image_tokens(
+                image_tokens=image_tokens,
+                image_presence=image_presence,
+                clinical_tokens=clinical_tokens,
+                clinical_presence=clinical_presence,
+                radiomics_tokens=radiomics_tokens,
+                radiomics_presence=radiomics_presence,
+                node_tokens=node_tokens,
+                node_presence=node_presence,
+                topology_token=topology_token,
+                topology_presence=topology_presence,
+                return_aux=False,
+                return_attention=False,
+            )
+            target = select_survival_target(
+                mm,
+                logits,
+                endpoint=str(endpoint),
+                horizon_days=float(risk_horizon_days),
+                target_type=str(target_type),
+            )
+            risks = risk_vector(mm, logits, endpoint=str(endpoint), horizon_days=float(risk_horizon_days))
+            target.backward()
+            signed_cam, scale_cams, scale_shapes = cam_from_features(
+                bb_aux.get("cam_features", []),
+                tuple(int(v) for v in x.shape[2:]),
+            )
+
+        supports_t = supports_from_backbone_aux(bb_aux)
+        supports_np = {
+            name: _tensor_to_case_np(value)
+            for name, value in supports_t.items()
+        }
+        body = supports_np.get("body")
+        if body is None:
+            body = np.ones_like(signed_cam, dtype=np.float32)
+        pos_raw, neg_raw = split_signed_cam(signed_cam)
+        pos_body = normalize_component(pos_raw, support=body)
+        neg_body = normalize_component(neg_raw, support=body)
+
+        ct_np = _tensor_to_case_np(x)
+        pt_np = _tensor_to_case_np(mask_pt)
+        ln_np = _tensor_to_case_np(mask_ln)
+        if ct_np is None:
+            raise RuntimeError("input CT tensor was unavailable for epoch Grad-CAM output")
+
+        signed_path = case_dir / "signed_raw_gradcam.nii.gz"
+        pos_path = case_dir / "risk_increasing_body_gradcam.nii.gz"
+        neg_path = case_dir / "risk_decreasing_body_gradcam.nii.gz"
+        ct_path = case_dir / "model_input_ct.nii.gz"
+        body_path = case_dir / "body_mask.nii.gz"
+        overlay_path = case_dir / "risk_increasing_overlay.png"
+
+        signed_meta = save_nifti(signed_cam, signed_path, ref_path=None, clip=False)
+        save_nifti(pos_body, pos_path, ref_path=None, clip=True)
+        save_nifti(neg_body, neg_path, ref_path=None, clip=True)
+        save_nifti(ct_np, ct_path, ref_path=None, clip=False)
+        save_nifti(body, body_path, ref_path=None, clip=True)
+        if pt_np is not None:
+            save_nifti(pt_np, case_dir / "pt_used.nii.gz", ref_path=None, clip=True)
+        if ln_np is not None:
+            save_nifti(ln_np, case_dir / "ln_used.nii.gz", ref_path=None, clip=True)
+
+        overlay_error = ""
+        try:
+            make_overlay_png(
+                ct_np,
+                pos_body,
+                overlay_path,
+                title=(
+                    f"fold {int(fold):02d} epoch {int(epoch):03d} {str(endpoint).upper()} "
+                    f"{float(risk_horizon_days):.0f}d pid={pid}"
+                ),
+                mask_pt=pt_np,
+                mask_ln=ln_np,
+                body_mask=body,
+                max_slices=int(max_slices),
+            )
+        except Exception as exc:
+            overlay_error = str(exc)
+
+        risk_value = float(risks.detach().float().cpu().flatten()[0].item())
+        status = {
+            "status": "ok",
+            "kind": "epoch_gradcam_probe",
+            "fold": int(fold),
+            "epoch": int(epoch),
+            "split": str(split_name),
+            "patient_id": pid,
+            "endpoint": str(endpoint).upper(),
+            "risk_horizon_days": float(risk_horizon_days),
+            "target_type": str(target_type),
+            "teacher_force_alpha": float(teacher_force_alpha),
+            "risk": risk_value,
+            "target": float(target.detach().float().cpu().item()),
+            "signed_raw_gradcam": str(signed_path),
+            "risk_increasing_body_gradcam": str(pos_path),
+            "risk_decreasing_body_gradcam": str(neg_path),
+            "overlay_png": str(overlay_path) if overlay_error == "" and overlay_path.is_file() else "",
+            "overlay_error": overlay_error,
+            "cam_shape_zyx": str(signed_meta.get("cam_shape_zyx", "")),
+            "activation_shapes": list(scale_shapes),
+            "num_cam_scales": int(len(scale_cams)),
+            "positive_raw_mass": float(np.nan_to_num(pos_raw).sum()),
+            "negative_raw_mass": float(np.nan_to_num(neg_raw).sum()),
+            "body_positive_mass": float((pos_raw * body).sum()),
+            "body_negative_mass": float((neg_raw * body).sum()),
+        }
+        write_json(case_dir / "status.json", status)
+        print(
+            f"[GRADCAM][fold {int(fold):02d}] epoch {int(epoch):03d} "
+            f"{str(split_name)} pid={pid} risk={risk_value:.4f} -> {case_dir}"
+        )
+        return status
+    finally:
+        model.zero_grad(set_to_none=True)
+        if was_training:
+            model.train()
 
 
 def save_risk_dict_csv(
@@ -1067,9 +1337,13 @@ def train_one_epoch(
     gate_entropy_lambda: float,
     gate_loadbal_lambda: float,
     teacher_force_alpha: float,
+    survival_uses_teacher_forced_masks: bool,
     loc_loss_pt_lambda: float,
     loc_loss_ln_lambda: float,
     loc_presence_lambda: float,
+    mask_support_lambda: float,
+    mask_support_bce_weight: float,
+    mask_support_dice_weight: float,
     loc_bce_weight: float,
     loc_dice_weight: float,
     log_every_batches: int,
@@ -1100,6 +1374,7 @@ def train_one_epoch(
         "loss_loc_pt": 0.0,
         "loss_loc_ln": 0.0,
         "loss_loc_presence": 0.0,
+        "loss_mask_support": 0.0,
         "loss_gate_entropy": 0.0,
         "loss_gate_loadbal": 0.0,
         "loss_hazard_smooth": 0.0,
@@ -1121,11 +1396,16 @@ def train_one_epoch(
     eff_v2_node_drop = _clip_probability(v2_node_dropout_p) * dropout_scale
     eff_v2_topology_drop = _clip_probability(v2_topology_dropout_p) * dropout_scale
     eff_v2_image_drop = _clip_probability(v2_image_habitat_dropout_p) * dropout_scale
+    survival_teacher_force_alpha = _survival_teacher_force_alpha(
+        float(teacher_force_alpha),
+        bool(survival_uses_teacher_forced_masks),
+    )
 
     _log(
         f"[fold {fold:02d}] epoch {epoch:03d} starting"
         + (f" | batches={planned_batches}" if planned_batches > 0 else "")
-        + f" | teacher_force={teacher_force_alpha:.2f}"
+        + f" | teacher_force_schedule={teacher_force_alpha:.2f}"
+        + f" | survival_teacher_force={survival_teacher_force_alpha:.2f}"
         + (
             f" | v2_drop(img={eff_v2_image_drop:.3f},clin={eff_v2_clin_drop:.3f},"
             f"rad={eff_v2_rad_drop:.3f},node={eff_v2_node_drop:.3f},topo={eff_v2_topology_drop:.3f})"
@@ -1192,7 +1472,7 @@ def train_one_epoch(
                     logits, aux = model(
                         x, clin, rad,
                         mask_pt=mask_pt, mask_ln=mask_ln,
-                        teacher_force_alpha=float(teacher_force_alpha),
+                        teacher_force_alpha=float(survival_teacher_force_alpha),
                         return_aux=True,
                         **v2_kwargs,
                     )
@@ -1200,7 +1480,7 @@ def train_one_epoch(
                     logits = model(
                         x, clin, rad,
                         mask_pt=mask_pt, mask_ln=mask_ln,
-                        teacher_force_alpha=float(teacher_force_alpha),
+                        teacher_force_alpha=float(survival_teacher_force_alpha),
                         **v2_kwargs,
                     )
                     aux = None
@@ -1213,7 +1493,7 @@ def train_one_epoch(
                     rad,
                     mask_pt=mask_pt,
                     mask_ln=mask_ln,
-                    teacher_force_alpha=float(teacher_force_alpha),
+                    teacher_force_alpha=float(survival_teacher_force_alpha),
                     return_gate=True,
                     return_aux=True,
                 )
@@ -1224,7 +1504,7 @@ def train_one_epoch(
                     rad,
                     mask_pt=mask_pt,
                     mask_ln=mask_ln,
-                    teacher_force_alpha=float(teacher_force_alpha),
+                    teacher_force_alpha=float(survival_teacher_force_alpha),
                     return_gate=True,
                     return_aux=False,
                 )
@@ -1266,6 +1546,7 @@ def train_one_epoch(
             loss_loc_pt = primary_logits.new_tensor(0.0)
             loss_loc_ln = primary_logits.new_tensor(0.0)
             loss_loc_presence = primary_logits.new_tensor(0.0)
+            loss_mask_support = primary_logits.new_tensor(0.0)
             if hazard_smooth_lambda > 0:
                 hazard_terms = {
                     endpoint: H.hazard_smoothness_penalty(_extract_endpoint_logits(logits, endpoint).float())
@@ -1328,12 +1609,28 @@ def train_one_epoch(
                     pres_loss = pres_loss + F.binary_cross_entropy_with_logits(loc_aux["ln_presence_logits"].float(), ln_present_target)
                     loss_loc_presence = float(loc_presence_lambda) * pres_loss
                     loss = loss + loss_loc_presence
+                if float(mask_support_lambda) > 0.0 and "pt_prob" in loc_aux and "ln_prob" in loc_aux:
+                    support_loss = _mask_support_loss_from_probs(
+                        loc_aux["pt_prob"],
+                        mask_pt,
+                        bce_weight=float(mask_support_bce_weight),
+                        dice_weight=float(mask_support_dice_weight),
+                    )
+                    support_loss = support_loss + _mask_support_loss_from_probs(
+                        loc_aux["ln_prob"],
+                        mask_ln,
+                        bce_weight=float(mask_support_bce_weight),
+                        dice_weight=float(mask_support_dice_weight),
+                    )
+                    loss_mask_support = float(mask_support_lambda) * support_loss
+                    loss = loss + loss_mask_support
 
         if not torch.isfinite(loss).item():
             pid_preview = [str(x) for x in list(payload["pid"])[:8]]
             raise RuntimeError(
                 "[TRAIN][NONFINITE] non-finite loss encountered "
-                f"primary={primary_key} teacher_force={teacher_force_alpha:.3f} "
+                f"primary={primary_key} teacher_force_schedule={teacher_force_alpha:.3f} "
+                f"survival_teacher_force={survival_teacher_force_alpha:.3f} "
                 f"pids={pid_preview} "
                 f"loss_total={float(loss.detach().cpu().item())} "
                 f"loss_surv={float(loss_surv.detach().cpu().item())} "
@@ -1342,6 +1639,7 @@ def train_one_epoch(
                 f"loss_loc_pt={float(loss_loc_pt.detach().cpu().item())} "
                 f"loss_loc_ln={float(loss_loc_ln.detach().cpu().item())} "
                 f"loss_loc_presence={float(loss_loc_presence.detach().cpu().item())} "
+                f"loss_mask_support={float(loss_mask_support.detach().cpu().item())} "
                 f"loss_gate_entropy={float(loss_gate_entropy.detach().cpu().item())} "
                 f"loss_gate_loadbal={float(loss_gate_loadbal.detach().cpu().item())} "
                 f"loss_hazard_smooth={float(loss_hazard_smooth.detach().cpu().item())} "
@@ -1381,6 +1679,7 @@ def train_one_epoch(
         stats_sum["loss_loc_pt"] += float(loss_loc_pt.detach().cpu().item())
         stats_sum["loss_loc_ln"] += float(loss_loc_ln.detach().cpu().item())
         stats_sum["loss_loc_presence"] += float(loss_loc_presence.detach().cpu().item())
+        stats_sum["loss_mask_support"] += float(loss_mask_support.detach().cpu().item())
         stats_sum["loss_gate_entropy"] += float(loss_gate_entropy.detach().cpu().item())
         stats_sum["loss_gate_loadbal"] += float(loss_gate_loadbal.detach().cpu().item())
         stats_sum["loss_hazard_smooth"] += float(loss_hazard_smooth.detach().cpu().item())
@@ -1402,7 +1701,8 @@ def train_one_epoch(
                 f"loss={float(loss.detach().cpu().item()):.4f} "
                 f"surv={float(loss_surv.detach().cpu().item()):.4f} "
                 f"loc_pt={float(loss_loc_pt.detach().cpu().item()):.4f} "
-                f"loc_ln={float(loss_loc_ln.detach().cpu().item()):.4f}"
+                f"loc_ln={float(loss_loc_ln.detach().cpu().item()):.4f} "
+                f"mask_sup={float(loss_mask_support.detach().cpu().item()):.4f}"
             )
 
     if batches_since_step > 0:
@@ -1985,8 +2285,14 @@ def run_one_fold(
         token_mlp_hidden_dim=int(args.token_mlp_hidden_dim),
 
         attn_mask_bias=float(args.attn_mask_bias),
+        attn_pool_mask_mode=str(args.attn_pool_mask_mode),
         use_multiscale=bool(args.use_multiscale),
         mask_interp=str(args.mask_interp),
+        roi_support_threshold=float(args.roi_support_threshold),
+        roi_support_fallback_threshold=float(args.roi_support_fallback_threshold),
+        roi_support_fallback_relmax=float(args.roi_support_fallback_relmax),
+        include_roi_volume=bool(args.include_roi_volume),
+        include_shell_volume=bool(args.include_shell_volume),
         min_roi_frac=float(args.min_roi_frac),
         min_roi_voxels_deep=int(args.min_roi_voxels_deep),
         token_dropout=float(args.token_dropout),
@@ -2161,9 +2467,13 @@ def run_one_fold(
             gate_entropy_lambda=float(args.gate_entropy_lambda),
             gate_loadbal_lambda=float(args.gate_loadbal_lambda),
             teacher_force_alpha=float(teacher_force_alpha),
+            survival_uses_teacher_forced_masks=bool(args.survival_uses_teacher_forced_masks),
             loc_loss_pt_lambda=float(args.loc_loss_pt_lambda),
             loc_loss_ln_lambda=float(args.loc_loss_ln_lambda),
             loc_presence_lambda=float(args.loc_presence_lambda),
+            mask_support_lambda=float(args.mask_support_lambda),
+            mask_support_bce_weight=float(args.mask_support_bce_weight),
+            mask_support_dice_weight=float(args.mask_support_dice_weight),
             loc_bce_weight=float(args.loc_bce_weight),
             loc_dice_weight=float(args.loc_dice_weight),
             log_every_batches=int(args.log_every_batches),
@@ -2198,6 +2508,7 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
+                teacher_force_alpha=0.0,
             )
             val_met = evaluate_model(
                 _eval_model, va_loader, device,
@@ -2207,6 +2518,7 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
+                teacher_force_alpha=0.0,
             )
         else:
             train_met = {"c_index": 0.0, "ibs": 0.0, "auc_mean": 0.0, "nb_mean": 0.0, "nll": 0.0}
@@ -2231,14 +2543,18 @@ def run_one_fold(
                 f"loc_pt={train_stats.get('loss_loc_pt', float('nan')):.4f} "
                 f"loc_ln={train_stats.get('loss_loc_ln', float('nan')):.4f} "
                 f"loc_pres={train_stats.get('loss_loc_presence', float('nan')):.4f} | "
+                f"mask_sup={train_stats.get('loss_mask_support', float('nan')):.4f} | "
                 f"val_nll={val_met.get('nll', float('nan')):.4f} | "
                 f"train_c={train_met.get('c_index', float('nan')):.3f} val_c={val_met.get('c_index', float('nan')):.3f} "
                 f"val_{args.report_metric}={report_metric:.3f} "
-                f"teacher_force={teacher_force_alpha:.2f}"
+                f"teacher_force_schedule={teacher_force_alpha:.2f} "
+                f"survival_tf={_survival_teacher_force_alpha(teacher_force_alpha, args):.2f}"
             )
 
         row = {
             "epoch": int(epoch),
+            "teacher_force_alpha": float(teacher_force_alpha),
+            "survival_teacher_force_alpha": float(_survival_teacher_force_alpha(teacher_force_alpha, args)),
             "train_loss": float(train_stats.get("loss_total", float("nan"))),
             "train_surv_loss": float(train_stats.get("loss_surv_total", float("nan"))),
             "train_surv_primary_loss": float(train_stats.get("loss_surv_primary", float("nan"))),
@@ -2252,6 +2568,7 @@ def run_one_fold(
             "train_loc_pt_loss": float(train_stats.get("loss_loc_pt", float("nan"))),
             "train_loc_ln_loss": float(train_stats.get("loss_loc_ln", float("nan"))),
             "train_loc_presence_loss": float(train_stats.get("loss_loc_presence", float("nan"))),
+            "train_mask_support_loss": float(train_stats.get("loss_mask_support", float("nan"))),
             "train_gate_entropy_loss": float(train_stats.get("loss_gate_entropy", float("nan"))),
             "train_gate_loadbal_loss": float(train_stats.get("loss_gate_loadbal", float("nan"))),
             "train_hazard_smooth_loss": float(train_stats.get("loss_hazard_smooth", float("nan"))),
@@ -2305,6 +2622,42 @@ def run_one_fold(
                 )
                 best_report_metric = float(report_metric)
                 print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
+
+        if is_main_rank and bool(getattr(args, "epoch_gradcam", False)):
+            gradcam_every = max(1, int(getattr(args, "epoch_gradcam_every", 1)))
+            if (int(epoch) % gradcam_every) == 0:
+                split_name = str(getattr(args, "epoch_gradcam_split", "val")).strip().lower()
+                gradcam_loaders = {
+                    "train_eval": tr_eval_loader,
+                    "val": va_loader,
+                    "test": te_loader,
+                }
+                gradcam_loader = gradcam_loaders.get(split_name)
+                if gradcam_loader is None:
+                    print(f"[GRADCAM][fold {fold:02d}] skipped unknown split: {split_name}")
+                else:
+                    try:
+                        epoch_gradcam_teacher_force_alpha = float(getattr(args, "epoch_gradcam_teacher_force_alpha", -1.0))
+                        if epoch_gradcam_teacher_force_alpha < 0.0:
+                            epoch_gradcam_teacher_force_alpha = 0.0
+                        generate_epoch_gradcam_probe(
+                            model,
+                            gradcam_loader,
+                            device,
+                            fold=int(fold),
+                            epoch=int(epoch),
+                            endpoint=str(args.endpoint),
+                            risk_horizon_days=float(args.risk_horizon_days),
+                            out_dir=fold_dir,
+                            split_name=split_name,
+                            teacher_force_alpha=epoch_gradcam_teacher_force_alpha,
+                            max_slices=int(getattr(args, "epoch_gradcam_max_slices", 6)),
+                        )
+                    except Exception as exc:
+                        msg = f"[GRADCAM][fold {fold:02d}] epoch {int(epoch):03d} failed: {exc}"
+                        if bool(getattr(args, "epoch_gradcam_strict", False)):
+                            raise RuntimeError(msg) from exc
+                        print(msg)
         scheduler.step()
         # No barrier needed here — DDP synchronizes during forward/backward,
         # and DistributedSampler.set_epoch() at the top of each epoch is enough.
@@ -2336,8 +2689,17 @@ def run_one_fold(
         eval_times_days=args.auc_times_days,
         dca_thresholds=args.dca_thresholds,
         autocast_ctx=autocast_ctx,
+        teacher_force_alpha=0.0,
     )
-    risks_last = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+    risks_last = predict_risk_scores(
+        _eval_model,
+        te_loader,
+        device,
+        endpoint=str(args.endpoint),
+        risk_horizon_days=float(args.risk_horizon_days),
+        autocast_ctx=autocast_ctx,
+        teacher_force_alpha=0.0,
+    )
 
     ema_test = None
     risks_ema = None
@@ -2351,8 +2713,17 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
+                teacher_force_alpha=0.0,
             )
-            risks_ema = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+            risks_ema = predict_risk_scores(
+                _eval_model,
+                te_loader,
+                device,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+                autocast_ctx=autocast_ctx,
+                teacher_force_alpha=0.0,
+            )
 
     swa_test = None
     risks_swa = None
@@ -2366,8 +2737,17 @@ def run_one_fold(
                 eval_times_days=args.auc_times_days,
                 dca_thresholds=args.dca_thresholds,
                 autocast_ctx=autocast_ctx,
+                teacher_force_alpha=0.0,
             )
-            risks_swa = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+            risks_swa = predict_risk_scores(
+                _eval_model,
+                te_loader,
+                device,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+                autocast_ctx=autocast_ctx,
+                teacher_force_alpha=0.0,
+            )
 
     best_test = None
     risks_best = None
@@ -2380,8 +2760,17 @@ def run_one_fold(
             eval_times_days=args.auc_times_days,
             dca_thresholds=args.dca_thresholds,
             autocast_ctx=autocast_ctx,
+            teacher_force_alpha=0.0,
         )
-        risks_best = predict_risk_scores(_eval_model, te_loader, device, endpoint=str(args.endpoint), risk_horizon_days=float(args.risk_horizon_days), autocast_ctx=autocast_ctx)
+        risks_best = predict_risk_scores(
+            _eval_model,
+            te_loader,
+            device,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+            autocast_ctx=autocast_ctx,
+            teacher_force_alpha=0.0,
+        )
 
     export_suffix = "ema" if (risks_ema is not None) else "last"
     export_risks = risks_ema if (risks_ema is not None) else risks_last
@@ -2391,6 +2780,10 @@ def run_one_fold(
         "software_version": TRIFUSESURV2_VERSION,
         "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "daaaa363020b7e27b93981f62dfa17821489e1ea"),
         "time_bin_width_days": float(args.time_bin_width_days),
+        "eval_teacher_force_alpha": 0.0,
+        "survival_uses_teacher_forced_masks": bool(args.survival_uses_teacher_forced_masks),
+        "include_roi_volume": bool(args.include_roi_volume),
+        "include_shell_volume": bool(args.include_shell_volume),
     }
     save_endpoint_risk_dict_csv(
         export_risks,
@@ -2577,6 +2970,24 @@ def parse_args():
     p.add_argument("--no_export_extra_risks", dest="export_extra_risks", action="store_false")
     p.set_defaults(export_extra_risks=True)
 
+    p.add_argument(
+        "--epoch_gradcam",
+        dest="epoch_gradcam",
+        action="store_true",
+        help="Write one lightweight v2 Grad-CAM sanity artifact per selected epoch.",
+    )
+    p.add_argument("--no_epoch_gradcam", dest="epoch_gradcam", action="store_false")
+    p.set_defaults(epoch_gradcam=False)
+    p.add_argument("--epoch_gradcam_every", type=int, default=1)
+    p.add_argument("--epoch_gradcam_split", type=str, default="val", choices=["train_eval", "val", "test"])
+    p.add_argument("--epoch_gradcam_max_slices", type=int, default=6)
+    p.add_argument("--epoch_gradcam_teacher_force_alpha", type=float, default=-1.0)
+    p.add_argument(
+        "--epoch_gradcam_strict",
+        action="store_true",
+        help="Fail training if the epoch Grad-CAM probe fails.",
+    )
+
     p.add_argument("--clinical_cols", type=str, nargs="*", default=DEFAULT_CLINICAL_COLS)
 
     p.add_argument("--use_radiomics", dest="use_radiomics", action="store_true")
@@ -2619,8 +3030,18 @@ def parse_args():
     p.add_argument("--token_dropout", type=float, default=0.10)
 
     p.add_argument("--attn_mask_bias", type=float, default=2.0)
+    p.add_argument("--attn_pool_mask_mode", type=str, default="masked", choices=["masked", "weighted", "bias"])
     p.add_argument("--use_multiscale", action="store_true")
     p.add_argument("--mask_interp", type=str, default="nearest", choices=["nearest", "trilinear"])
+    p.add_argument("--roi_support_threshold", type=float, default=0.5)
+    p.add_argument("--roi_support_fallback_threshold", type=float, default=0.05)
+    p.add_argument("--roi_support_fallback_relmax", type=float, default=0.5)
+    p.add_argument("--include_roi_volume", dest="include_roi_volume", action="store_true")
+    p.add_argument("--no_include_roi_volume", dest="include_roi_volume", action="store_false")
+    p.set_defaults(include_roi_volume=True)
+    p.add_argument("--include_shell_volume", dest="include_shell_volume", action="store_true")
+    p.add_argument("--no_include_shell_volume", dest="include_shell_volume", action="store_false")
+    p.set_defaults(include_shell_volume=True)
     p.add_argument("--min_roi_frac", type=float, default=1e-5)
     p.add_argument("--min_roi_voxels_deep", type=int, default=8)
 
@@ -2635,12 +3056,26 @@ def parse_args():
 
     p.add_argument("--pt_shell_radius", type=int, default=3)
     p.add_argument("--ln_shell_radius", type=int, default=3)
-    p.add_argument("--teacher_force_epochs", type=int, default=12)
-    p.add_argument("--teacher_force_start", type=float, default=1.0)
+    p.add_argument("--teacher_force_epochs", type=int, default=0)
+    p.add_argument("--teacher_force_start", type=float, default=0.0)
     p.add_argument("--teacher_force_end", type=float, default=0.0)
+    p.add_argument(
+        "--survival_uses_teacher_forced_masks",
+        action="store_true",
+        help="Legacy mode: allow survival loss to see GT-mask-blended ROI tokens. Default keeps survival deployment-like.",
+    )
+    p.add_argument(
+        "--mask_guidance_alpha",
+        type=float,
+        default=0.0,
+        help="Legacy teacher-force floor, only active with --survival_uses_teacher_forced_masks.",
+    )
     p.add_argument("--loc_loss_pt_lambda", type=float, default=0.25)
     p.add_argument("--loc_loss_ln_lambda", type=float, default=0.25)
     p.add_argument("--loc_presence_lambda", type=float, default=0.05)
+    p.add_argument("--mask_support_lambda", type=float, default=0.10)
+    p.add_argument("--mask_support_bce_weight", type=float, default=0.0)
+    p.add_argument("--mask_support_dice_weight", type=float, default=1.0)
     p.add_argument("--loc_bce_weight", type=float, default=0.5)
     p.add_argument("--loc_dice_weight", type=float, default=0.5)
 
@@ -2742,6 +3177,20 @@ def parse_args():
         args.rad_hidden_dim = int(max(512, 2 * int(args.fused_dim)))
     if float(args.primary_surv_loss_weight) < 0.0 or float(args.aux_surv_loss_weight) < 0.0:
         raise ValueError("--primary_surv_loss_weight and --aux_surv_loss_weight must be >= 0.")
+    if not (0.0 <= float(args.mask_guidance_alpha) <= 1.0):
+        raise ValueError("--mask_guidance_alpha must be in [0,1].")
+    if float(args.epoch_gradcam_teacher_force_alpha) > 1.0:
+        raise ValueError("--epoch_gradcam_teacher_force_alpha must be <= 1, or negative for deployment-like auto mode.")
+    if float(args.mask_support_lambda) < 0.0:
+        raise ValueError("--mask_support_lambda must be >= 0.")
+    if float(args.mask_support_bce_weight) < 0.0 or float(args.mask_support_dice_weight) < 0.0:
+        raise ValueError("--mask_support_bce_weight and --mask_support_dice_weight must be >= 0.")
+    if not (0.0 <= float(args.roi_support_threshold) <= 1.0):
+        raise ValueError("--roi_support_threshold must be in [0,1].")
+    if not (0.0 <= float(args.roi_support_fallback_threshold) <= 1.0):
+        raise ValueError("--roi_support_fallback_threshold must be in [0,1].")
+    if float(args.roi_support_fallback_relmax) < 0.0:
+        raise ValueError("--roi_support_fallback_relmax must be >= 0.")
 
     args.auc_times_days = [float(x) for x in (args.auc_times_days or [])]
     args.dca_thresholds = [float(x) for x in (args.dca_thresholds or [])]
@@ -2801,7 +3250,10 @@ def main():
         f"{'/'.join(SURVIVAL_ENDPOINTS)} "
         f"primary={str(args.endpoint).upper()} "
         f"primary_w={float(args.primary_surv_loss_weight):.2f} "
-        f"aux_w={float(args.aux_surv_loss_weight):.2f}"
+        f"aux_w={float(args.aux_surv_loss_weight):.2f} "
+        f"survival_uses_teacher_forced_masks={bool(args.survival_uses_teacher_forced_masks)} "
+        f"mask_guidance_alpha={float(args.mask_guidance_alpha):.2f} "
+        f"mask_support_lambda={float(args.mask_support_lambda):.2f}"
     )
 
     out_root = Path(args.out_dir) / args.exp_name
@@ -2909,9 +3361,26 @@ def main():
         "teacher_force_epochs": int(args.teacher_force_epochs),
         "teacher_force_start": float(args.teacher_force_start),
         "teacher_force_end": float(args.teacher_force_end),
+        "survival_uses_teacher_forced_masks": bool(args.survival_uses_teacher_forced_masks),
+        "eval_teacher_force_alpha": 0.0,
+        "mask_guidance_alpha": float(args.mask_guidance_alpha),
+        "attn_pool_mask_mode": str(args.attn_pool_mask_mode),
+        "roi_support_threshold": float(args.roi_support_threshold),
+        "roi_support_fallback_threshold": float(args.roi_support_fallback_threshold),
+        "roi_support_fallback_relmax": float(args.roi_support_fallback_relmax),
+        "include_roi_volume": bool(args.include_roi_volume),
+        "include_shell_volume": bool(args.include_shell_volume),
         "loc_loss_pt_lambda": float(args.loc_loss_pt_lambda),
         "loc_loss_ln_lambda": float(args.loc_loss_ln_lambda),
         "loc_presence_lambda": float(args.loc_presence_lambda),
+        "mask_support_lambda": float(args.mask_support_lambda),
+        "mask_support_bce_weight": float(args.mask_support_bce_weight),
+        "mask_support_dice_weight": float(args.mask_support_dice_weight),
+        "epoch_gradcam": bool(args.epoch_gradcam),
+        "epoch_gradcam_every": int(args.epoch_gradcam_every),
+        "epoch_gradcam_split": str(args.epoch_gradcam_split),
+        "epoch_gradcam_max_slices": int(args.epoch_gradcam_max_slices),
+        "epoch_gradcam_teacher_force_alpha": float(args.epoch_gradcam_teacher_force_alpha),
         "nan_guard": bool(args.nan_guard),
     }
     with open(out_root / "cv_summary.json", "w") as f:

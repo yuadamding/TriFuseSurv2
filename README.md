@@ -48,13 +48,21 @@ src/trifusesurv2/
 
 ## Installation
 
-First-time setup:
+Compact archive setup:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+Full workspace setup, when the `scripts/` directory is present:
 
 ```bash
 bash scripts/install_env.sh
 ```
 
-By default this now keeps the environment local to the package:
+The full installer keeps the environment local to the package:
 - virtualenv in `./.venv`
 - pip cache in `./.install_env/pip-cache`
 - temp/build files in `./.install_env/tmp`
@@ -94,10 +102,39 @@ OOF Grad-CAM now requires matching OOF predictions and complete provenance
 metadata by default; use `--allow_unchecked_oof`, `--allow_commit_mismatch`,
 or `--allow_incomplete_oof_metadata` only for exploratory debugging.
 
-## Operational search scripts
+Survival training is deployment-like by default: ground-truth PT/LN masks
+supervise localization/support losses, but the survival loss and evaluation
+risk exports use predicted-mask ROI tokens with `teacher_force_alpha=0.0`.
+The legacy behavior can only be re-enabled explicitly with
+`--survival_uses_teacher_forced_masks`. ROI and shell volume scalars are also
+configurable with `--include_roi_volume/--no_include_roi_volume` and
+`--include_shell_volume/--no_include_shell_volume` for contour-morphology
+ablation experiments.
 
-This package is the runnable home for search wrappers and fixed-setting CV
-launchers. The current scripts live in `scripts/`:
+## Archive Profiles
+
+The distributable zip is compact by default and contains only:
+
+- `README.md`
+- `pyproject.toml`
+- `src/trifusesurv2`
+
+Build it from the full workspace with:
+
+```bash
+bash scripts/build_zip_package.sh
+```
+
+To include tests and all operational shell launchers:
+
+```bash
+PACKAGE_PROFILE=full bash scripts/build_zip_package.sh
+```
+
+## Operational Search Scripts
+
+The compact archive uses the CLI entry points above. The full workspace also
+keeps search wrappers and fixed-setting CV launchers in `scripts/`:
 
 - `scripts/run_contour_aware_cindex_search_75gb_30ep.sh`
   - broad 75 GB / 30 epoch multitask search

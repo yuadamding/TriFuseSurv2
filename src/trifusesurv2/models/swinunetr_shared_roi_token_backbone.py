@@ -4,7 +4,7 @@
 Recommended end-to-end survival image path:
 - CT-only shared SwinUNETR encoder
 - low-resolution PT/LN localization heads on deep encoder features
-- ROI tokenization from soft predicted PT/LN masks
+- ROI tokenization from explicit PT/LN support masks
 - optional teacher forcing with GT PT/LN masks during training
 
 Tokens (B,5,Dtok):
@@ -29,6 +29,8 @@ from trifusesurv2.models.swinunetr_backbone_utils import (
     convert_swinvit_feats_to_channel_first,
     swinvit_features,
 )
+
+
 def masked_mean(feat: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     w = mask.clamp(0, 1)
     denom = w.sum(dim=(2, 3, 4)).clamp_min(eps)
@@ -36,15 +38,23 @@ def masked_mean(feat: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> to
     return num / denom
 
 
-def ct_stats_in_mask(ct: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+def ct_stats_in_mask(
+    ct: torch.Tensor,
+    mask: torch.Tensor,
+    eps: float = 1e-6,
+    *,
+    include_volume: bool = True,
+) -> torch.Tensor:
     w = mask.clamp(0, 1)
     denom = w.sum(dim=(2, 3, 4)).clamp_min(eps)
     mu = (ct * w).sum(dim=(2, 3, 4)) / denom
     second = ((ct * ct) * w).sum(dim=(2, 3, 4)) / denom
     var = (second - mu * mu).clamp_min(0.0)
     sd = torch.sqrt(var + 1e-8)
-    vol = w.mean(dim=(2, 3, 4))
-    return torch.cat([mu, sd, vol], dim=1)
+    parts = [mu, sd]
+    if bool(include_volume):
+        parts.append(w.mean(dim=(2, 3, 4)))
+    return torch.cat(parts, dim=1)
 
 
 def ct_stats_global(ct: torch.Tensor, body: Optional[torch.Tensor] = None, eps: float = 1e-6) -> torch.Tensor:
@@ -65,17 +75,38 @@ def ct_stats_global(ct: torch.Tensor, body: Optional[torch.Tensor] = None, eps: 
 
 
 class AttnPool3D(nn.Module):
-    def __init__(self, mask_bias: float = 2.0, temperature: float = 1.0):
+    def __init__(
+        self,
+        mask_bias: float = 2.0,
+        temperature: float = 1.0,
+        mask_mode: str = "masked",
+        eps: float = 1e-6,
+    ):
         super().__init__()
         self.attn = nn.LazyConv3d(1, kernel_size=1, bias=False)
         self.mask_bias = float(mask_bias)
         self.temperature = float(temperature)
+        self.mask_mode = str(mask_mode).strip().lower()
+        self.eps = float(eps)
+        if self.mask_mode not in {"masked", "weighted", "bias"}:
+            raise ValueError(f"Unknown attention pooling mask_mode: {mask_mode}")
 
     def forward(self, feat: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        logits = self.attn(feat)
+        logits = self.attn(feat).flatten(2)
+        raw_logits = logits
         if mask is not None:
-            logits = logits + self.mask_bias * mask.clamp(0, 1)
-        w = torch.softmax((logits / self.temperature).flatten(2), dim=-1)
+            mask_flat = mask.clamp(0, 1).flatten(2).to(dtype=logits.dtype, device=logits.device)
+            has_support = mask_flat.sum(dim=-1, keepdim=True) > self.eps
+            if self.mask_mode == "bias":
+                logits = logits + self.mask_bias * mask_flat
+            elif self.mask_mode == "weighted":
+                logits = logits + torch.log(mask_flat.clamp_min(self.eps))
+                logits = torch.where(has_support.unsqueeze(1), logits, raw_logits)
+            else:
+                support = mask_flat > self.eps
+                masked_logits = logits.masked_fill(~support, torch.finfo(logits.dtype).min)
+                logits = torch.where(has_support.unsqueeze(1), masked_logits, logits)
+        w = torch.softmax(logits / self.temperature, dim=-1)
         feat_flat = feat.flatten(2)
         return (feat_flat * w).sum(dim=-1)
 
@@ -114,8 +145,14 @@ class ContourAwareROITokenBackbone(nn.Module):
         token_mlp_dropout: float = 0.30,
         token_mlp_hidden_dim: int = 0,
         attn_mask_bias: float = 2.0,
+        attn_pool_mask_mode: str = "masked",
         use_multiscale: bool = True,
         mask_interp: str = "nearest",
+        roi_support_threshold: float = 0.5,
+        roi_support_fallback_threshold: float = 0.05,
+        roi_support_fallback_relmax: float = 0.5,
+        include_roi_volume: bool = True,
+        include_shell_volume: bool = True,
         min_roi_frac: float = 1e-5,
         min_roi_voxels_deep: int = 8,
         token_dropout: float = 0.05,
@@ -136,6 +173,11 @@ class ContourAwareROITokenBackbone(nn.Module):
         self.normalize = bool(normalize)
         self.use_multiscale = bool(use_multiscale)
         self.mask_interp = str(mask_interp)
+        self.roi_support_threshold = float(roi_support_threshold)
+        self.roi_support_fallback_threshold = float(roi_support_fallback_threshold)
+        self.roi_support_fallback_relmax = float(roi_support_fallback_relmax)
+        self.include_roi_volume = bool(include_roi_volume)
+        self.include_shell_volume = bool(include_shell_volume)
         self.min_roi_frac = float(min_roi_frac)
         self.min_roi_voxels_deep = int(max(min_roi_voxels_deep, 0))
         self.token_dropout = float(max(token_dropout, 0.0))
@@ -171,7 +213,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         )
 
         self.gap = nn.AdaptiveAvgPool3d(1)
-        self.attn_pool = AttnPool3D(mask_bias=float(attn_mask_bias))
+        self.attn_pool = AttnPool3D(mask_bias=float(attn_mask_bias), mask_mode=str(attn_pool_mask_mode))
         self.loc_pt_head = nn.LazyConv3d(1, kernel_size=1, bias=True)
         self.loc_ln_head = nn.LazyConv3d(1, kernel_size=1, bias=True)
         self.presence_head = nn.Sequential(
@@ -209,6 +251,7 @@ class ContourAwareROITokenBackbone(nn.Module):
 
         self.token_type = nn.Parameter(torch.zeros(self.max_tokens, self.token_dim))
         nn.init.normal_(self.token_type, std=0.02)
+
     @property
     def out_dim(self) -> int:
         return int(self.token_dim)
@@ -226,6 +269,45 @@ class ContourAwareROITokenBackbone(nn.Module):
         k = 2 * int(radius) + 1
         dil = F.max_pool3d(mask.clamp(0, 1), kernel_size=k, stride=1, padding=int(radius))
         return (dil - mask).clamp(0, 1)
+
+    def _roi_support_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Forward-pass hard ROI support with a soft straight-through gradient."""
+
+        soft = mask.clamp(0, 1)
+        threshold = float(self.roi_support_threshold)
+        if threshold <= 0.0:
+            hard = (soft > 0).to(dtype=soft.dtype)
+        else:
+            hard = (soft >= threshold).to(dtype=soft.dtype)
+
+        flat_hard = hard.flatten(1)
+        empty = flat_hard.sum(dim=1) <= 0.0
+        rel = float(self.roi_support_fallback_relmax)
+        fallback_floor = float(self.roi_support_fallback_threshold)
+        if empty.any() and (rel > 0.0 or fallback_floor > 0.0):
+            flat_soft = soft.flatten(1)
+            maxv = flat_soft.max(dim=1).values.view(-1, 1, 1, 1, 1)
+            fallback_thr = maxv.new_full(maxv.shape, fallback_floor)
+            if rel > 0.0:
+                fallback_thr = torch.maximum(fallback_thr, maxv * rel)
+            fallback = (soft >= fallback_thr).to(dtype=soft.dtype)
+            min_peak = max(fallback_floor, threshold * rel)
+            has_signal = (maxv.flatten() >= min_peak).to(torch.bool)
+            use_fallback = empty & has_signal
+            if use_fallback.any():
+                hard = torch.where(use_fallback.view(-1, 1, 1, 1, 1), fallback, hard)
+
+        return hard.detach() - soft.detach() + soft
+
+    @staticmethod
+    def _apply_native_support_floor(
+        support: torch.Tensor,
+        native_mask: Optional[torch.Tensor],
+        alpha: float,
+    ) -> torch.Tensor:
+        if native_mask is None or float(alpha) <= 0.0:
+            return support
+        return torch.maximum(support, native_mask.clamp(0, 1).to(device=support.device, dtype=support.dtype))
 
     def _ct_looks_hu(self, ct: torch.Tensor) -> bool:
         cmin = float(ct.amin().item())
@@ -341,16 +423,20 @@ class ContourAwareROITokenBackbone(nn.Module):
         ln_prob = F.interpolate(loc_ln_prob, size=tuple(int(x) for x in ct.shape[2:]), mode="trilinear", align_corners=False).clamp(0, 1)
 
         alpha = float(max(0.0, min(1.0, teacher_force_alpha)))
-        pt_used = pt_prob
-        ln_used = ln_prob
+        pt_soft_used = pt_prob
+        ln_soft_used = ln_prob
         if alpha > 0.0 and mask_pt is not None and mask_ln is not None:
-            pt_used = (1.0 - alpha) * pt_prob + alpha * mask_pt
-            ln_used = (1.0 - alpha) * ln_prob + alpha * mask_ln
-        pt_used = pt_used.clamp(0, 1)
-        ln_used = ln_used.clamp(0, 1)
+            pt_soft_used = (1.0 - alpha) * pt_prob + alpha * mask_pt
+            ln_soft_used = (1.0 - alpha) * ln_prob + alpha * mask_ln
+        pt_soft_used = pt_soft_used.clamp(0, 1)
+        ln_soft_used = ln_soft_used.clamp(0, 1)
+        pt_used = self._roi_support_mask(pt_soft_used)
+        ln_used = self._roi_support_mask(ln_soft_used)
+        pt_used = self._apply_native_support_floor(pt_used, mask_pt, alpha)
+        ln_used = self._apply_native_support_floor(ln_used, mask_ln, alpha)
 
-        raw_pt_source = mask_pt if (mask_pt is not None and alpha > 0.0) else pt_used
-        raw_ln_source = mask_ln if (mask_ln is not None and alpha > 0.0) else ln_used
+        raw_pt_source = mask_pt if (mask_pt is not None and alpha > 0.0) else pt_soft_used
+        raw_ln_source = mask_ln if (mask_ln is not None and alpha > 0.0) else ln_soft_used
         pt_present_raw = self._raw_present(raw_pt_source, self.raw_mask_threshold)
         ln_present_raw = self._raw_present(raw_ln_source, self.raw_mask_threshold)
 
@@ -359,12 +445,10 @@ class ContourAwareROITokenBackbone(nn.Module):
         )
         pt_presence_logits = presence_logits[:, 0]
         ln_presence_logits = presence_logits[:, 1]
-        pt_presence_pred = torch.sigmoid(pt_presence_logits) > 0.5
-        ln_presence_pred = torch.sigmoid(ln_presence_logits) > 0.5
 
         pres_global = torch.ones(B, device=ct.device, dtype=torch.bool)
-        pres_pt_intra = self._presence_from_mask(pt_used, deep_size) | pt_presence_pred
-        pres_ln_intra = self._presence_from_mask(ln_used, deep_size) | ln_presence_pred
+        pres_pt_intra = self._presence_from_mask(pt_used, deep_size)
+        pres_ln_intra = self._presence_from_mask(ln_used, deep_size)
 
         pt_shell = self._soft_shell(pt_used, self.pt_shell_radius)
         ln_shell = self._soft_shell(ln_used, self.ln_shell_radius)
@@ -375,8 +459,8 @@ class ContourAwareROITokenBackbone(nn.Module):
         if self.fallback_peri_to_intra:
             pt_shell_sum = pt_shell.sum(dim=(2, 3, 4)).squeeze(1)
             ln_shell_sum = ln_shell.sum(dim=(2, 3, 4)).squeeze(1)
-            bad_pt_peri = pt_present_raw & (pt_shell_sum <= 0.0)
-            bad_ln_peri = ln_present_raw & (ln_shell_sum <= 0.0)
+            bad_pt_peri = pres_pt_intra & (pt_shell_sum <= 0.0)
+            bad_ln_peri = pres_ln_intra & (ln_shell_sum <= 0.0)
             if bad_pt_peri.any():
                 pt_shell = pt_shell.clone()
                 pt_shell[bad_pt_peri] = pt_used[bad_pt_peri]
@@ -384,8 +468,8 @@ class ContourAwareROITokenBackbone(nn.Module):
                 ln_shell = ln_shell.clone()
                 ln_shell[bad_ln_peri] = ln_used[bad_ln_peri]
 
-        pres_pt_peri = self._presence_from_mask(pt_shell, deep_size) | pt_presence_pred
-        pres_ln_peri = self._presence_from_mask(ln_shell, deep_size) | ln_presence_pred
+        pres_pt_peri = self._presence_from_mask(pt_shell, deep_size)
+        pres_ln_peri = self._presence_from_mask(ln_shell, deep_size)
         pres = torch.stack([pres_global, pres_pt_intra, pres_pt_peri, pres_ln_intra, pres_ln_peri], dim=1)
 
         if self.force_presence_from_raw_masks:
@@ -408,22 +492,22 @@ class ContourAwareROITokenBackbone(nn.Module):
             g = torch.cat([g, self.attn_pool(fdeep, None)], dim=1)
         token_inputs.append(g)
 
-        vecs = [ct_stats_in_mask(ct, pt_used)]
+        vecs = [ct_stats_in_mask(ct, pt_used, include_volume=self.include_roi_volume)]
         for f in use_feats:
             vecs.append(masked_mean(f, interp_mask(pt_used, size=f.shape[2:], mode=self.mask_interp)))
         token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt_used, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
 
-        vecs = [ct_stats_in_mask(ct, pt_shell)]
+        vecs = [ct_stats_in_mask(ct, pt_shell, include_volume=self.include_shell_volume)]
         for f in use_feats:
             vecs.append(masked_mean(f, interp_mask(pt_shell, size=f.shape[2:], mode=self.mask_interp)))
         token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(pt_shell, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
 
-        vecs = [ct_stats_in_mask(ct, ln_used)]
+        vecs = [ct_stats_in_mask(ct, ln_used, include_volume=self.include_roi_volume)]
         for f in use_feats:
             vecs.append(masked_mean(f, interp_mask(ln_used, size=f.shape[2:], mode=self.mask_interp)))
         token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln_used, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
 
-        vecs = [ct_stats_in_mask(ct, ln_shell)]
+        vecs = [ct_stats_in_mask(ct, ln_shell, include_volume=self.include_shell_volume)]
         for f in use_feats:
             vecs.append(masked_mean(f, interp_mask(ln_shell, size=f.shape[2:], mode=self.mask_interp)))
         token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln_shell, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
@@ -460,6 +544,8 @@ class ContourAwareROITokenBackbone(nn.Module):
             "loc_ln_logits": loc_ln_logits,
             "pt_prob": pt_prob,
             "ln_prob": ln_prob,
+            "pt_soft_used": pt_soft_used,
+            "ln_soft_used": ln_soft_used,
             "pt_used": pt_used,
             "ln_used": ln_used,
             "pt_shell": pt_shell,
