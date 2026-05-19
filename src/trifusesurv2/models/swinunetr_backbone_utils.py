@@ -157,6 +157,29 @@ def _find_patch_embed_weight_key(sd: Dict[str, torch.Tensor]) -> Optional[str]:
     return None
 
 
+def _normalize_pretrained_key(key: str) -> str:
+    """Normalize common full-model checkpoint prefixes for backbone-only loads."""
+
+    k = str(key)
+    changed = True
+    prefixes = (
+        "module.",
+        "model.",
+        "net.",
+        "network.",
+        "img_backbone.",
+        "backbone.",
+        "backbone_shared.",
+    )
+    while changed:
+        changed = False
+        for prefix in prefixes:
+            if k.startswith(prefix):
+                k = k[len(prefix) :]
+                changed = True
+    return k
+
+
 def _inflate_patch_embed_in_channels(cleaned_sd: Dict[str, torch.Tensor], model_sd: Dict[str, torch.Tensor], *, verbose: bool = True):
     k_ckpt = _find_patch_embed_weight_key(cleaned_sd)
     k_mod = _find_patch_embed_weight_key(model_sd)
@@ -203,12 +226,7 @@ def load_swinunetr_pretrained(
 
     cleaned: Dict[str, torch.Tensor] = {}
     for k, v in state_in.items():
-        k2 = k
-        if k2.startswith("module."):
-            k2 = k2[len("module."):]
-        if k2.startswith("backbone."):
-            k2 = k2[len("backbone."):]
-        cleaned[k2] = v
+        cleaned[_normalize_pretrained_key(k)] = v
 
     model_sd = backbone.state_dict()
     if allow_inflate_patch_embed:

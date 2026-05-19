@@ -399,7 +399,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
     This dataset intentionally does not use the legacy flat ``ClinicalEncoder``
     or ``RadiomicsEncoder`` outputs.  It returns semantic clinical token
     matrices, habitat radiomics token matrices, optional node tokens, and an
-    optional topology token for the 2.0.11 habitat-aligned model.
+    optional topology token for the 2.1.3 habitat-aligned model.
     """
 
     def __init__(

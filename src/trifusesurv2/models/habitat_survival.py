@@ -216,7 +216,7 @@ class HabitatAlignedSurvivalModel(nn.Module):
     """Habitat-aligned fusion model with optional node-set support.
 
     Defaults are aligned to what the established package can actually emit
-    today: 5 image habitats and 4 radiomics habitats.
+    today: contour-aware image habitats and 4 radiomics habitats.
     """
 
     def __init__(

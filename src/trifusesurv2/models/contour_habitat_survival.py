@@ -1,8 +1,8 @@
 """Wrapper model bridging a contour-aware image backbone to the habitat-aligned head.
 
 The established TriFuseSurv pipeline feeds raw CT images [B,1,D,H,W] through
-``ContourAwareROITokenBackbone`` which internally produces 5 habitat tokens
-[B,5,out_dim] + presence [B,5].  ``HabitatAlignedSurvivalModel`` expects
+``ContourAwareROITokenBackbone`` which internally produces habitat tokens
+[B,N,out_dim] + presence [B,N].  ``HabitatAlignedSurvivalModel`` expects
 pre-computed tokens.  This wrapper owns both and exposes a forward() signature
 compatible with the existing training loop call pattern:
 

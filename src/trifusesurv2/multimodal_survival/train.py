@@ -990,6 +990,8 @@ def make_param_groups(
     lr_backbone: float,
     lr_lora: float,
     lr_head: float,
+    lr_clin: float,
+    lr_rad: float,
     wd_backbone: float,
     wd_lora: float,
     wd_head: float,
@@ -1071,15 +1073,15 @@ def make_param_groups(
 
     clin_d, clin_n = _split_decay_no_decay(clin_named)
     if clin_d:
-        groups.append({"params": clin_d, "lr": float(lr_head), "weight_decay": float(wd_clin)})
+        groups.append({"params": clin_d, "lr": float(lr_clin), "weight_decay": float(wd_clin)})
     if clin_n:
-        groups.append({"params": clin_n, "lr": float(lr_head), "weight_decay": 0.0})
+        groups.append({"params": clin_n, "lr": float(lr_clin), "weight_decay": 0.0})
 
     rad_d, rad_n = _split_decay_no_decay(rad_named)
     if rad_d:
-        groups.append({"params": rad_d, "lr": float(lr_head), "weight_decay": float(wd_rad)})
+        groups.append({"params": rad_d, "lr": float(lr_rad), "weight_decay": float(wd_rad)})
     if rad_n:
-        groups.append({"params": rad_n, "lr": float(lr_head), "weight_decay": 0.0})
+        groups.append({"params": rad_n, "lr": float(lr_rad), "weight_decay": 0.0})
 
     if not groups:
         raise RuntimeError("[OPT] No trainable parameters found.")
@@ -1192,6 +1194,40 @@ def predict_risk_scores(
         for i, p in enumerate(payload["pid"]):
             out[str(p)] = float(risks[i])
     return out
+
+
+def _finite_float(value: Any, default: float = float("nan")) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        return float(default)
+    return out if np.isfinite(out) else float(default)
+
+
+def validation_composite_score(metrics: Dict[str, float]) -> float:
+    """Performance-first scalar for checkpoint selection without fold-wise z-scores."""
+
+    auc = _finite_float(metrics.get("auc_1095d", metrics.get("auc_mean")))
+    c_idx = _finite_float(metrics.get("c_index"))
+    ibs = _finite_float(metrics.get("ibs"))
+    nll = _finite_float(metrics.get("nll"))
+    terms: List[float] = []
+    if np.isfinite(auc):
+        terms.append(float(auc))
+    if np.isfinite(c_idx):
+        terms.append(0.5 * float(c_idx))
+    if np.isfinite(ibs):
+        terms.append(-0.5 * float(ibs))
+    if np.isfinite(nll):
+        terms.append(-0.05 * float(nll))
+    return float(sum(terms)) if terms else float("nan")
+
+
+def report_metric_value(metrics: Dict[str, float], metric_name: str) -> float:
+    name = str(metric_name or "").strip()
+    if name in {"composite", "val_composite", "composite_score", "validation_composite"}:
+        return validation_composite_score(metrics)
+    return _finite_float(metrics.get(name))
 
 
 def generate_epoch_gradcam_probe(
@@ -2679,7 +2715,17 @@ def run_one_fold(
     contour_ckpt = _resolve_contour_warmstart_ckpt_for_fold(args, fold=int(fold))
     if contour_ckpt and os.path.isfile(contour_ckpt):
         print(f"[SWIN][CONTOUR][fold {fold:02d}] loading contour-aware warm-start: {contour_ckpt}")
-        load_swinunetr_pretrained(_image_backbone_module(base_model).backbone_shared, contour_ckpt, verbose=True, allow_inflate_patch_embed=True)
+        load_stats = load_swinunetr_pretrained(
+            _image_backbone_module(base_model).backbone_shared,
+            contour_ckpt,
+            verbose=True,
+            allow_inflate_patch_embed=True,
+        )
+        if int(load_stats.get("matched", 0)) <= 0:
+            raise RuntimeError(
+                "[SWIN][CONTOUR] contour warm-start matched zero backbone tensors. "
+                f"Check checkpoint/model compatibility: {contour_ckpt}"
+            )
     else:
         print(f"[SWIN][CONTOUR][fold {fold:02d}] contour-aware warm-start not found/disabled: {contour_ckpt}")
 
@@ -2727,6 +2773,8 @@ def run_one_fold(
         lr_backbone=float(args.lr_backbone),
         lr_lora=float(args.lr_lora),
         lr_head=float(args.lr_head),
+        lr_clin=float(args.lr_clin),
+        lr_rad=float(args.lr_rad),
         wd_backbone=float(args.wd_backbone),
         wd_lora=float(args.wd_lora),
         wd_head=float(args.wd_head),
@@ -2753,6 +2801,13 @@ def run_one_fold(
     fully_restored = False
     if args.resume:
         start_epoch, fully_restored = load_checkpoint(ckpt_last, int(fold_num_time_bins), model, optimizer, scaler, scheduler, ema, swa)
+        if start_epoch > 1 and (not fully_restored) and (not bool(getattr(args, "allow_partial_resume", False))):
+            raise RuntimeError(
+                f"[CKPT] checkpoint resume from {ckpt_last} was only partially restored. "
+                "Refusing to continue at a later epoch with mismatched/missing optimizer, scheduler, "
+                "EMA/SWA, or model state. Start fresh with --no_resume, or pass --allow_partial_resume "
+                "to explicitly warm-start from the model weights."
+            )
         ema_started = bool(ema is not None and int(getattr(ema, "num_updates", 0)) > 0)
         resumed_epoch = int(start_epoch) - 1
         resumed_from_localization_only_warmup = (
@@ -2793,7 +2848,7 @@ def run_one_fold(
     }
 
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
-    save_full_training_state = bool(args.resume) and (not bool(args.lightweight_checkpoints))
+    save_full_training_state = not bool(args.lightweight_checkpoints)
     scheduler_warmup_pause_reported = False
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
@@ -2864,40 +2919,36 @@ def run_one_fold(
             roi_focus_live_csv=roi_focus_live_csv,
         )
 
-        # In DDP, evaluate on the unwrapped model (no all-reduce) and only on rank 0.
-        # All ranks must reach this point — we do NOT skip or barrier here.
+        # In DDP, every rank runs the same no-collective eval path before the next
+        # train epoch, so non-main ranks cannot race ahead into DDP collectives.
         _eval_model = mm if _DDP_INITIALIZED else model
-        if not _DDP_INITIALIZED or _is_main_process():
-            epoch_eval_teacher_force_alpha = _survival_teacher_force_alpha(teacher_force_alpha, args)
-            train_met = evaluate_model(
-                _eval_model, tr_eval_loader, device,
-                endpoint=str(args.endpoint),
-                risk_horizon_days=float(args.risk_horizon_days),
-                time_bin_width_days=float(args.time_bin_width_days),
-                eval_times_days=args.auc_times_days,
-                dca_thresholds=args.dca_thresholds,
-                autocast_ctx=autocast_ctx,
-                teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
-            )
-            val_met = evaluate_model(
-                _eval_model, va_loader, device,
-                endpoint=str(args.endpoint),
-                risk_horizon_days=float(args.risk_horizon_days),
-                time_bin_width_days=float(args.time_bin_width_days),
-                eval_times_days=args.auc_times_days,
-                dca_thresholds=args.dca_thresholds,
-                autocast_ctx=autocast_ctx,
-                teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
-            )
-        else:
-            train_met = {"c_index": 0.0, "ibs": 0.0, "auc_mean": 0.0, "nb_mean": 0.0, "nll": 0.0}
-            val_met = {"c_index": 0.0, "ibs": 0.0, "auc_mean": 0.0, "nb_mean": 0.0, "nll": 0.0}
+        epoch_eval_teacher_force_alpha = _survival_teacher_force_alpha(teacher_force_alpha, args)
+        train_met = evaluate_model(
+            _eval_model, tr_eval_loader, device,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+            time_bin_width_days=float(args.time_bin_width_days),
+            eval_times_days=args.auc_times_days,
+            dca_thresholds=args.dca_thresholds,
+            autocast_ctx=autocast_ctx,
+            teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
+        )
+        val_met = evaluate_model(
+            _eval_model, va_loader, device,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+            time_bin_width_days=float(args.time_bin_width_days),
+            eval_times_days=args.auc_times_days,
+            dca_thresholds=args.dca_thresholds,
+            autocast_ctx=autocast_ctx,
+            teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
+        )
 
         if swa is not None and epoch >= int(args.swa_start_epoch):
             if ((epoch - int(args.swa_start_epoch)) % int(args.swa_update_freq_epochs)) == 0:
                 swa.update(mm)
 
-        report_metric = float(val_met.get(args.report_metric, float("nan")))
+        report_metric = report_metric_value(val_met, str(args.report_metric))
         if is_main_rank:
             print(
                 f"[fold {fold:02d}] epoch {epoch:03d} | "
@@ -2960,6 +3011,8 @@ def run_one_fold(
             "val_auc_mean": float(val_met.get("auc_mean", float("nan"))),
             "train_nb_mean": float(train_met.get("nb_mean", float("nan"))),
             "val_nb_mean": float(val_met.get("nb_mean", float("nan"))),
+            "train_composite_score": validation_composite_score(train_met),
+            "val_composite_score": validation_composite_score(val_met),
         }
         for roi_name in ROI_FOCUS_ROI_NAMES:
             for suffix in ROI_FOCUS_METRIC_NAMES:
@@ -3056,28 +3109,25 @@ def run_one_fold(
         # A barrier would deadlock when rank 0 eval takes >600s (NCCL timeout).
 
     # Post-training evaluation: use unwrapped model to avoid DDP collectives.
+    # In DDP, all ranks still run eval so non-main ranks cannot start the next
+    # fold while rank 0 is still evaluating/exporting this one.
     _eval_model = mm if _DDP_INITIALIZED else model
-    if _DDP_INITIALIZED and not _is_main_process():
-        # Non-rank-0: skip final eval/export, return minimal result.
-        return {
-            "fold": int(fold),
-            "export_suffix": "skip",
-            "export_risks": {},
-            "test_metrics_export": {},
-            "test_metrics_last": None,
-            "test_metrics_ema": None,
-            "test_metrics_swa": None,
-            "test_metrics_best": None,
-            "n_test": int(len(te_df)),
-            "num_time_bins": int(fold_num_time_bins),
-            "train_max_time_days": float(fold_max_time),
-        }
 
     final_eval_teacher_force_alpha = _survival_teacher_force_alpha(
         _teacher_force_alpha_for_epoch(int(args.epochs), args),
         args,
     )
 
+    last_val = evaluate_model(
+        _eval_model, va_loader, device,
+        endpoint=str(args.endpoint),
+        risk_horizon_days=float(args.risk_horizon_days),
+        time_bin_width_days=float(args.time_bin_width_days),
+        eval_times_days=args.auc_times_days,
+        dca_thresholds=args.dca_thresholds,
+        autocast_ctx=autocast_ctx,
+        teacher_force_alpha=float(final_eval_teacher_force_alpha),
+    )
     last_test = evaluate_model(
         _eval_model, te_loader, device,
         endpoint=str(args.endpoint),
@@ -3099,9 +3149,20 @@ def run_one_fold(
     )
 
     ema_test = None
+    ema_val = None
     risks_ema = None
     if ema is not None:
         with ema.apply_to(mm):
+            ema_val = evaluate_model(
+                _eval_model, va_loader, device,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+                time_bin_width_days=float(args.time_bin_width_days),
+                eval_times_days=args.auc_times_days,
+                dca_thresholds=args.dca_thresholds,
+                autocast_ctx=autocast_ctx,
+                teacher_force_alpha=float(final_eval_teacher_force_alpha),
+            )
             ema_test = evaluate_model(
                 _eval_model, te_loader, device,
                 endpoint=str(args.endpoint),
@@ -3123,9 +3184,20 @@ def run_one_fold(
             )
 
     swa_test = None
+    swa_val = None
     risks_swa = None
     if swa is not None and swa.n_averaged > 0:
         with swa.apply_to(mm):
+            swa_val = evaluate_model(
+                _eval_model, va_loader, device,
+                endpoint=str(args.endpoint),
+                risk_horizon_days=float(args.risk_horizon_days),
+                time_bin_width_days=float(args.time_bin_width_days),
+                eval_times_days=args.auc_times_days,
+                dca_thresholds=args.dca_thresholds,
+                autocast_ctx=autocast_ctx,
+                teacher_force_alpha=float(final_eval_teacher_force_alpha),
+            )
             swa_test = evaluate_model(
                 _eval_model, te_loader, device,
                 endpoint=str(args.endpoint),
@@ -3147,8 +3219,19 @@ def run_one_fold(
             )
 
     best_test = None
+    best_val = None
     risks_best = None
     if load_model_state_only(ckpt_best, _eval_model):
+        best_val = evaluate_model(
+            _eval_model, va_loader, device,
+            endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days),
+            time_bin_width_days=float(args.time_bin_width_days),
+            eval_times_days=args.auc_times_days,
+            dca_thresholds=args.dca_thresholds,
+            autocast_ctx=autocast_ctx,
+            teacher_force_alpha=float(final_eval_teacher_force_alpha),
+        )
         best_test = evaluate_model(
             _eval_model, te_loader, device,
             endpoint=str(args.endpoint),
@@ -3169,8 +3252,51 @@ def run_one_fold(
             teacher_force_alpha=float(final_eval_teacher_force_alpha),
         )
 
-    export_suffix = "ema" if (risks_ema is not None) else "last"
-    export_risks = risks_ema if (risks_ema is not None) else risks_last
+    candidates: Dict[str, Dict[str, Any]] = {
+        "last": {"val": last_val, "test": last_test, "risks": risks_last, "checkpoint": "last"},
+    }
+    if risks_ema is not None and ema_val is not None and ema_test is not None:
+        candidates["ema"] = {"val": ema_val, "test": ema_test, "risks": risks_ema, "checkpoint": "last"}
+    if risks_swa is not None and swa_val is not None and swa_test is not None:
+        candidates["swa"] = {"val": swa_val, "test": swa_test, "risks": risks_swa, "checkpoint": "last"}
+    if risks_best is not None and best_val is not None and best_test is not None:
+        candidates["best"] = {"val": best_val, "test": best_test, "risks": risks_best, "checkpoint": "best"}
+
+    if str(getattr(args, "export_policy", "best_val")).strip().lower() == "ema_priority":
+        export_suffix = "ema" if "ema" in candidates else "last"
+    else:
+        scored = [
+            (report_metric_value(info["val"], str(args.report_metric)), suffix)
+            for suffix, info in candidates.items()
+        ]
+        finite_scored = [(score, suffix) for score, suffix in scored if np.isfinite(score)]
+        export_suffix = max(finite_scored, key=lambda item: item[0])[1] if finite_scored else "last"
+
+    is_final_export_rank = (not _DDP_INITIALIZED) or _is_main_process()
+    if not is_final_export_rank:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return {
+            "fold": int(fold),
+            "export_suffix": "skip",
+            "export_risks": {},
+            "test_metrics_export": {},
+            "test_metrics_last": None,
+            "test_metrics_ema": None,
+            "test_metrics_swa": None,
+            "test_metrics_best": None,
+            "n_test": int(len(te_df)),
+            "num_time_bins": int(fold_num_time_bins),
+            "train_max_time_days": float(fold_max_time),
+        }
+
+    export_risks = candidates[export_suffix]["risks"]
+    export_checkpoint = str(candidates[export_suffix]["checkpoint"])
+    print(
+        f"[fold {fold:02d}] export_policy={str(getattr(args, 'export_policy', 'best_val'))} "
+        f"selected={export_suffix} val_{args.report_metric}="
+        f"{report_metric_value(candidates[export_suffix]['val'], str(args.report_metric)):.4f}"
+    )
     risk_metadata_base = {
         "fold": int(fold),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
@@ -3181,6 +3307,8 @@ def run_one_fold(
         "survival_uses_teacher_forced_masks": bool(args.survival_uses_teacher_forced_masks),
         "include_roi_volume": bool(args.include_roi_volume),
         "include_shell_volume": bool(args.include_shell_volume),
+        "export_policy": str(getattr(args, "export_policy", "best_val")),
+        "validation_report_metric": str(args.report_metric),
     }
     save_endpoint_risk_dict_csv(
         export_risks,
@@ -3188,17 +3316,27 @@ def run_one_fold(
         id_col=args.id_col,
         endpoint=str(args.endpoint),
         risk_horizon_days=float(args.risk_horizon_days),
-        metadata={**risk_metadata_base, "checkpoint": "last", "weights": str(export_suffix)},
+        metadata={
+            **risk_metadata_base,
+            "checkpoint": export_checkpoint,
+            "weights": str(export_suffix),
+            "validation_report_metric_value": report_metric_value(candidates[export_suffix]["val"], str(args.report_metric)),
+        },
     )
 
-    if risks_best is not None:
+    if risks_best is not None and export_suffix != "best":
         save_endpoint_risk_dict_csv(
             risks_best,
             fold_dir / "test_risks_best.csv",
             id_col=args.id_col,
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
-            metadata={**risk_metadata_base, "checkpoint": "best", "weights": "best"},
+            metadata={
+                **risk_metadata_base,
+                "checkpoint": "best",
+                "weights": "best",
+                "validation_report_metric_value": report_metric_value(best_val or {}, str(args.report_metric)),
+            },
         )
 
     if args.export_extra_risks:
@@ -3208,7 +3346,12 @@ def run_one_fold(
             id_col=args.id_col,
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
-            metadata={**risk_metadata_base, "checkpoint": "last", "weights": "last"},
+            metadata={
+                **risk_metadata_base,
+                "checkpoint": "last",
+                "weights": "last",
+                "validation_report_metric_value": report_metric_value(last_val, str(args.report_metric)),
+            },
         )
         if risks_ema is not None:
             save_endpoint_risk_dict_csv(
@@ -3217,7 +3360,12 @@ def run_one_fold(
                 id_col=args.id_col,
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
-                metadata={**risk_metadata_base, "checkpoint": "last", "weights": "ema"},
+                metadata={
+                    **risk_metadata_base,
+                    "checkpoint": "last",
+                    "weights": "ema",
+                    "validation_report_metric_value": report_metric_value(ema_val or {}, str(args.report_metric)),
+                },
             )
         if risks_swa is not None:
             save_endpoint_risk_dict_csv(
@@ -3226,10 +3374,17 @@ def run_one_fold(
                 id_col=args.id_col,
                 endpoint=str(args.endpoint),
                 risk_horizon_days=float(args.risk_horizon_days),
-                metadata={**risk_metadata_base, "checkpoint": "last", "weights": "swa"},
+                metadata={
+                    **risk_metadata_base,
+                    "checkpoint": "last",
+                    "weights": "swa",
+                    "validation_report_metric_value": report_metric_value(swa_val or {}, str(args.report_metric)),
+                },
             )
 
-    met_export = ema_test if (export_suffix == "ema") else last_test
+    met_export = candidates[export_suffix]["test"]
+    if _DDP_INITIALIZED and torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
     return {
         "fold": int(fold),
         "export_suffix": export_suffix,
@@ -3302,6 +3457,11 @@ def parse_args():
     p.add_argument("--resume", dest="resume", action="store_true")
     p.add_argument("--no_resume", dest="resume", action="store_false")
     p.set_defaults(resume=True)
+    p.add_argument(
+        "--allow_partial_resume",
+        action="store_true",
+        help="Allow continuing from a checkpoint whose optimizer/scheduler/EMA/SWA or some model keys did not restore.",
+    )
     p.add_argument("--lightweight_checkpoints", dest="lightweight_checkpoints", action="store_true")
     p.add_argument("--no_lightweight_checkpoints", dest="lightweight_checkpoints", action="store_false")
     p.set_defaults(lightweight_checkpoints=False)
@@ -3320,6 +3480,8 @@ def parse_args():
     p.add_argument("--lr_backbone", type=float, default=1e-3)
     p.add_argument("--lr_lora", type=float, default=5e-4)
     p.add_argument("--lr_head", type=float, default=1e-4)
+    p.add_argument("--lr_clin", type=float, default=-1.0, help="Clinical projection LR; defaults to --lr_head when negative.")
+    p.add_argument("--lr_rad", type=float, default=-1.0, help="Radiomics projection LR; defaults to --lr_head when negative.")
 
     p.add_argument("--wd_backbone", type=float, default=0.0)
     p.add_argument("--wd_lora", type=float, default=0.0)
@@ -3348,7 +3510,19 @@ def parse_args():
     p.add_argument("--risk_horizon_days", type=float, default=3 * 365.0)
     p.add_argument("--auc_times_days", type=float, nargs="*", default=[365.0, 3 * 365.0, 5 * 365.0])
     p.add_argument("--dca_thresholds", type=float, nargs="*", default=[0.1, 0.2, 0.3])
-    p.add_argument("--report_metric", type=str, default="auc_1095d")
+    p.add_argument(
+        "--report_metric",
+        type=str,
+        default="auc_1095d",
+        help="Validation metric for best checkpoints. Use 'composite' for AUC/C-index/IBS/NLL composite.",
+    )
+    p.add_argument(
+        "--export_policy",
+        type=str,
+        default="best_val",
+        choices=["best_val", "ema_priority"],
+        help="Choose final exported risks by validation metric, or keep legacy EMA-first behavior.",
+    )
     p.add_argument("--primary_surv_loss_weight", type=float, default=1.0)
     p.add_argument("--aux_surv_loss_weight", type=float, default=0.35)
 
@@ -3590,6 +3764,13 @@ def parse_args():
         args.gate_hidden_dim = int(args.fused_dim)
     if int(args.rad_hidden_dim) <= 0:
         args.rad_hidden_dim = int(max(512, 2 * int(args.fused_dim)))
+    if float(args.lr_clin) < 0.0:
+        args.lr_clin = float(args.lr_head)
+    if float(args.lr_rad) < 0.0:
+        args.lr_rad = float(args.lr_head)
+    for name in ("lr_backbone", "lr_lora", "lr_head", "lr_clin", "lr_rad"):
+        if float(getattr(args, name)) < 0.0:
+            raise ValueError(f"--{name} must be >= 0.")
     if float(args.primary_surv_loss_weight) < 0.0 or float(args.aux_surv_loss_weight) < 0.0:
         raise ValueError("--primary_surv_loss_weight and --aux_surv_loss_weight must be >= 0.")
     if not (0.0 <= float(args.mask_guidance_alpha) <= 1.0):
@@ -3629,9 +3810,10 @@ def parse_args():
 
 
 def _validate_event_column(meta: pd.DataFrame, event_col: str):
-    vals = sorted(set(pd.to_numeric(meta[event_col], errors="coerce").dropna().astype(int).tolist()))
-    bad = [v for v in vals if v not in (0, 1)]
-    if bad:
+    vals = pd.to_numeric(meta[event_col], errors="coerce").dropna()
+    bad_mask = ~vals.isin([0, 1, 0.0, 1.0])
+    if bool(bad_mask.any()):
+        bad = sorted(set(vals.loc[bad_mask].astype(float).tolist()))
         raise RuntimeError(f"[DATA] {event_col} must be binary {{0,1}}. Found other values: {bad[:20]}")
 
 
@@ -3684,6 +3866,8 @@ def main():
         f"mask_focus_lambda={float(args.mask_focus_lambda):.2f} "
         f"roi_focus_warmup={int(args.roi_focus_warmup_epochs)} "
         f"warmup_surv_w={float(args.roi_focus_warmup_survival_weight):.2f} "
+        f"report_metric={str(args.report_metric)} "
+        f"export_policy={str(args.export_policy)} "
         f"use_multiscale={bool(args.use_multiscale)} "
         f"loc_feature_from_end={int(args.loc_feature_from_end)} "
         f"loc_balanced_bce={bool(args.loc_balanced_bce)} "
@@ -3723,6 +3907,15 @@ def main():
     primary_valid = _valid_survival_mask_frame(meta, args.time_col, args.event_col)
     if not bool(primary_valid.any()):
         raise RuntimeError(f"[DATA] no rows with valid primary endpoint labels for endpoint={args.endpoint}")
+    if not bool(args.keep_unmatched_survival):
+        dropped_primary_missing = int((~primary_valid).sum())
+        if dropped_primary_missing > 0:
+            print(
+                f"[DATA] dropping {dropped_primary_missing} row(s) without valid primary "
+                f"{str(args.endpoint).upper()} labels. Use --keep_unmatched_survival to keep aux-only rows."
+            )
+            meta = meta.loc[primary_valid].copy()
+            primary_valid = pd.Series(True, index=meta.index)
 
     resolved_img_size, data_shape = resolve_img_size_against_data(
         meta,
@@ -3789,7 +3982,17 @@ def main():
         "survival_heads": list(SURVIVAL_ENDPOINTS),
         "primary_surv_loss_weight": float(args.primary_surv_loss_weight),
         "aux_surv_loss_weight": float(args.aux_surv_loss_weight),
+        "report_metric": str(args.report_metric),
+        "export_policy": str(args.export_policy),
+        "fold_export_suffixes": [str(r.get("export_suffix", "")) for r in fold_results],
         "device": str(device),
+        "lr_backbone": float(args.lr_backbone),
+        "lr_head": float(args.lr_head),
+        "lr_clin": float(args.lr_clin),
+        "lr_rad": float(args.lr_rad),
+        "grad_accumulation_steps": int(args.grad_accumulation_steps),
+        "time_bin_width_days": float(args.time_bin_width_days),
+        "hazard_smooth_lambda": float(args.hazard_smooth_lambda),
         "use_lora": bool(args.use_lora),
         "lora_scope": str(args.lora_scope),
         "lora_r": int(args.lora_r),

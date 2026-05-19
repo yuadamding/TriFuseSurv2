@@ -21,6 +21,7 @@ IMAGE_HABITATS: tuple[str, ...] = (
     "pt_peri",
     "ln_intra",
     "ln_peri",
+    "shape_spatial",
 )
 
 # Future extension point: explicit multiscale peri habitats in millimeters.
@@ -33,6 +34,7 @@ FUTURE_IMAGE_HABITATS_MM: tuple[str, ...] = (
     "ln_intra",
     "ln_peri_3mm",
     "ln_peri_10mm",
+    "shape_spatial",
 )
 
 # Established radiomics habitats from the current package.
@@ -69,6 +71,7 @@ DEFAULT_HABITAT_CLINICAL_CONTEXT: Mapping[str, tuple[str, ...]] = {
     "pt_peri": ("biology", "host"),
     "ln_intra": ("burden", "host"),
     "ln_peri": ("burden", "host"),
+    "shape_spatial": ("burden", "host"),
 }
 
 TREATMENT_AWARE_HABITAT_CLINICAL_CONTEXT: Mapping[str, tuple[str, ...]] = {

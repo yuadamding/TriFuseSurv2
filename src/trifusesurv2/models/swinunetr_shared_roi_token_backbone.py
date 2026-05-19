@@ -7,12 +7,13 @@ Recommended end-to-end survival image path:
 - ROI tokenization from explicit PT/LN support masks
 - optional teacher forcing with GT PT/LN masks during training
 
-Tokens (B,5,Dtok):
+Tokens (B,6,Dtok):
   0: GLOBAL
   1: PT_INTRA
   2: PT_PERI
   3: LN_INTRA
   4: LN_PERI
+  5: SHAPE_SPATIAL
 """
 
 from __future__ import annotations
@@ -72,6 +73,78 @@ def ct_stats_global(ct: torch.Tensor, body: Optional[torch.Tensor] = None, eps: 
     sd = torch.sqrt(var + 1e-8)
     frac = w.mean(dim=(2, 3, 4))
     return torch.cat([mu, sd, frac], dim=1)
+
+
+def mask_centroid_zyx(mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Weighted centroid in normalized z/y/x coordinates without materializing grids."""
+
+    w = mask.clamp(0, 1)
+    B, _, D, H, W = w.shape
+    denom = w.sum(dim=(2, 3, 4)).squeeze(1).clamp_min(eps)
+    z_coord = torch.linspace(-1.0, 1.0, D, device=w.device, dtype=w.dtype)
+    y_coord = torch.linspace(-1.0, 1.0, H, device=w.device, dtype=w.dtype)
+    x_coord = torch.linspace(-1.0, 1.0, W, device=w.device, dtype=w.dtype)
+    z_mass = w.sum(dim=(3, 4)).squeeze(1)
+    y_mass = w.sum(dim=(2, 4)).squeeze(1)
+    x_mass = w.sum(dim=(2, 3)).squeeze(1)
+    cz = (z_mass * z_coord.view(1, D)).sum(dim=1) / denom
+    cy = (y_mass * y_coord.view(1, H)).sum(dim=1) / denom
+    cx = (x_mass * x_coord.view(1, W)).sum(dim=1) / denom
+    return torch.stack([cz, cy, cx], dim=1).view(B, 3)
+
+
+def shape_spatial_features(
+    pt_mask: torch.Tensor,
+    pt_shell: torch.Tensor,
+    ln_mask: torch.Tensor,
+    ln_shell: torch.Tensor,
+    body: Optional[torch.Tensor],
+    pt_present: torch.Tensor,
+    ln_present: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Compact ROI burden and PT-LN relation features for survival prediction."""
+
+    pt_frac = pt_mask.clamp(0, 1).mean(dim=(2, 3, 4))
+    ln_frac = ln_mask.clamp(0, 1).mean(dim=(2, 3, 4))
+    pt_shell_frac = pt_shell.clamp(0, 1).mean(dim=(2, 3, 4))
+    ln_shell_frac = ln_shell.clamp(0, 1).mean(dim=(2, 3, 4))
+    if body is None:
+        body_frac = pt_frac.new_ones(pt_frac.shape)
+    else:
+        body_frac = body.clamp(0, 1).mean(dim=(2, 3, 4))
+
+    pt_cent = mask_centroid_zyx(pt_mask, eps=eps)
+    ln_cent = mask_centroid_zyx(ln_mask, eps=eps)
+    both_present = (pt_present & ln_present).to(pt_mask.dtype).view(-1, 1)
+    delta = (ln_cent - pt_cent) * both_present
+    distance = torch.linalg.vector_norm(delta, ord=2, dim=1, keepdim=True)
+    ratio_ln_pt = torch.log1p(ln_frac / pt_frac.clamp_min(eps))
+
+    presence = torch.cat(
+        [
+            pt_present.to(pt_mask.dtype).view(-1, 1),
+            ln_present.to(pt_mask.dtype).view(-1, 1),
+            both_present,
+        ],
+        dim=1,
+    )
+    return torch.cat(
+        [
+            pt_frac,
+            ln_frac,
+            pt_shell_frac,
+            ln_shell_frac,
+            body_frac,
+            ratio_ln_pt,
+            pt_cent,
+            ln_cent,
+            delta,
+            distance,
+            presence,
+        ],
+        dim=1,
+    )
 
 
 class AttnPool3D(nn.Module):
@@ -225,7 +298,7 @@ class ContourAwareROITokenBackbone(nn.Module):
             nn.GELU(),
             nn.Linear(64, 2),
         )
-        self.max_tokens = 5
+        self.max_tokens = 6
         self.token_dim = int(token_dim)
 
         token_mlp_hidden_dim = int(token_mlp_hidden_dim)
@@ -474,7 +547,11 @@ class ContourAwareROITokenBackbone(nn.Module):
 
         pres_pt_peri = self._presence_from_mask(pt_shell, deep_size)
         pres_ln_peri = self._presence_from_mask(ln_shell, deep_size)
-        pres = torch.stack([pres_global, pres_pt_intra, pres_pt_peri, pres_ln_intra, pres_ln_peri], dim=1)
+        pres_shape_spatial = pres_pt_intra | pres_ln_intra
+        pres = torch.stack(
+            [pres_global, pres_pt_intra, pres_pt_peri, pres_ln_intra, pres_ln_peri, pres_shape_spatial],
+            dim=1,
+        )
 
         if self.force_presence_from_raw_masks:
             pres = pres.clone()
@@ -483,6 +560,7 @@ class ContourAwareROITokenBackbone(nn.Module):
             pres[:, 2] = pt_present_raw
             pres[:, 3] = ln_present_raw
             pres[:, 4] = ln_present_raw
+            pres[:, 5] = pt_present_raw | ln_present_raw
 
         token_inputs: List[torch.Tensor] = []
 
@@ -515,6 +593,18 @@ class ContourAwareROITokenBackbone(nn.Module):
         for f in use_feats:
             vecs.append(masked_mean(f, interp_mask(ln_shell, size=f.shape[2:], mode=self.mask_interp)))
         token_inputs.append(torch.cat(vecs + [self.attn_pool(fdeep, interp_mask(ln_shell, size=fdeep.shape[2:], mode=self.mask_interp))], dim=1))
+
+        token_inputs.append(
+            shape_spatial_features(
+                pt_used,
+                pt_shell,
+                ln_used,
+                ln_shell,
+                body,
+                pres_pt_intra,
+                pres_ln_intra,
+            )
+        )
 
         hs: List[torch.Tensor] = []
         for i in range(self.max_tokens):

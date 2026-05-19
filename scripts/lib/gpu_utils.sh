@@ -149,10 +149,8 @@ if missing:
     )
     sys.stderr.write(
         "[error] activate the package environment first, or install runtime dependencies with:\n"
-        "  bash scripts/install_env.sh\n"
-        "  source .venv/bin/activate\n"
-        "or:\n"
-        "  USE_ACTIVE_ENV=1 bash scripts/install_env.sh\n"
+        "  cd TriFuseSurv2_package\n"
+        "  python3 -m pip install -e .\n"
         "\n"
         "[note] python -m pip install -e . --no-deps only refreshes TriFuseSurv2 code; "
         "it does not install missing modules.\n"
