@@ -18,7 +18,7 @@ from trifusesurv2.schema import (
     TREATMENT_AWARE_CLINICAL_TOKEN_GROUPS,
 )
 
-__version__ = "2.1.3"
+__version__ = "2.1.5"
 
 __all__ = [
     "__version__",

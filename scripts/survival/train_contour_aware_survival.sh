@@ -38,32 +38,33 @@ CONTOUR_WARMSTART_CKPT="${CONTOUR_WARMSTART_CKPT:-${SHARED_SEG_PRETRAIN_CKPT:-}}
 CONTOUR_WARMSTART_DIR="${CONTOUR_WARMSTART_DIR:-${SHARED_SEG_PRETRAIN_DIR:-}}"
 CONTOUR_WARMSTART_NAME="${CONTOUR_WARMSTART_NAME:-${SHARED_SEG_PRETRAIN_NAME:-best.pt}}"
 
-if [[ "$CUDA_DEVICE" == "auto" || -z "$CUDA_DEVICE" ]]; then
-  if ! CUDA_DEVICE="$(tf_detect_gpu_ids_by_free_mem "${MIN_FREE_GPU_MB:-1}" | head -n 1)"; then
-    CUDA_DEVICE=""
-  fi
-  if [[ -z "$CUDA_DEVICE" ]]; then
-    if ! CUDA_DEVICE="$(tf_first_gpu_id)"; then
-      echo "[error] could not detect an available GPU for contour-aware survival training." >&2
-      exit 1
+if [[ "$REQUESTED_DEVICE" == "cpu" ]]; then
+  JOB_DEVICE="cpu"
+else
+  if [[ "$CUDA_DEVICE" == "auto" || -z "$CUDA_DEVICE" ]]; then
+    if ! CUDA_DEVICE="$(tf_detect_gpu_ids_by_free_mem "${MIN_FREE_GPU_MB:-1}" | head -n 1)"; then
+      CUDA_DEVICE=""
+    fi
+    if [[ -z "$CUDA_DEVICE" ]]; then
+      if ! CUDA_DEVICE="$(tf_first_gpu_id)"; then
+        echo "[error] could not detect an available GPU for contour-aware survival training." >&2
+        exit 1
+      fi
     fi
   fi
-fi
 
-if [[ -z "$CUDA_DEVICE" ]]; then
-    echo "[error] could not detect an available GPU for contour-aware survival training." >&2
-    exit 1
-fi
-export CUDA_VISIBLE_DEVICES="$CUDA_DEVICE"
-
-if [[ "$REQUESTED_DEVICE" != "cpu" ]]; then
+  if [[ -z "$CUDA_DEVICE" ]]; then
+      echo "[error] could not detect an available GPU for contour-aware survival training." >&2
+      exit 1
+  fi
+  export CUDA_VISIBLE_DEVICES="$CUDA_DEVICE"
   tf_require_torch_cuda
-fi
 
-if [[ -n "$REQUESTED_DEVICE" && "$REQUESTED_DEVICE" != "cuda" && "$REQUESTED_DEVICE" != "cuda:0" ]]; then
-  echo "[warn] overriding DEVICE=$REQUESTED_DEVICE to cuda:0 inside CUDA_VISIBLE_DEVICES=$CUDA_DEVICE for single-GPU isolation"
+  if [[ -n "$REQUESTED_DEVICE" && "$REQUESTED_DEVICE" != "cuda" && "$REQUESTED_DEVICE" != "cuda:0" ]]; then
+    echo "[warn] overriding DEVICE=$REQUESTED_DEVICE to cuda:0 inside CUDA_VISIBLE_DEVICES=$CUDA_DEVICE for single-GPU isolation"
+  fi
+  JOB_DEVICE="cuda:0"
 fi
-JOB_DEVICE="cuda:0"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-50}"
 RESUME="${RESUME:-0}"
 ALLOW_PARTIAL_RESUME="${ALLOW_PARTIAL_RESUME:-0}"
@@ -124,6 +125,8 @@ HAZARD_SMOOTH_LAMBDA="${HAZARD_SMOOTH_LAMBDA:-0.003}"
 EMA_DECAY="${EMA_DECAY:-0.9995}"
 PT_SHELL_RADIUS="${PT_SHELL_RADIUS:-5}"
 LN_SHELL_RADIUS="${LN_SHELL_RADIUS:-5}"
+PT_SHELL_THICKNESS_MM="${PT_SHELL_THICKNESS_MM:-10.0}"
+LN_SHELL_THICKNESS_MM="${LN_SHELL_THICKNESS_MM:-0.0}"
 SHELL_BODY_FROM_CT="${SHELL_BODY_FROM_CT:-1}"
 BODY_CT_THR="${BODY_CT_THR:-0.02}"
 BODY_CT_THR_HU="${BODY_CT_THR_HU:--500.0}"
@@ -184,6 +187,31 @@ if [[ "$CACHE_VOLUMES" == "1" || "$CACHE_VOLUMES" == "true" || "$CACHE_VOLUMES" 
   cache_args=(--cache_volumes)
 fi
 
+TRAIN_ARG_SOURCE="${TRAIN_ARG_SOURCE:-$PACKAGE_DIR/src/trifusesurv2/multimodal_survival/train.py}"
+train_supports_arg() {
+  local arg_name="$1"
+  [[ -f "$TRAIN_ARG_SOURCE" ]] && grep -q -- "$arg_name" "$TRAIN_ARG_SOURCE"
+}
+
+eval_batch_args=()
+if train_supports_arg "--eval_batch_size"; then
+  eval_batch_args=(--eval_batch_size "$EVAL_BATCH_SIZE")
+else
+  echo "[warn] train.py does not support --eval_batch_size; skipping that fast-path arg. Check package/source version if this was unexpected." >&2
+fi
+
+nonfinite_check_args=()
+if train_supports_arg "--nonfinite_check_every_batches"; then
+  nonfinite_check_args=(--nonfinite_check_every_batches "$NONFINITE_CHECK_EVERY_BATCHES")
+else
+  echo "[warn] train.py does not support --nonfinite_check_every_batches; using its default strict loss check." >&2
+fi
+
+if (( ${#sanitize_args[@]} > 0 )) && ! train_supports_arg "--sync_sanitize_checks"; then
+  echo "[warn] train.py does not support --sync_sanitize_checks; skipping that debug arg." >&2
+  sanitize_args=()
+fi
+
 read -r -a depths_args <<< "$DEPTHS"
 read -r -a num_heads_args <<< "$NUM_HEADS"
 read -r -a img_size_args <<< "$IMG_SIZE"
@@ -212,7 +240,7 @@ echo "[train] loc_feature_from_end=$LOC_FEATURE_FROM_END loc_loss_pt=$LOC_LOSS_P
 echo "[train] batch_size=$BATCH_SIZE eval_batch_size=$EVAL_BATCH_SIZE grad_accum=$GRAD_ACCUMULATION_STEPS use_checkpoint=$USE_CHECKPOINT feature_size=$FEATURE_SIZE depths=($DEPTHS) heads=($NUM_HEADS)"
 echo "[train] fused_dim=$FUSED_DIM img_token_dim=$IMG_TOKEN_DIM v2_dim=$V2_MODEL_DIM v2_layers=$V2_TRANSFORMER_LAYERS v2_heads=$V2_NUM_HEADS"
 echo "[train] lr_backbone=$LR_BACKBONE lr_head=$LR_HEAD lr_clin=$LR_CLIN lr_rad=$LR_RAD aux_w=$AUX_SURV_LOSS_WEIGHT hazard_smooth=$HAZARD_SMOOTH_LAMBDA"
-echo "[train] time_bin_width_days=$TIME_BIN_WIDTH_DAYS report_metric=$REPORT_METRIC export_policy=$EXPORT_POLICY pt_shell=$PT_SHELL_RADIUS ln_shell=$LN_SHELL_RADIUS img_size=($IMG_SIZE)"
+echo "[train] time_bin_width_days=$TIME_BIN_WIDTH_DAYS report_metric=$REPORT_METRIC export_policy=$EXPORT_POLICY pt_shell_mm=$PT_SHELL_THICKNESS_MM pt_shell_radius_fallback=$PT_SHELL_RADIUS ln_shell_mm=$LN_SHELL_THICKNESS_MM ln_shell_radius=$LN_SHELL_RADIUS img_size=($IMG_SIZE)"
 echo "[train] python_bin=$PYTHON_BIN workers=$WORKERS eval_workers=$EVAL_WORKERS prefetch_factor=$PREFETCH_FACTOR cache_volumes=$CACHE_VOLUMES volume_cache_size=$VOLUME_CACHE_SIZE roi_focus_every_batches=$ROI_FOCUS_EVERY_BATCHES nonfinite_check_every_batches=$NONFINITE_CHECK_EVERY_BATCHES shell_body_from_ct=$SHELL_BODY_FROM_CT body_ct_thr=$BODY_CT_THR sync_sanitize_checks=$SYNC_SANITIZE_CHECKS omp=$OMP_NUM_THREADS mkl=$MKL_NUM_THREADS itk=$ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS tf32_override=${NVIDIA_TF32_OVERRIDE:-<unset>}"
 
 PYTHONUNBUFFERED=1 \
@@ -231,7 +259,7 @@ PYTHONUNBUFFERED=1 \
   --img_size "${img_size_args[@]}" \
   --epochs "$EPOCHS" \
   --batch_size "$BATCH_SIZE" \
-  --eval_batch_size "$EVAL_BATCH_SIZE" \
+  "${eval_batch_args[@]}" \
   --grad_accumulation_steps "$GRAD_ACCUMULATION_STEPS" \
   --workers "$WORKERS" \
   --eval_workers "$EVAL_WORKERS" \
@@ -239,7 +267,7 @@ PYTHONUNBUFFERED=1 \
   "${cache_args[@]}" \
   --volume_cache_size "$VOLUME_CACHE_SIZE" \
   --roi_focus_every_batches "$ROI_FOCUS_EVERY_BATCHES" \
-  --nonfinite_check_every_batches "$NONFINITE_CHECK_EVERY_BATCHES" \
+  "${nonfinite_check_args[@]}" \
   --log_every_batches "$LOG_EVERY_BATCHES" \
   "${resume_args[@]}" \
   "${partial_resume_args[@]}" \
@@ -276,6 +304,8 @@ PYTHONUNBUFFERED=1 \
   --swa_update_freq_epochs 1 \
   --pt_shell_radius "$PT_SHELL_RADIUS" \
   --ln_shell_radius "$LN_SHELL_RADIUS" \
+  --pt_shell_thickness_mm "$PT_SHELL_THICKNESS_MM" \
+  --ln_shell_thickness_mm "$LN_SHELL_THICKNESS_MM" \
   --radiomics_pca_total_components "$RADIOMICS_PCA_TOTAL_COMPONENTS" \
   --img_token_dim "$IMG_TOKEN_DIM" \
   --token_mlp_hidden_dim "$TOKEN_MLP_HIDDEN_DIM" \

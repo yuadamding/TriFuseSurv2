@@ -152,24 +152,26 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         self.spatial_augment = bool(spatial_augment)
         self.cache_volumes = bool(cache_volumes)
         self.volume_cache_size = max(0, int(volume_cache_size))
-        self._volume_cache: OrderedDict[tuple[str, bool], np.ndarray] = OrderedDict()
+        self._volume_cache: OrderedDict[tuple[str, bool], tuple[np.ndarray, np.ndarray]] = OrderedDict()
 
-    def _load_nii(self, path: str, *, binary_mask: bool = False) -> np.ndarray:
+    def _load_nii(self, path: str, *, binary_mask: bool = False, return_spacing: bool = False):
         key = (str(path), bool(binary_mask))
         if self.cache_volumes and self.volume_cache_size > 0 and key in self._volume_cache:
-            arr = self._volume_cache.pop(key)
-            self._volume_cache[key] = arr
-            return arr
+            arr, spacing_dhw = self._volume_cache.pop(key)
+            self._volume_cache[key] = (arr, spacing_dhw)
+            return (arr, spacing_dhw.copy()) if return_spacing else arr
         img = sitk.ReadImage(str(path))
         arr = sitk.GetArrayFromImage(img).astype(np.float32)
+        spacing_xyz = tuple(float(x) for x in img.GetSpacing())
+        spacing_dhw = np.asarray([spacing_xyz[2], spacing_xyz[1], spacing_xyz[0]], dtype=np.float32)
         if binary_mask:
             arr = (arr > 0.5).astype(np.float32)
         arr = np.ascontiguousarray(arr)
         if self.cache_volumes and self.volume_cache_size > 0:
-            self._volume_cache[key] = arr
+            self._volume_cache[key] = (arr, spacing_dhw)
             while len(self._volume_cache) > self.volume_cache_size:
                 self._volume_cache.popitem(last=False)
-        return arr
+        return (arr, spacing_dhw.copy()) if return_spacing else arr
 
     def _zeros_like_expected(self) -> np.ndarray:
         shape = self.expected_dhw if self.expected_dhw is not None else (128, 256, 256)
@@ -201,8 +203,9 @@ class _BasePreprocessedSurvivalDataset(Dataset):
             ct = self._zeros_like_expected()
             pt = self._zeros_like_expected()
             ln = self._zeros_like_expected()
+            voxel_spacing_dhw = np.ones((3,), dtype=np.float32)
         else:
-            ct = self._load_nii(ct_path)
+            ct, voxel_spacing_dhw = self._load_nii(ct_path, return_spacing=True)
             pt = self._load_nii(pt_path, binary_mask=True)
             ln = self._load_nii(ln_path, binary_mask=True)
 
@@ -243,13 +246,25 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         else:
             rad_t = torch.zeros(0, dtype=torch.float32)
 
-        return ct, pt, ln, t, e, np.asarray(t_multi, dtype=np.float32), np.asarray(e_multi, dtype=np.float32), clin_t, rad_t, pid
+        return (
+            ct,
+            pt,
+            ln,
+            t,
+            e,
+            np.asarray(t_multi, dtype=np.float32),
+            np.asarray(e_multi, dtype=np.float32),
+            clin_t,
+            rad_t,
+            pid,
+            np.asarray(voxel_spacing_dhw, dtype=np.float32),
+        )
 
 class PreprocessedContourAwareDataset(_BasePreprocessedSurvivalDataset):
     """CT-only dataset with PT/LN masks kept as localization labels."""
 
     def __getitem__(self, idx):
-        ct, pt, ln, t, e, t_multi, e_multi, clin_t, rad_t, pid = self._load_case(idx)
+        ct, pt, ln, t, e, t_multi, e_multi, clin_t, rad_t, pid, voxel_spacing_dhw = self._load_case(idx)
         return (
             _torch_float32(ct[None, ...]),
             _torch_float32(pt[None, ...]),
@@ -261,6 +276,7 @@ class PreprocessedContourAwareDataset(_BasePreprocessedSurvivalDataset):
             clin_t,
             rad_t,
             pid,
+            _torch_float32(voxel_spacing_dhw),
         )
 
 
@@ -422,7 +438,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
     This dataset intentionally does not use the legacy flat ``ClinicalEncoder``
     or ``RadiomicsEncoder`` outputs.  It returns semantic clinical token
     matrices, habitat radiomics token matrices, optional node tokens, and an
-    optional topology token for the 2.1.3 habitat-aligned model.
+    optional topology token for the 2.1.5 habitat-aligned model.
     """
 
     def __init__(
@@ -492,7 +508,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
 
     def __getitem__(self, idx):
         row = self.meta.iloc[idx]
-        ct, pt, ln, t, e, t_multi, e_multi, _clin_t, _rad_t, pid = self._load_case(idx)
+        ct, pt, ln, t, e, t_multi, e_multi, _clin_t, _rad_t, pid, voxel_spacing_dhw = self._load_case(idx)
 
         clin_mat, clin_presence = self.clinical_token_encoder.encode_row_token_matrix(row)
         clin_mat = _pad_or_trunc_matrix_dim(clin_mat, self.clinical_token_dim)
@@ -530,6 +546,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
             "node_presence": _torch_float32(node_presence),
             "topology_token": _torch_float32(topology_vec[None, :]),
             "topology_presence": torch.tensor([topology_present], dtype=torch.float32),
+            "voxel_spacing_dhw": _torch_float32(voxel_spacing_dhw),
             "pid": pid,
         }
 

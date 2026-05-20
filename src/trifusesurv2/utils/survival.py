@@ -278,6 +278,8 @@ def discrete_time_nll_loss(
         raise ValueError(f"num_time_bins={num_time_bins} but hazards_logits.shape[1]={K}")
     if times.shape[0] != B or events.shape[0] != B:
         raise ValueError("times/events must have same batch size as hazards_logits")
+    if int(B) == 0:
+        return hazards_logits.sum() * 0.0
 
     bw = float(time_bin_width)
     bw = max(bw, 1e-6)
@@ -293,28 +295,13 @@ def discrete_time_nll_loss(
 
     cum_log1m = torch.cumsum(log1m_h, dim=1)      # (B,K)
 
-    is_event = (events == 1.0)
-    is_cens = ~is_event
-
-    total_loglik = hazards_logits.new_zeros(())
-
-    if is_event.any():
-        event_rows = torch.nonzero(is_event, as_tuple=False).view(-1)
-        k = bin_idx[is_event]
-        pre = torch.zeros_like(k, dtype=hazards_logits.dtype, device=device)
-        has_pre = (k > 0)
-        if has_pre.any():
-            pre_rows = event_rows[has_pre]
-            pre_cols = (k - 1)[has_pre]
-            pre[has_pre] = cum_log1m[pre_rows, pre_cols]
-        ll = pre + log_h[event_rows, k]
-        total_loglik = total_loglik + ll.sum()
-
-    if is_cens.any():
-        cens_rows = torch.nonzero(is_cens, as_tuple=False).view(-1)
-        k = bin_idx[is_cens]
-        ll = cum_log1m[cens_rows, k]
-        total_loglik = total_loglik + ll.sum()
+    row_idx = torch.arange(B, device=device)
+    pre_idx = (bin_idx - 1).clamp_min(0)
+    pre_event = cum_log1m[row_idx, pre_idx]
+    pre_event = torch.where(bin_idx > 0, pre_event, torch.zeros_like(pre_event))
+    event_loglik = pre_event + log_h[row_idx, bin_idx]
+    cens_loglik = cum_log1m[row_idx, bin_idx]
+    total_loglik = torch.where(events == 1.0, event_loglik, cens_loglik).sum()
 
     loss = -total_loglik / float(B)
     return torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)

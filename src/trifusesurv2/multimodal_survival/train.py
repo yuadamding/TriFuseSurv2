@@ -33,6 +33,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from trifusesurv2.models.swinunetr_backbone_utils import load_swinunetr_pretrained
+from trifusesurv2.models.swinunetr_shared_roi_token_backbone import soft_shell_around_mask
 from trifusesurv2.models.survival_model import (
     SwinUNETRTokenMoEDiscrete,
     SURVIVAL_ENDPOINTS,
@@ -421,6 +422,7 @@ def _unpack_surv_batch(batch):
             node_presence=batch.get("node_presence"),
             topology_token=batch.get("topology_token"),
             topology_presence=batch.get("topology_presence"),
+            voxel_spacing_dhw=batch.get("voxel_spacing_dhw"),
             pid=batch["pid"],
         )
     if len(batch) == 6:
@@ -432,6 +434,21 @@ def _unpack_surv_batch(batch):
     if len(batch) == 10:
         x, mask_pt, mask_ln, t, e, t_all, e_all, clin, rad, pid = batch
         return dict(x=x, mask_pt=mask_pt, mask_ln=mask_ln, t=t, e=e, t_all=t_all, e_all=e_all, clin=clin, rad=rad, pid=pid)
+    if len(batch) == 11:
+        x, mask_pt, mask_ln, t, e, t_all, e_all, clin, rad, pid, voxel_spacing_dhw = batch
+        return dict(
+            x=x,
+            mask_pt=mask_pt,
+            mask_ln=mask_ln,
+            t=t,
+            e=e,
+            t_all=t_all,
+            e_all=e_all,
+            clin=clin,
+            rad=rad,
+            voxel_spacing_dhw=voxel_spacing_dhw,
+            pid=pid,
+        )
     if len(batch) == 14:
         x, mask_pt, mask_ln, t, e, t_all, e_all, clin, clin_pres, rad, rad_pres, topo, topo_pres, pid = batch
         return dict(
@@ -517,10 +534,9 @@ def _drop_grouped_tokens(
     if keep_at_least_one:
         had_any = pres.any(dim=1)
         empty_after = had_any & (~new_pres.any(dim=1))
-        if empty_after.any():
-            first_present = pres.to(torch.int64).argmax(dim=1)
-            rows = torch.nonzero(empty_after, as_tuple=False).flatten()
-            new_pres[rows, first_present[rows]] = True
+        first_present = pres.to(torch.int64).argmax(dim=1)
+        restore = F.one_hot(first_present, num_classes=int(pres.shape[1])).to(torch.bool)
+        new_pres = new_pres | (restore & empty_after.unsqueeze(1))
     return tokens * new_pres.unsqueeze(-1).to(tokens.dtype), new_pres
 
 
@@ -581,6 +597,7 @@ def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_a
                 radiomics_tokens=rad,
                 mask_pt=_to_optional_device_tensor(payload.get("mask_pt"), device),
                 mask_ln=_to_optional_device_tensor(payload.get("mask_ln"), device),
+                voxel_spacing_dhw=payload.get("voxel_spacing_dhw"),
                 clinical_presence=clin_pres,
                 radiomics_presence=rad_pres,
                 node_tokens=_prep_optional_token_tensor(payload, "node_tokens", device) if node_enabled else None,
@@ -599,6 +616,7 @@ def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_a
                 radiomics=rad,
                 mask_pt=_to_optional_device_tensor(payload.get("mask_pt"), device),
                 mask_ln=_to_optional_device_tensor(payload.get("mask_ln"), device),
+                voxel_spacing_dhw=payload.get("voxel_spacing_dhw"),
                 teacher_force_alpha=float(teacher_force_alpha),
                 return_gate=False,
             )
@@ -677,9 +695,9 @@ def _endpoint_survival_losses(
     *,
     time_bin_width_days: float,
     num_time_bins: int,
-) -> Tuple[Dict[str, torch.Tensor], Dict[str, int]]:
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
     losses: Dict[str, torch.Tensor] = {}
-    counts: Dict[str, int] = {}
+    counts: Dict[str, torch.Tensor] = {}
     available_heads = int(t_all.shape[1]) if t_all.ndim >= 2 else 1
 
     for idx, endpoint in enumerate(SURVIVAL_ENDPOINTS):
@@ -691,9 +709,7 @@ def _endpoint_survival_losses(
         t_ep = t_all[:, idx].to(logits.device)
         e_ep = e_all[:, idx].to(logits.device)
         valid = _valid_survival_mask(t_ep, e_ep)
-        counts[endpoint] = int(valid.sum().item())
-        if not bool(valid.any().item()):
-            continue
+        counts[endpoint] = valid.to(dtype=logits.dtype).sum()
         losses[endpoint] = H.discrete_time_nll_loss(
             logits[valid],
             t_ep[valid],
@@ -707,7 +723,7 @@ def _endpoint_survival_losses(
 
 def _weighted_multitask_mean(
     values_by_endpoint: Dict[str, torch.Tensor],
-    counts_by_endpoint: Dict[str, int],
+    counts_by_endpoint: Dict[str, Any],
     *,
     primary_endpoint: str,
     primary_weight: float,
@@ -715,22 +731,28 @@ def _weighted_multitask_mean(
     ref_tensor: torch.Tensor,
 ) -> torch.Tensor:
     total = None
-    total_weight = 0.0
+    total_weight = None
     primary_key = str(primary_endpoint).strip().upper()
     for endpoint, value in values_by_endpoint.items():
-        count = float(counts_by_endpoint.get(endpoint, 0))
-        if count <= 0.0:
-            continue
+        count_raw = counts_by_endpoint.get(endpoint, 0)
+        if torch.is_tensor(count_raw):
+            count = count_raw.to(device=ref_tensor.device, dtype=ref_tensor.dtype)
+        else:
+            count = ref_tensor.new_tensor(float(count_raw))
         endpoint_weight = float(primary_weight if endpoint == primary_key else aux_weight)
         if endpoint_weight <= 0.0:
             continue
-        combined_weight = endpoint_weight * count
+        combined_weight = count * endpoint_weight
         total = (value * combined_weight) if total is None else (total + (value * combined_weight))
-        total_weight += combined_weight
+        total_weight = combined_weight if total_weight is None else (total_weight + combined_weight)
 
-    if total is None or total_weight <= 0.0:
+    if total is None or total_weight is None:
         return ref_tensor.new_tensor(float("nan"))
-    return total / float(total_weight)
+    return torch.where(
+        total_weight > 0.0,
+        total / total_weight.clamp_min(1.0),
+        ref_tensor.new_tensor(float("nan")),
+    )
 
 
 def _multitask_survival_loss(
@@ -931,29 +953,30 @@ def _prob_mass_inside_target_loss_from_probs(
     target_f = target_bin.flatten(1)
     target_sum = target_f.sum(dim=1)
     present = target_sum > float(eps)
-    if not bool(present.any().item()):
-        return probs.new_tensor(0.0)
     prob_inside = (prob_f * target_f).sum(dim=1)
     prob_total = prob_f.sum(dim=1).clamp_min(float(eps))
     mass_inside = (prob_inside / prob_total).clamp_min(float(eps))
-    return -torch.log(mass_inside[present]).mean()
+    present_f = present.to(dtype=prob.dtype)
+    return (-torch.log(mass_inside) * present_f).sum() / present_f.sum().clamp_min(1.0)
 
 
 def _peritumoral_shell_target(
     mask: torch.Tensor,
     *,
     radius: int,
+    thickness_mm: float = 0.0,
+    voxel_spacing_dhw: Optional[torch.Tensor] = None,
     body: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Native-space shell around a GT ROI, matching the backbone shell token."""
 
-    r = int(max(0, radius))
     m = mask.float().clamp(0, 1)
-    if r <= 0:
-        shell = m.new_zeros(m.shape)
-    else:
-        k = 2 * r + 1
-        shell = (F.max_pool3d(m, kernel_size=k, stride=1, padding=r) - m).clamp(0, 1)
+    shell = soft_shell_around_mask(
+        m,
+        radius=int(radius),
+        thickness_mm=float(thickness_mm),
+        voxel_spacing_dhw=voxel_spacing_dhw,
+    )
     if body is not None:
         b = body.float().clamp(0, 1)
         if tuple(int(x) for x in b.shape[2:]) != tuple(int(x) for x in shell.shape[2:]):
@@ -1359,6 +1382,7 @@ def generate_epoch_gradcam_probe(
                 x,
                 mask_pt=mask_pt,
                 mask_ln=mask_ln,
+                voxel_spacing_dhw=payload.get("voxel_spacing_dhw"),
                 teacher_force_alpha=float(teacher_force_alpha),
                 return_aux=True,
                 return_cam_features=True,
@@ -1558,6 +1582,7 @@ def train_one_epoch(
     mask_support_pos_weight_cap: float,
     mask_focus_lambda: float,
     pt_shell_radius: int,
+    pt_shell_thickness_mm: float,
     loc_bce_weight: float,
     loc_dice_weight: float,
     loc_balanced_bce: bool,
@@ -1685,6 +1710,7 @@ def train_one_epoch(
         rad = _prep_optional_token_tensor(payload, "rad", device) if v2_mode else _prep_optional_tensor(payload, "rad", device)
         mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
         mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
+        voxel_spacing_dhw = payload.get("voxel_spacing_dhw")
         batches_since_step += 1
         batch_roi_focus: Dict[str, float] = {}
         last_planned_batch = planned_batches > 0 and batch_idx == planned_batches
@@ -1740,6 +1766,7 @@ def train_one_epoch(
                     logits, aux = model(
                         x, clin, rad,
                         mask_pt=mask_pt, mask_ln=mask_ln,
+                        voxel_spacing_dhw=voxel_spacing_dhw,
                         teacher_force_alpha=float(survival_teacher_force_alpha),
                         return_aux=True,
                         **v2_kwargs,
@@ -1748,6 +1775,7 @@ def train_one_epoch(
                     logits = model(
                         x, clin, rad,
                         mask_pt=mask_pt, mask_ln=mask_ln,
+                        voxel_spacing_dhw=voxel_spacing_dhw,
                         teacher_force_alpha=float(survival_teacher_force_alpha),
                         **v2_kwargs,
                     )
@@ -1761,6 +1789,7 @@ def train_one_epoch(
                     rad,
                     mask_pt=mask_pt,
                     mask_ln=mask_ln,
+                    voxel_spacing_dhw=voxel_spacing_dhw,
                     teacher_force_alpha=float(survival_teacher_force_alpha),
                     return_gate=True,
                     return_aux=True,
@@ -1772,6 +1801,7 @@ def train_one_epoch(
                     rad,
                     mask_pt=mask_pt,
                     mask_ln=mask_ln,
+                    voxel_spacing_dhw=voxel_spacing_dhw,
                     teacher_force_alpha=float(survival_teacher_force_alpha),
                     return_gate=True,
                     return_aux=False,
@@ -1807,6 +1837,7 @@ def train_one_epoch(
                 aux_weight=1.0,
                 ref_tensor=primary_logits,
             )
+            aux_surv_stat = torch.nan_to_num(aux_surv_unweighted, nan=0.0, posinf=0.0, neginf=0.0)
             loss_hazard_smooth = primary_logits.new_tensor(0.0)
             loss_logit_l2 = primary_logits.new_tensor(0.0)
             loss_gate_entropy = primary_logits.new_tensor(0.0)
@@ -1931,6 +1962,8 @@ def train_one_epoch(
                         pt_peri_target = _peritumoral_shell_target(
                             mask_pt,
                             radius=int(pt_shell_radius),
+                            thickness_mm=float(pt_shell_thickness_mm),
+                            voxel_spacing_dhw=voxel_spacing_dhw,
                             body=loc_aux.get("body"),
                         )
                         pt_peri_focus = roi_focus_metrics(
@@ -2002,7 +2035,7 @@ def train_one_epoch(
         _add_stat("loss_total", loss)
         _add_stat("loss_surv_total", loss_surv)
         _add_stat("loss_surv_primary", primary_surv_unweighted)
-        _add_stat("loss_surv_aux", aux_surv_unweighted if aux_endpoint_losses else 0.0)
+        _add_stat("loss_surv_aux", aux_surv_stat if aux_endpoint_losses else 0.0)
         _add_stat("loss_loc_pt", loss_loc_pt)
         _add_stat("loss_loc_ln", loss_loc_ln)
         _add_stat("loss_loc_presence", loss_loc_presence)
@@ -2771,6 +2804,8 @@ def run_one_fold(
 
         pt_shell_radius=int(args.pt_shell_radius),
         ln_shell_radius=int(args.ln_shell_radius),
+        pt_shell_thickness_mm=float(args.pt_shell_thickness_mm),
+        ln_shell_thickness_mm=float(args.ln_shell_thickness_mm),
         shell_body_from_ct=bool(args.shell_body_from_ct),
         body_ct_thr=str(args.body_ct_thr),
         body_ct_thr_hu=float(args.body_ct_thr_hu),
@@ -3018,6 +3053,7 @@ def run_one_fold(
             mask_support_pos_weight_cap=float(args.mask_support_pos_weight_cap),
             mask_focus_lambda=float(args.mask_focus_lambda),
             pt_shell_radius=int(args.pt_shell_radius),
+            pt_shell_thickness_mm=float(args.pt_shell_thickness_mm),
             loc_bce_weight=float(args.loc_bce_weight),
             loc_dice_weight=float(args.loc_dice_weight),
             loc_balanced_bce=bool(args.loc_balanced_bce),
@@ -3804,8 +3840,10 @@ def parse_args():
     p.add_argument("--rad_hidden_dim", type=int, default=0)
     p.add_argument("--rad_proj_dropout_p", type=float, default=0.50)
 
-    p.add_argument("--pt_shell_radius", type=int, default=3)
-    p.add_argument("--ln_shell_radius", type=int, default=3)
+    p.add_argument("--pt_shell_radius", type=int, default=3, help="Fallback PT shell radius in voxels when PT shell thickness in mm is disabled or spacing is unavailable.")
+    p.add_argument("--ln_shell_radius", type=int, default=3, help="LN shell radius in voxels unless --ln_shell_thickness_mm is positive.")
+    p.add_argument("--pt_shell_thickness_mm", type=float, default=10.0, help="Physical PT peritumoral shell thickness in mm. Positive values override --pt_shell_radius when voxel spacing is available.")
+    p.add_argument("--ln_shell_thickness_mm", type=float, default=0.0, help="Optional physical LN peritumoral shell thickness in mm. Nonpositive keeps --ln_shell_radius.")
     p.add_argument("--teacher_force_epochs", type=int, default=0)
     p.add_argument("--teacher_force_start", type=float, default=0.0)
     p.add_argument("--teacher_force_end", type=float, default=0.0)
@@ -3985,6 +4023,8 @@ def parse_args():
         raise ValueError("--roi_support_fallback_threshold must be in [0,1].")
     if float(args.roi_support_fallback_relmax) < 0.0:
         raise ValueError("--roi_support_fallback_relmax must be >= 0.")
+    if float(args.pt_shell_thickness_mm) < 0.0 or float(args.ln_shell_thickness_mm) < 0.0:
+        raise ValueError("--pt_shell_thickness_mm and --ln_shell_thickness_mm must be >= 0.")
 
     args.auc_times_days = [float(x) for x in (args.auc_times_days or [])]
     args.dca_thresholds = [float(x) for x in (args.dca_thresholds or [])]
@@ -4057,6 +4097,8 @@ def main():
         f"export_policy={str(args.export_policy)} "
         f"use_multiscale={bool(args.use_multiscale)} "
         f"loc_feature_from_end={int(args.loc_feature_from_end)} "
+        f"pt_shell_thickness_mm={float(args.pt_shell_thickness_mm):.2f} "
+        f"ln_shell_thickness_mm={float(args.ln_shell_thickness_mm):.2f} "
         f"loc_balanced_bce={bool(args.loc_balanced_bce)} "
         f"mask_support_balanced_bce={bool(args.mask_support_balanced_bce)}"
     )
@@ -4203,6 +4245,10 @@ def main():
         "roi_support_threshold": float(args.roi_support_threshold),
         "roi_support_fallback_threshold": float(args.roi_support_fallback_threshold),
         "roi_support_fallback_relmax": float(args.roi_support_fallback_relmax),
+        "pt_shell_radius": int(args.pt_shell_radius),
+        "ln_shell_radius": int(args.ln_shell_radius),
+        "pt_shell_thickness_mm": float(args.pt_shell_thickness_mm),
+        "ln_shell_thickness_mm": float(args.ln_shell_thickness_mm),
         "include_roi_volume": bool(args.include_roi_volume),
         "include_shell_volume": bool(args.include_shell_volume),
         "loc_loss_pt_lambda": float(args.loc_loss_pt_lambda),

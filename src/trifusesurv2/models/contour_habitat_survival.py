@@ -49,6 +49,7 @@ class ImageTokenBackbone(Protocol):
         *,
         mask_pt: Optional[torch.Tensor],
         mask_ln: Optional[torch.Tensor],
+        voxel_spacing_dhw: Optional[torch.Tensor] = None,
         teacher_force_alpha: float,
         return_aux: bool,
         return_cam_features: bool = False,
@@ -203,6 +204,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         *,
         mask_pt: Optional[torch.Tensor] = None,
         mask_ln: Optional[torch.Tensor] = None,
+        voxel_spacing_dhw: Optional[torch.Tensor] = None,
         teacher_force_alpha: float = 0.0,
         clinical_presence: Optional[torch.Tensor] = None,
         radiomics_presence: Optional[torch.Tensor] = None,
@@ -241,6 +243,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         backbone_kwargs: dict[str, Any] = {
             "mask_pt": mask_pt,
             "mask_ln": mask_ln,
+            "voxel_spacing_dhw": voxel_spacing_dhw,
             "teacher_force_alpha": float(teacher_force_alpha),
             "return_aux": request_bb_aux,
         }

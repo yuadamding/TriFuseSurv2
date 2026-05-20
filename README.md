@@ -72,6 +72,12 @@ The survival model can train on ROI-focused crops instead of the original
 because the model's `pt_peri` and `ln_peri` tokens need real peritumoral CT
 context.
 
+`pt_peri` is defined as a 10 mm primary-tumor peritumoral shell by default
+(`PT_SHELL_THICKNESS_MM=10.0`). The loader reads each cropped NIfTI's physical
+voxel spacing, so the shell remains 10 mm after ROI-crop resampling. The older
+`PT_SHELL_RADIUS` setting is now only the fallback voxel radius when spacing is
+unavailable or physical-shell mode is disabled.
+
 From the workspace root:
 
 ```bash
@@ -137,6 +143,7 @@ ROI constraints on every trial:
 - `MIN_PROB_MASS_INSIDE_GT=0.95`
 - `MIN_SUPPORT_RECALL=0.95`
 - `MIN_SUPPORT_DICE=0.02`
+- `PT_SHELL_THICKNESS_MM=10.0`
 
 It monitors PT, LN, and PT peritumoral ROI support. Results are aggregated into:
 
@@ -198,4 +205,4 @@ survival train/eval/export by default.
   map.
 - `pt_dice`, `ln_dice`, `pt_peri_dice`: support Dice against GT.
 
-`pt_peri_*` refers to the primary-tumor peritumoral shell.
+`pt_peri_*` refers to the 10 mm primary-tumor peritumoral shell.

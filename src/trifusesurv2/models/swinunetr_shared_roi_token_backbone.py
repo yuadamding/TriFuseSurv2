@@ -18,6 +18,7 @@ Tokens (B,6,Dtok):
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -201,6 +202,99 @@ def binary_close(m: torch.Tensor, r: int) -> torch.Tensor:
     return e
 
 
+def _radius_tuple_from_spacing(
+    *,
+    thickness_mm: float,
+    spacing_dhw,
+    fallback_radius: int,
+) -> Tuple[int, int, int]:
+    if float(thickness_mm) <= 0.0:
+        r = int(max(0, fallback_radius))
+        return r, r, r
+    try:
+        vals = [float(x) for x in list(spacing_dhw)[:3]]
+    except Exception:
+        vals = []
+    if len(vals) != 3 or any((not math.isfinite(v)) or v <= 0.0 for v in vals):
+        r = int(max(0, fallback_radius))
+        return r, r, r
+    return tuple(max(1, int(math.ceil(float(thickness_mm) / max(v, 1e-6)))) for v in vals)
+
+
+def soft_shell_around_mask(
+    mask: torch.Tensor,
+    *,
+    radius: int,
+    thickness_mm: float = 0.0,
+    voxel_spacing_dhw: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Differentiable hard-support shell, optionally using physical mm spacing.
+
+    ``voxel_spacing_dhw`` is in array order (z/y/x or D/H/W). When a positive
+    thickness is supplied, each sample is dilated by ceil(thickness_mm / spacing)
+    per axis. This preserves the existing max-pool morphology while making the
+    shell thickness physically meaningful after ROI-crop resampling.
+    """
+
+    m = mask.clamp(0, 1)
+    fallback_radius = int(max(0, radius))
+    if float(thickness_mm) <= 0.0 or voxel_spacing_dhw is None:
+        if fallback_radius <= 0:
+            return m.new_zeros(m.shape)
+        k = 2 * fallback_radius + 1
+        dil = F.max_pool3d(m, kernel_size=k, stride=1, padding=fallback_radius)
+        return (dil - m).clamp(0, 1)
+
+    spacing = voxel_spacing_dhw
+    if torch.is_tensor(spacing):
+        spacing_cpu = spacing.detach().float().cpu()
+    else:
+        spacing_cpu = torch.as_tensor(spacing, dtype=torch.float32)
+    if spacing_cpu.ndim == 1:
+        spacing_cpu = spacing_cpu.view(1, -1)
+    if spacing_cpu.ndim != 2 or int(spacing_cpu.shape[1]) < 3:
+        return soft_shell_around_mask(m, radius=fallback_radius)
+    if int(spacing_cpu.shape[0]) == 1 and int(m.shape[0]) > 1:
+        spacing_cpu = spacing_cpu.expand(int(m.shape[0]), -1)
+    if int(spacing_cpu.shape[0]) != int(m.shape[0]):
+        return soft_shell_around_mask(m, radius=fallback_radius)
+
+    radii = [
+        _radius_tuple_from_spacing(
+            thickness_mm=float(thickness_mm),
+            spacing_dhw=spacing_cpu[i, :3].tolist(),
+            fallback_radius=fallback_radius,
+        )
+        for i in range(int(m.shape[0]))
+    ]
+    if all(r == radii[0] for r in radii):
+        rz, ry, rx = radii[0]
+        if max(rz, ry, rx) <= 0:
+            return m.new_zeros(m.shape)
+        dil = F.max_pool3d(
+            m,
+            kernel_size=(2 * rz + 1, 2 * ry + 1, 2 * rx + 1),
+            stride=1,
+            padding=(rz, ry, rx),
+        )
+        return (dil - m).clamp(0, 1)
+
+    shells = []
+    for i, (rz, ry, rx) in enumerate(radii):
+        one = m[i : i + 1]
+        if max(rz, ry, rx) <= 0:
+            shells.append(one.new_zeros(one.shape))
+            continue
+        dil = F.max_pool3d(
+            one,
+            kernel_size=(2 * rz + 1, 2 * ry + 1, 2 * rx + 1),
+            stride=1,
+            padding=(rz, ry, rx),
+        )
+        shells.append((dil - one).clamp(0, 1))
+    return torch.cat(shells, dim=0)
+
+
 class ContourAwareROITokenBackbone(nn.Module):
     def __init__(
         self,
@@ -232,6 +326,8 @@ class ContourAwareROITokenBackbone(nn.Module):
         token_dropout: float = 0.05,
         pt_shell_radius: int = 3,
         ln_shell_radius: int = 3,
+        pt_shell_thickness_mm: float = 10.0,
+        ln_shell_thickness_mm: float = 0.0,
         shell_body_from_ct: bool = True,
         body_ct_thr: Union[str, float] = "auto",
         body_ct_thr_hu: float = -500.0,
@@ -259,6 +355,8 @@ class ContourAwareROITokenBackbone(nn.Module):
         self.token_dropout = float(max(token_dropout, 0.0))
         self.pt_shell_radius = int(pt_shell_radius)
         self.ln_shell_radius = int(ln_shell_radius)
+        self.pt_shell_thickness_mm = float(max(0.0, pt_shell_thickness_mm))
+        self.ln_shell_thickness_mm = float(max(0.0, ln_shell_thickness_mm))
         self.shell_body_from_ct = bool(shell_body_from_ct)
         self.body_ct_thr = body_ct_thr
         self.body_ct_thr_hu = float(body_ct_thr_hu)
@@ -341,11 +439,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         return [("backbone_shared", self.backbone_shared)]
 
     def _soft_shell(self, mask: torch.Tensor, radius: int) -> torch.Tensor:
-        if int(radius) <= 0:
-            return mask.new_zeros(mask.shape)
-        k = 2 * int(radius) + 1
-        dil = F.max_pool3d(mask.clamp(0, 1), kernel_size=k, stride=1, padding=int(radius))
-        return (dil - mask).clamp(0, 1)
+        return soft_shell_around_mask(mask, radius=int(radius))
 
     def _roi_support_mask(self, mask: torch.Tensor) -> torch.Tensor:
         """Forward-pass hard ROI support with a soft straight-through gradient."""
@@ -361,7 +455,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         empty = flat_hard.sum(dim=1) <= 0.0
         rel = float(self.roi_support_fallback_relmax)
         fallback_floor = float(self.roi_support_fallback_threshold)
-        if empty.any() and (rel > 0.0 or fallback_floor > 0.0):
+        if rel > 0.0 or fallback_floor > 0.0:
             flat_soft = soft.flatten(1)
             maxv = flat_soft.max(dim=1).values.view(-1, 1, 1, 1, 1)
             fallback_thr = maxv.new_full(maxv.shape, fallback_floor)
@@ -371,8 +465,7 @@ class ContourAwareROITokenBackbone(nn.Module):
             min_peak = max(fallback_floor, threshold * rel)
             has_signal = (maxv.flatten() >= min_peak).to(torch.bool)
             use_fallback = empty & has_signal
-            if use_fallback.any():
-                hard = torch.where(use_fallback.view(-1, 1, 1, 1, 1), fallback, hard)
+            hard = torch.where(use_fallback.view(-1, 1, 1, 1, 1), fallback, hard)
 
         return hard.detach() - soft.detach() + soft
 
@@ -443,6 +536,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         *,
         mask_pt: Optional[torch.Tensor] = None,
         mask_ln: Optional[torch.Tensor] = None,
+        voxel_spacing_dhw: Optional[torch.Tensor] = None,
         teacher_force_alpha: float = 0.0,
         return_aux: bool = False,
         return_cam_features: bool = False,
@@ -527,8 +621,18 @@ class ContourAwareROITokenBackbone(nn.Module):
         pres_pt_intra = self._presence_from_mask(pt_used, deep_size)
         pres_ln_intra = self._presence_from_mask(ln_used, deep_size)
 
-        pt_shell = self._soft_shell(pt_used, self.pt_shell_radius)
-        ln_shell = self._soft_shell(ln_used, self.ln_shell_radius)
+        pt_shell = soft_shell_around_mask(
+            pt_used,
+            radius=self.pt_shell_radius,
+            thickness_mm=self.pt_shell_thickness_mm,
+            voxel_spacing_dhw=voxel_spacing_dhw,
+        )
+        ln_shell = soft_shell_around_mask(
+            ln_used,
+            radius=self.ln_shell_radius,
+            thickness_mm=self.ln_shell_thickness_mm,
+            voxel_spacing_dhw=voxel_spacing_dhw,
+        )
         if body is not None:
             pt_shell = pt_shell * body
             ln_shell = ln_shell * body
@@ -607,8 +711,7 @@ class ContourAwareROITokenBackbone(nn.Module):
             h = self.token_mlp[i](token_inputs[i]) + self.token_type[i].unsqueeze(0)
             if i > 0:
                 absent = ~pres[:, i]
-                if absent.any():
-                    h = h.masked_fill(absent.unsqueeze(1), 0.0)
+                h = h.masked_fill(absent.unsqueeze(1), 0.0)
             hs.append(h)
 
         tok_img = torch.stack(hs, dim=1)
@@ -616,14 +719,11 @@ class ContourAwareROITokenBackbone(nn.Module):
 
         if self.training and self.token_dropout > 0:
             pres2m = pres.clone()
-            tok2m = tok_img
+            tok2m = tok_img.clone()
             for tok_i in (1, 2, 3, 4):
-                if pres2m[:, tok_i].any():
-                    drop = (torch.rand(B, device=x_img.device) < self.token_dropout) & pres2m[:, tok_i]
-                    if drop.any():
-                        pres2m[drop, tok_i] = False
-                        tok2m = tok2m.clone()
-                        tok2m[drop, tok_i, :] = 0.0
+                drop = (torch.rand(B, device=x_img.device) < self.token_dropout) & pres2m[:, tok_i]
+                pres2m[:, tok_i] = pres2m[:, tok_i] & (~drop)
+                tok2m[:, tok_i, :] = tok2m[:, tok_i, :] * (~drop).to(dtype=tok2m.dtype).unsqueeze(1)
             pres, tok_img = pres2m, tok2m
 
         if not return_aux and not return_cam_features:

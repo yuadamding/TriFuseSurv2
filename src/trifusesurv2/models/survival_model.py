@@ -244,6 +244,7 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
         radiomics: Optional[torch.Tensor],
         mask_pt: Optional[torch.Tensor] = None,
         mask_ln: Optional[torch.Tensor] = None,
+        voxel_spacing_dhw: Optional[torch.Tensor] = None,
         teacher_force_alpha: float = 0.0,
         return_gate: bool = False,
         return_aux: bool = False,
@@ -254,6 +255,7 @@ class SwinUNETRTokenMoEDiscrete(nn.Module):
             x_img,
             mask_pt=mask_pt,
             mask_ln=mask_ln,
+            voxel_spacing_dhw=voxel_spacing_dhw,
             teacher_force_alpha=float(teacher_force_alpha),
             return_aux=can_return_aux,
         )
