@@ -6,11 +6,20 @@ WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
 cd "$WORKSPACE_ROOT"
 
 export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="${ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS:-1}"
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:512}"
 source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
-tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom rt_utils cv2
+tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom
 
 META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
 RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
+IMG_SIZE="${IMG_SIZE:-128 256 256}"
 ENDPOINT="${ENDPOINT:-OS}"
 ENDPOINT_LC="$(printf '%s' "$ENDPOINT" | tr '[:upper:]' '[:lower:]')"
 SPLITS_DIR="${SPLITS_DIR:-runs/opscc_splits_${ENDPOINT_LC}_seed1}"
@@ -19,7 +28,12 @@ EXP_NAME="${EXP_NAME:-cv4_contour_aware_${ENDPOINT_LC}_fold03}"
 CUDA_DEVICE="${CUDA_DEVICE:-auto}"
 REQUESTED_DEVICE="${DEVICE:-cuda:0}"
 DEBUG_FOLD="${DEBUG_FOLD:-3}"
-WORKERS="${WORKERS:-2}"
+WORKERS="${WORKERS:-8}"
+EVAL_WORKERS="${EVAL_WORKERS:-2}"
+PREFETCH_FACTOR="${PREFETCH_FACTOR:-4}"
+CACHE_VOLUMES="${CACHE_VOLUMES:-1}"
+VOLUME_CACHE_SIZE="${VOLUME_CACHE_SIZE:-12}"
+ROI_FOCUS_EVERY_BATCHES="${ROI_FOCUS_EVERY_BATCHES:-10}"
 CONTOUR_WARMSTART_CKPT="${CONTOUR_WARMSTART_CKPT:-${SHARED_SEG_PRETRAIN_CKPT:-}}"
 CONTOUR_WARMSTART_DIR="${CONTOUR_WARMSTART_DIR:-${SHARED_SEG_PRETRAIN_DIR:-}}"
 CONTOUR_WARMSTART_NAME="${CONTOUR_WARMSTART_NAME:-${SHARED_SEG_PRETRAIN_NAME:-best.pt}}"
@@ -40,6 +54,11 @@ if [[ -z "$CUDA_DEVICE" ]]; then
     echo "[error] could not detect an available GPU for contour-aware survival training." >&2
     exit 1
 fi
+export CUDA_VISIBLE_DEVICES="$CUDA_DEVICE"
+
+if [[ "$REQUESTED_DEVICE" != "cpu" ]]; then
+  tf_require_torch_cuda
+fi
 
 if [[ -n "$REQUESTED_DEVICE" && "$REQUESTED_DEVICE" != "cuda" && "$REQUESTED_DEVICE" != "cuda:0" ]]; then
   echo "[warn] overriding DEVICE=$REQUESTED_DEVICE to cuda:0 inside CUDA_VISIBLE_DEVICES=$CUDA_DEVICE for single-GPU isolation"
@@ -47,10 +66,13 @@ fi
 JOB_DEVICE="cuda:0"
 LOG_EVERY_BATCHES="${LOG_EVERY_BATCHES:-50}"
 RESUME="${RESUME:-0}"
+ALLOW_PARTIAL_RESUME="${ALLOW_PARTIAL_RESUME:-0}"
 EPOCHS="${EPOCHS:-80}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-0}"
 GRAD_ACCUMULATION_STEPS="${GRAD_ACCUMULATION_STEPS:-8}"
 USE_CHECKPOINT="${USE_CHECKPOINT:-1}"
+NONFINITE_CHECK_EVERY_BATCHES="${NONFINITE_CHECK_EVERY_BATCHES:-10}"
 ROI_FOCUS_WARMUP_EPOCHS="${ROI_FOCUS_WARMUP_EPOCHS:-10}"
 ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT="${ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT:-0.2}"
 SURVIVAL_USE_GT_MASKS="${SURVIVAL_USE_GT_MASKS:-1}"
@@ -73,7 +95,7 @@ LOC_FEATURE_FROM_END="${LOC_FEATURE_FROM_END:-4}"
 ROI_SUPPORT_THRESHOLD="${ROI_SUPPORT_THRESHOLD:-0.50}"
 ROI_SUPPORT_FALLBACK_THRESHOLD="${ROI_SUPPORT_FALLBACK_THRESHOLD:-0.05}"
 ROI_SUPPORT_FALLBACK_RELMAX="${ROI_SUPPORT_FALLBACK_RELMAX:-0.50}"
-SWA_START_EPOCH="${SWA_START_EPOCH:-$((10#$ROI_FOCUS_WARMUP_EPOCHS + 5))}"
+SWA_START_EPOCH="${SWA_START_EPOCH:-60}"
 LR_BACKBONE="${LR_BACKBONE:-3e-5}"
 WD_BACKBONE="${WD_BACKBONE:-1e-4}"
 LR_HEAD="${LR_HEAD:-3e-4}"
@@ -102,6 +124,12 @@ HAZARD_SMOOTH_LAMBDA="${HAZARD_SMOOTH_LAMBDA:-0.003}"
 EMA_DECAY="${EMA_DECAY:-0.9995}"
 PT_SHELL_RADIUS="${PT_SHELL_RADIUS:-5}"
 LN_SHELL_RADIUS="${LN_SHELL_RADIUS:-5}"
+SHELL_BODY_FROM_CT="${SHELL_BODY_FROM_CT:-1}"
+BODY_CT_THR="${BODY_CT_THR:-0.02}"
+BODY_CT_THR_HU="${BODY_CT_THR_HU:--500.0}"
+BODY_CLOSE_R="${BODY_CLOSE_R:-2}"
+BODY_MAX_FRAC="${BODY_MAX_FRAC:-0.995}"
+SYNC_SANITIZE_CHECKS="${SYNC_SANITIZE_CHECKS:-0}"
 MODALITY_DROPOUT_CLIN_P="${MODALITY_DROPOUT_CLIN_P:-0.10}"
 MODALITY_DROPOUT_RAD_P="${MODALITY_DROPOUT_RAD_P:-0.10}"
 RAD_PROJ_DROPOUT_P="${RAD_PROJ_DROPOUT_P:-0.15}"
@@ -125,13 +153,44 @@ if [[ "$RESUME" == "1" || "$RESUME" == "true" || "$RESUME" == "yes" ]]; then
   resume_args=(--resume)
 fi
 
+partial_resume_args=()
+if [[ "$ALLOW_PARTIAL_RESUME" == "1" || "$ALLOW_PARTIAL_RESUME" == "true" || "$ALLOW_PARTIAL_RESUME" == "yes" ]]; then
+  partial_resume_args=(--allow_partial_resume)
+fi
+
 checkpoint_args=(--use_checkpoint)
 if [[ "$USE_CHECKPOINT" == "0" || "$USE_CHECKPOINT" == "false" || "$USE_CHECKPOINT" == "no" ]]; then
   checkpoint_args=(--no_use_checkpoint)
 fi
 
+shell_body_args=()
+if [[ "$SHELL_BODY_FROM_CT" == "1" || "$SHELL_BODY_FROM_CT" == "true" || "$SHELL_BODY_FROM_CT" == "yes" ]]; then
+  shell_body_args=(
+    --shell_body_from_ct
+    --body_ct_thr "$BODY_CT_THR"
+    --body_ct_thr_hu "$BODY_CT_THR_HU"
+    --body_close_r "$BODY_CLOSE_R"
+    --body_max_frac "$BODY_MAX_FRAC"
+  )
+fi
+
+sanitize_args=()
+if [[ "$SYNC_SANITIZE_CHECKS" == "1" || "$SYNC_SANITIZE_CHECKS" == "true" || "$SYNC_SANITIZE_CHECKS" == "yes" ]]; then
+  sanitize_args=(--sync_sanitize_checks)
+fi
+
+cache_args=(--no_cache_volumes)
+if [[ "$CACHE_VOLUMES" == "1" || "$CACHE_VOLUMES" == "true" || "$CACHE_VOLUMES" == "yes" ]]; then
+  cache_args=(--cache_volumes)
+fi
+
 read -r -a depths_args <<< "$DEPTHS"
 read -r -a num_heads_args <<< "$NUM_HEADS"
+read -r -a img_size_args <<< "$IMG_SIZE"
+if (( ${#img_size_args[@]} != 3 )); then
+  echo "[error] IMG_SIZE must contain exactly three integers in D H W order, got: $IMG_SIZE" >&2
+  exit 1
+fi
 
 extra_args=()
 if [[ -n "$CONTOUR_WARMSTART_CKPT" ]]; then
@@ -147,17 +206,17 @@ if [[ "$SURVIVAL_USE_GT_MASKS" == "1" || "$SURVIVAL_USE_GT_MASKS" == "true" || "
   survival_tf_args=(--survival_uses_teacher_forced_masks --mask_guidance_alpha "$MASK_GUIDANCE_ALPHA")
 fi
 
-echo "[train] resume=$RESUME epochs=$EPOCHS roi_focus_warmup_epochs=$ROI_FOCUS_WARMUP_EPOCHS survival_warmup_weight=$ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT swa_start=$SWA_START_EPOCH"
+echo "[train] resume=$RESUME allow_partial_resume=$ALLOW_PARTIAL_RESUME epochs=$EPOCHS roi_focus_warmup_epochs=$ROI_FOCUS_WARMUP_EPOCHS survival_warmup_weight=$ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT swa_start=$SWA_START_EPOCH"
 echo "[train] survival_use_gt_masks=$SURVIVAL_USE_GT_MASKS mask_guidance_alpha=$MASK_GUIDANCE_ALPHA teacher_force_epochs=$TEACHER_FORCE_EPOCHS"
 echo "[train] loc_feature_from_end=$LOC_FEATURE_FROM_END loc_loss_pt=$LOC_LOSS_PT_LAMBDA loc_loss_ln=$LOC_LOSS_LN_LAMBDA mask_support=$MASK_SUPPORT_LAMBDA mask_focus=$MASK_FOCUS_LAMBDA balanced_bce=1"
-echo "[train] batch_size=$BATCH_SIZE grad_accum=$GRAD_ACCUMULATION_STEPS use_checkpoint=$USE_CHECKPOINT feature_size=$FEATURE_SIZE depths=($DEPTHS) heads=($NUM_HEADS)"
+echo "[train] batch_size=$BATCH_SIZE eval_batch_size=$EVAL_BATCH_SIZE grad_accum=$GRAD_ACCUMULATION_STEPS use_checkpoint=$USE_CHECKPOINT feature_size=$FEATURE_SIZE depths=($DEPTHS) heads=($NUM_HEADS)"
 echo "[train] fused_dim=$FUSED_DIM img_token_dim=$IMG_TOKEN_DIM v2_dim=$V2_MODEL_DIM v2_layers=$V2_TRANSFORMER_LAYERS v2_heads=$V2_NUM_HEADS"
 echo "[train] lr_backbone=$LR_BACKBONE lr_head=$LR_HEAD lr_clin=$LR_CLIN lr_rad=$LR_RAD aux_w=$AUX_SURV_LOSS_WEIGHT hazard_smooth=$HAZARD_SMOOTH_LAMBDA"
-echo "[train] time_bin_width_days=$TIME_BIN_WIDTH_DAYS report_metric=$REPORT_METRIC export_policy=$EXPORT_POLICY pt_shell=$PT_SHELL_RADIUS ln_shell=$LN_SHELL_RADIUS"
+echo "[train] time_bin_width_days=$TIME_BIN_WIDTH_DAYS report_metric=$REPORT_METRIC export_policy=$EXPORT_POLICY pt_shell=$PT_SHELL_RADIUS ln_shell=$LN_SHELL_RADIUS img_size=($IMG_SIZE)"
+echo "[train] python_bin=$PYTHON_BIN workers=$WORKERS eval_workers=$EVAL_WORKERS prefetch_factor=$PREFETCH_FACTOR cache_volumes=$CACHE_VOLUMES volume_cache_size=$VOLUME_CACHE_SIZE roi_focus_every_batches=$ROI_FOCUS_EVERY_BATCHES nonfinite_check_every_batches=$NONFINITE_CHECK_EVERY_BATCHES shell_body_from_ct=$SHELL_BODY_FROM_CT body_ct_thr=$BODY_CT_THR sync_sanitize_checks=$SYNC_SANITIZE_CHECKS omp=$OMP_NUM_THREADS mkl=$MKL_NUM_THREADS itk=$ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS tf32_override=${NVIDIA_TF32_OVERRIDE:-<unset>}"
 
-CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" \
 PYTHONUNBUFFERED=1 \
-python3 -u -m trifusesurv2.multimodal_survival.train \
+"$PYTHON_BIN" -u -m trifusesurv2.multimodal_survival.train \
   --meta_csv "$META_CSV" \
   --splits_dir "$SPLITS_DIR" \
   --cv_folds 4 \
@@ -169,14 +228,24 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --mask_ln_col mask_nodal_out_path \
   --out_dir "$OUT_DIR" \
   --exp_name "$EXP_NAME" \
-  --img_size 128 256 256 \
+  --img_size "${img_size_args[@]}" \
   --epochs "$EPOCHS" \
   --batch_size "$BATCH_SIZE" \
+  --eval_batch_size "$EVAL_BATCH_SIZE" \
   --grad_accumulation_steps "$GRAD_ACCUMULATION_STEPS" \
   --workers "$WORKERS" \
+  --eval_workers "$EVAL_WORKERS" \
+  --prefetch_factor "$PREFETCH_FACTOR" \
+  "${cache_args[@]}" \
+  --volume_cache_size "$VOLUME_CACHE_SIZE" \
+  --roi_focus_every_batches "$ROI_FOCUS_EVERY_BATCHES" \
+  --nonfinite_check_every_batches "$NONFINITE_CHECK_EVERY_BATCHES" \
   --log_every_batches "$LOG_EVERY_BATCHES" \
   "${resume_args[@]}" \
+  "${partial_resume_args[@]}" \
   --amp \
+  --allow_tf32 \
+  --matmul_precision high \
   "${checkpoint_args[@]}" \
   --device "$JOB_DEVICE" \
   --use_radiomics \
@@ -255,6 +324,7 @@ python3 -u -m trifusesurv2.multimodal_survival.train \
   --roi_support_threshold "$ROI_SUPPORT_THRESHOLD" \
   --roi_support_fallback_threshold "$ROI_SUPPORT_FALLBACK_THRESHOLD" \
   --roi_support_fallback_relmax "$ROI_SUPPORT_FALLBACK_RELMAX" \
-  --shell_body_from_ct \
+  "${shell_body_args[@]}" \
+  "${sanitize_args[@]}" \
   "${extra_args[@]}" \
   "$@"

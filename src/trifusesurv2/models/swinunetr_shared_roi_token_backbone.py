@@ -242,6 +242,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         force_presence_from_raw_masks: bool = False,
         raw_mask_threshold: float = 0.5,
         fallback_peri_to_intra: bool = True,
+        sync_sanitize_checks: bool = False,
     ):
         super().__init__()
         self.normalize = bool(normalize)
@@ -270,6 +271,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         self.force_presence_from_raw_masks = bool(force_presence_from_raw_masks)
         self.raw_mask_threshold = float(raw_mask_threshold)
         self.fallback_peri_to_intra = bool(fallback_peri_to_intra)
+        self.sync_sanitize_checks = bool(sync_sanitize_checks)
         self._warned_sanitized = set()
 
         self.backbone_shared = build_swinunetr_backbone(
@@ -420,7 +422,9 @@ class ContourAwareROITokenBackbone(nn.Module):
         neginf: float = 0.0,
         clamp_abs: float = 0.0,
     ) -> torch.Tensor:
-        if not torch.isfinite(tensor).all().item():
+        if not self.sync_sanitize_checks:
+            tensor = torch.nan_to_num(tensor, nan=0.0, posinf=posinf, neginf=neginf)
+        elif not torch.isfinite(tensor).all().item():
             if name not in self._warned_sanitized:
                 bad = int((~torch.isfinite(tensor)).sum().item())
                 print(f"[WARN][CONTOUR] sanitized {bad} non-finite value(s) in {name}", flush=True)
@@ -461,14 +465,10 @@ class ContourAwareROITokenBackbone(nn.Module):
             if self.body_close_r > 0:
                 body = binary_close(body, self.body_close_r)
             frac = body.mean(dim=(2, 3, 4)).squeeze(1)
-            bad = (frac < 0.02)
+            valid = frac >= 0.02
             if 0.0 < self.body_max_frac < 1.0:
-                bad = bad | (frac > self.body_max_frac)
-            if bad.any():
-                body = body.clone()
-                body[bad] = 0.0
-                if float(bad.float().mean().item()) > 0.5:
-                    body = None
+                valid = valid & (frac <= self.body_max_frac)
+            body = body * valid.to(dtype=body.dtype, device=body.device).view(-1, 1, 1, 1, 1)
 
         feats = swinvit_features(self.backbone_shared, ct, self.normalize)
         feats = convert_swinvit_feats_to_channel_first(
@@ -538,12 +538,8 @@ class ContourAwareROITokenBackbone(nn.Module):
             ln_shell_sum = ln_shell.sum(dim=(2, 3, 4)).squeeze(1)
             bad_pt_peri = pres_pt_intra & (pt_shell_sum <= 0.0)
             bad_ln_peri = pres_ln_intra & (ln_shell_sum <= 0.0)
-            if bad_pt_peri.any():
-                pt_shell = pt_shell.clone()
-                pt_shell[bad_pt_peri] = pt_used[bad_pt_peri]
-            if bad_ln_peri.any():
-                ln_shell = ln_shell.clone()
-                ln_shell[bad_ln_peri] = ln_used[bad_ln_peri]
+            pt_shell = torch.where(bad_pt_peri.view(-1, 1, 1, 1, 1), pt_used, pt_shell)
+            ln_shell = torch.where(bad_ln_peri.view(-1, 1, 1, 1, 1), ln_used, ln_shell)
 
         pres_pt_peri = self._presence_from_mask(pt_shell, deep_size)
         pres_ln_peri = self._presence_from_mask(ln_shell, deep_size)

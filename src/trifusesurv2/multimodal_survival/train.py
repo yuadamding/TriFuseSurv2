@@ -165,6 +165,35 @@ def make_amp(device: torch.device, enabled: bool):
         return scaler, autocast_ctx
 
 
+def configure_cuda_performance(args, device: torch.device) -> None:
+    if device.type != "cuda":
+        return
+
+    deterministic = bool(getattr(args, "deterministic", False))
+    allow_tf32 = bool(getattr(args, "allow_tf32", True)) and not deterministic
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+    except Exception:
+        pass
+    try:
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+    except Exception:
+        pass
+
+    precision = str(getattr(args, "matmul_precision", "high") or "high").strip().lower()
+    if precision and hasattr(torch, "set_float32_matmul_precision"):
+        try:
+            torch.set_float32_matmul_precision(precision)
+        except Exception:
+            precision = "unavailable"
+
+    _log(
+        f"[perf] cudnn_benchmark={torch.backends.cudnn.benchmark} "
+        f"cudnn_deterministic={torch.backends.cudnn.deterministic} "
+        f"allow_tf32={allow_tf32} matmul_precision={precision}"
+    )
+
+
 def _find_first_existing_path(meta: pd.DataFrame, col: str, *, id_col: str = "patient_id", data_root: str = "") -> Optional[str]:
     if col not in meta.columns:
         return None
@@ -1537,6 +1566,7 @@ def train_one_epoch(
     ema: Optional[H.EMAWeights],
     autocast_ctx,
     grad_accumulation_steps: int = 1,
+    nonfinite_check_every_batches: int = 1,
     v2_clinical_group_dropout_p: float = 0.0,
     v2_radiomics_group_dropout_p: float = 0.0,
     v2_node_dropout_p: float = 0.0,
@@ -1544,6 +1574,7 @@ def train_one_epoch(
     v2_image_habitat_dropout_p: float = 0.0,
     v2_dropout_ramp_epochs: int = 0,
     roi_focus_live_csv: Optional[Path] = None,
+    roi_focus_every_batches: int = 1,
 ) -> Dict[str, float]:
     model.train()
     mm = _unwrap_model(model)
@@ -1572,8 +1603,19 @@ def train_one_epoch(
     for endpoint in SURVIVAL_ENDPOINTS:
         stats_sum[f"surv_{endpoint.lower()}_nll"] = 0.0
         stats_sum[f"surv_{endpoint.lower()}_count"] = 0.0
-    roi_focus_sum: Dict[str, float] = {}
-    roi_focus_count: Dict[str, int] = {}
+    stats_sum_tensors: Dict[str, torch.Tensor] = {}
+    roi_focus_sum_tensors: Dict[str, torch.Tensor] = {}
+    roi_focus_count_tensors: Dict[str, torch.Tensor] = {}
+
+    def _add_stat(key: str, value) -> None:
+        if torch.is_tensor(value):
+            val = value.detach().float()
+            if val.numel() != 1:
+                val = val.mean()
+            old = stats_sum_tensors.get(key)
+            stats_sum_tensors[key] = val if old is None else (old + val)
+        else:
+            stats_sum[key] = stats_sum.get(key, 0.0) + float(value)
 
     def _roi_focus_scalars(prefix: str, metrics: Dict[str, torch.Tensor]) -> Dict[str, float]:
         out: Dict[str, float] = {}
@@ -1584,9 +1626,18 @@ def train_one_epoch(
         return out
 
     def _accumulate_roi_focus(prefix: str, metrics: Dict[str, torch.Tensor]) -> None:
-        for key, scalar in _roi_focus_scalars(prefix, metrics).items():
-            roi_focus_sum[key] = roi_focus_sum.get(key, 0.0) + float(scalar)
-            roi_focus_count[key] = roi_focus_count.get(key, 0) + 1
+        for suffix, tensor_value in metrics.items():
+            scalar = tensor_value.detach().float()
+            if scalar.numel() != 1:
+                scalar = scalar.mean()
+            key = f"roi_focus_{prefix}_{suffix}"
+            finite = torch.isfinite(scalar)
+            clean = torch.where(finite, scalar, scalar.new_zeros(()))
+            count = finite.to(dtype=scalar.dtype)
+            old_sum = roi_focus_sum_tensors.get(key)
+            old_count = roi_focus_count_tensors.get(key)
+            roi_focus_sum_tensors[key] = clean if old_sum is None else (old_sum + clean)
+            roi_focus_count_tensors[key] = count if old_count is None else (old_count + count)
 
     n_batches = 0
     try:
@@ -1622,6 +1673,8 @@ def train_one_epoch(
     )
 
     batches_since_step = 0
+    roi_focus_period = max(1, int(roi_focus_every_batches))
+    nonfinite_period = int(nonfinite_check_every_batches)
 
     for batch_idx, batch in enumerate(loader, start=1):
         payload = _unpack_surv_batch(batch)
@@ -1634,6 +1687,13 @@ def train_one_epoch(
         mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
         batches_since_step += 1
         batch_roi_focus: Dict[str, float] = {}
+        last_planned_batch = planned_batches > 0 and batch_idx == planned_batches
+        write_live_roi_focus = (
+            roi_focus_period <= 1
+            or batch_idx == 1
+            or batch_idx % roi_focus_period == 0
+            or last_planned_batch
+        )
 
         with autocast_ctx():
             if v2_mode:
@@ -1855,7 +1915,8 @@ def train_one_epoch(
                             target_mask=mask_pt.detach(),
                         )
                         _accumulate_roi_focus("pt", pt_focus)
-                        batch_roi_focus.update(_roi_focus_scalars("pt", pt_focus))
+                        if write_live_roi_focus:
+                            batch_roi_focus.update(_roi_focus_scalars("pt", pt_focus))
                     if "ln_prob" in loc_aux:
                         ln_focus_prob = loc_aux.get("ln_soft_used", loc_aux["ln_prob"])
                         ln_focus = roi_focus_metrics(
@@ -1864,7 +1925,8 @@ def train_one_epoch(
                             target_mask=mask_ln.detach(),
                         )
                         _accumulate_roi_focus("ln", ln_focus)
-                        batch_roi_focus.update(_roi_focus_scalars("ln", ln_focus))
+                        if write_live_roi_focus:
+                            batch_roi_focus.update(_roi_focus_scalars("ln", ln_focus))
                     if "pt_shell" in loc_aux:
                         pt_peri_target = _peritumoral_shell_target(
                             mask_pt,
@@ -1877,9 +1939,19 @@ def train_one_epoch(
                             target_mask=pt_peri_target.detach(),
                         )
                         _accumulate_roi_focus("pt_peri", pt_peri_focus)
-                        batch_roi_focus.update(_roi_focus_scalars("pt_peri", pt_peri_focus))
+                        if write_live_roi_focus:
+                            batch_roi_focus.update(_roi_focus_scalars("pt_peri", pt_peri_focus))
 
-        if not torch.isfinite(loss).item():
+        check_nonfinite_loss = (
+            nonfinite_period > 0
+            and (
+                nonfinite_period <= 1
+                or batch_idx == 1
+                or batch_idx % nonfinite_period == 0
+                or last_planned_batch
+            )
+        )
+        if check_nonfinite_loss and (not torch.isfinite(loss).item()):
             pid_preview = [str(x) for x in list(payload["pid"])[:8]]
             raise RuntimeError(
                 "[TRAIN][NONFINITE] non-finite loss encountered "
@@ -1904,7 +1976,7 @@ def train_one_epoch(
 
         scaled_loss = loss / float(accum_steps) if accum_steps > 1 else loss
         should_step = (batches_since_step >= accum_steps)
-        if planned_batches > 0 and batch_idx == planned_batches:
+        if last_planned_batch:
             should_step = True
         if device.type == "cuda" and scaler is not None:
             scaler.scale(scaled_loss).backward()
@@ -1927,28 +1999,28 @@ def train_one_epoch(
             ema.update(mm)
 
         n_batches += 1
-        stats_sum["loss_total"] += float(loss.detach().cpu().item())
-        stats_sum["loss_surv_total"] += float(loss_surv.detach().cpu().item())
-        stats_sum["loss_surv_primary"] += float(primary_surv_unweighted.detach().cpu().item())
-        stats_sum["loss_surv_aux"] += float(aux_surv_unweighted.detach().cpu().item()) if aux_endpoint_losses else 0.0
-        stats_sum["loss_loc_pt"] += float(loss_loc_pt.detach().cpu().item())
-        stats_sum["loss_loc_ln"] += float(loss_loc_ln.detach().cpu().item())
-        stats_sum["loss_loc_presence"] += float(loss_loc_presence.detach().cpu().item())
-        stats_sum["loss_mask_support"] += float(loss_mask_support.detach().cpu().item())
-        stats_sum["loss_mask_focus"] += float(loss_mask_focus.detach().cpu().item())
-        stats_sum["loss_gate_entropy"] += float(loss_gate_entropy.detach().cpu().item())
-        stats_sum["loss_gate_loadbal"] += float(loss_gate_loadbal.detach().cpu().item())
-        stats_sum["loss_hazard_smooth"] += float(loss_hazard_smooth.detach().cpu().item())
-        stats_sum["loss_logit_l2"] += float(loss_logit_l2.detach().cpu().item())
+        _add_stat("loss_total", loss)
+        _add_stat("loss_surv_total", loss_surv)
+        _add_stat("loss_surv_primary", primary_surv_unweighted)
+        _add_stat("loss_surv_aux", aux_surv_unweighted if aux_endpoint_losses else 0.0)
+        _add_stat("loss_loc_pt", loss_loc_pt)
+        _add_stat("loss_loc_ln", loss_loc_ln)
+        _add_stat("loss_loc_presence", loss_loc_presence)
+        _add_stat("loss_mask_support", loss_mask_support)
+        _add_stat("loss_mask_focus", loss_mask_focus)
+        _add_stat("loss_gate_entropy", loss_gate_entropy)
+        _add_stat("loss_gate_loadbal", loss_gate_loadbal)
+        _add_stat("loss_hazard_smooth", loss_hazard_smooth)
+        _add_stat("loss_logit_l2", loss_logit_l2)
         for endpoint in SURVIVAL_ENDPOINTS:
             if endpoint in endpoint_losses:
-                stats_sum[f"surv_{endpoint.lower()}_nll"] += float(endpoint_losses[endpoint].detach().cpu().item())
-            stats_sum[f"surv_{endpoint.lower()}_count"] += float(endpoint_counts.get(endpoint, 0))
+                _add_stat(f"surv_{endpoint.lower()}_nll", endpoint_losses[endpoint])
+            _add_stat(f"surv_{endpoint.lower()}_count", endpoint_counts.get(endpoint, 0))
 
         should_log_batch = (
             batch_idx == 1
             or (int(log_every_batches) > 0 and batch_idx % int(log_every_batches) == 0)
-            or (planned_batches > 0 and batch_idx == planned_batches)
+            or last_planned_batch
         )
         if should_log_batch:
             batch_total = planned_batches if planned_batches > 0 else "?"
@@ -2010,6 +2082,9 @@ def train_one_epoch(
 
     stats_mean: Dict[str, float] = {}
     for key, value in stats_sum.items():
+        if key in stats_sum_tensors:
+            stats_mean[key] = float((stats_sum_tensors[key] / float(n_batches)).detach().cpu().item())
+            continue
         if key.endswith("_count"):
             stats_mean[key] = float(value / n_batches)
         else:
@@ -2017,8 +2092,15 @@ def train_one_epoch(
     for roi_name in ROI_FOCUS_ROI_NAMES:
         for suffix in ROI_FOCUS_METRIC_NAMES:
             key = f"roi_focus_{roi_name}_{suffix}"
-            count = int(roi_focus_count.get(key, 0))
-            stats_mean[key] = float(roi_focus_sum[key] / count) if count > 0 else float("nan")
+            count_tensor = roi_focus_count_tensors.get(key)
+            if count_tensor is None:
+                stats_mean[key] = float("nan")
+                continue
+            count_value = float(count_tensor.detach().cpu().item())
+            if count_value > 0:
+                stats_mean[key] = float((roi_focus_sum_tensors[key] / count_tensor.clamp_min(1.0)).detach().cpu().item())
+            else:
+                stats_mean[key] = float("nan")
     return stats_mean
 
 
@@ -2550,6 +2632,8 @@ def run_one_fold(
             strict_files=args.strict_files,
             expected_dhw=expected_dhw,
             data_root=data_root,
+            cache_volumes=bool(getattr(args, "cache_volumes", False)),
+            volume_cache_size=int(getattr(args, "volume_cache_size", 0)),
         )
         if v2_requested:
             return PreprocessedHabitatSurvivalDataset(
@@ -2586,32 +2670,71 @@ def run_one_fold(
     else:
         tr_sampler = None
 
-    tr_loader = DataLoader(tr_ds, batch_size=int(args.batch_size),
-                           shuffle=(tr_sampler is None), sampler=tr_sampler,
-                           num_workers=int(args.workers),
-                           pin_memory=(device.type == "cuda"), drop_last=False, persistent_workers=(int(args.workers) > 0),
-                           worker_init_fn=seed_worker, generator=g)
-    tr_eval_loader = DataLoader(tr_eval_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.workers),
-                                pin_memory=(device.type == "cuda"), drop_last=False, persistent_workers=(int(args.workers) > 0),
-                                worker_init_fn=seed_worker)
-    va_loader = DataLoader(va_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.workers),
-                           pin_memory=(device.type == "cuda"), drop_last=False, persistent_workers=(int(args.workers) > 0),
-                           worker_init_fn=seed_worker)
-    te_loader = DataLoader(te_ds, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.workers),
-                           pin_memory=(device.type == "cuda"), drop_last=False, persistent_workers=(int(args.workers) > 0),
-                           worker_init_fn=seed_worker)
+    train_workers = max(0, int(args.workers))
+    eval_workers_arg = int(getattr(args, "eval_workers", -1))
+    eval_workers = train_workers if eval_workers_arg < 0 else max(0, eval_workers_arg)
+    prefetch_factor = max(2, int(getattr(args, "prefetch_factor", 4)))
+    train_batch_size = max(1, int(args.batch_size))
+    eval_batch_size = int(getattr(args, "eval_batch_size", 0))
+    if eval_batch_size <= 0:
+        eval_batch_size = train_batch_size
 
-    workers_per_loader = int(args.workers)
+    def _loader_kwargs(num_workers: int):
+        kwargs = {
+            "num_workers": int(num_workers),
+            "pin_memory": (device.type == "cuda"),
+            "drop_last": False,
+            "worker_init_fn": seed_worker,
+        }
+        if int(num_workers) > 0:
+            kwargs["persistent_workers"] = True
+            kwargs["prefetch_factor"] = prefetch_factor
+        else:
+            kwargs["persistent_workers"] = False
+        return kwargs
+
+    tr_loader = DataLoader(
+        tr_ds,
+        batch_size=train_batch_size,
+        shuffle=(tr_sampler is None),
+        sampler=tr_sampler,
+        generator=g,
+        **_loader_kwargs(train_workers),
+    )
+    tr_eval_loader = DataLoader(
+        tr_eval_ds,
+        batch_size=eval_batch_size,
+        shuffle=False,
+        **_loader_kwargs(eval_workers),
+    )
+    va_loader = DataLoader(
+        va_ds,
+        batch_size=eval_batch_size,
+        shuffle=False,
+        **_loader_kwargs(eval_workers),
+    )
+    te_loader = DataLoader(
+        te_ds,
+        batch_size=eval_batch_size,
+        shuffle=False,
+        **_loader_kwargs(eval_workers),
+    )
+
     loader_count = 4
-    total_loader_workers = workers_per_loader * loader_count
+    total_loader_workers = train_workers + 3 * eval_workers
     omp_threads = os.environ.get("OMP_NUM_THREADS", "unset")
     mkl_threads = os.environ.get("MKL_NUM_THREADS", "unset")
     openblas_threads = os.environ.get("OPENBLAS_NUM_THREADS", "unset")
     itk_threads = os.environ.get("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", "unset")
     _log(
-        f"[CPU][fold {fold:02d}] dataloader_workers_per_loader={workers_per_loader} "
+        f"[CPU][fold {fold:02d}] train_workers={train_workers} eval_workers={eval_workers} "
+        f"train_batch_size={train_batch_size} eval_batch_size={eval_batch_size} "
         f"loaders={loader_count} total_loader_processes_per_rank={total_loader_workers} "
-        f"persistent_workers={(workers_per_loader > 0)} "
+        f"persistent_workers_train={(train_workers > 0)} persistent_workers_eval={(eval_workers > 0)} "
+        f"prefetch_factor={prefetch_factor if (train_workers > 0 or eval_workers > 0) else 0} "
+        f"cache_volumes={bool(getattr(args, 'cache_volumes', False))} "
+        f"volume_cache_size={int(getattr(args, 'volume_cache_size', 0))} "
+        f"roi_focus_every_batches={int(getattr(args, 'roi_focus_every_batches', 1))} "
         f"omp_threads={omp_threads} mkl_threads={mkl_threads} "
         f"openblas_threads={openblas_threads} itk_threads={itk_threads}"
     )
@@ -2653,6 +2776,7 @@ def run_one_fold(
         body_ct_thr_hu=float(args.body_ct_thr_hu),
         body_close_r=int(args.body_close_r),
         body_max_frac=float(args.body_max_frac),
+        sync_sanitize_checks=bool(args.sync_sanitize_checks),
         strict_swinvit_layout=bool(args.strict_swinvit_layout),
         debug_swinvit_layout=bool(args.debug_swinvit_layout),
     )
@@ -2902,6 +3026,7 @@ def run_one_fold(
             ema=ema,
             autocast_ctx=autocast_ctx,
             grad_accumulation_steps=int(getattr(args, "grad_accumulation_steps", 1)),
+            nonfinite_check_every_batches=int(getattr(args, "nonfinite_check_every_batches", 1)),
             v2_clinical_group_dropout_p=float(
                 args.modality_dropout_clin_p
                 if float(getattr(args, "v2_clinical_group_dropout_p", -1.0)) < 0.0
@@ -2917,6 +3042,7 @@ def run_one_fold(
             v2_image_habitat_dropout_p=float(getattr(args, "v2_image_habitat_dropout_p", 0.0)),
             v2_dropout_ramp_epochs=int(getattr(args, "v2_dropout_ramp_epochs", 0)),
             roi_focus_live_csv=roi_focus_live_csv,
+            roi_focus_every_batches=int(getattr(args, "roi_focus_every_batches", 1)),
         )
 
         # In DDP, every rank runs the same no-collective eval path before the next
@@ -3442,6 +3568,12 @@ def parse_args():
         help="Use deterministic PyTorch/cuDNN settings for reproducibility at the cost of speed.",
     )
     p.add_argument("--batch_size", type=int, default=1)
+    p.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=0,
+        help="Validation/test batch size. Nonpositive reuses --batch_size.",
+    )
     p.add_argument("--grad_accumulation_steps", type=int, default=1,
                    help="Accumulate gradients over N forward/backward passes before stepping. "
                         "For single-GPU runs, effective global batch is batch_size * grad_accumulation_steps. "
@@ -3451,8 +3583,51 @@ def parse_args():
                         "batch_size * world_size * grad_accumulation_steps.")
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument(
+        "--eval_workers",
+        type=int,
+        default=-1,
+        help="Validation/test DataLoader workers. Negative reuses --workers.",
+    )
+    p.add_argument(
+        "--prefetch_factor",
+        type=int,
+        default=4,
+        help="DataLoader prefetch factor when workers > 0.",
+    )
+    p.add_argument("--cache_volumes", dest="cache_volumes", action="store_true")
+    p.add_argument("--no_cache_volumes", dest="cache_volumes", action="store_false")
+    p.set_defaults(cache_volumes=False)
+    p.add_argument(
+        "--volume_cache_size",
+        type=int,
+        default=0,
+        help="Per-worker LRU cache size for decoded CT/mask NIfTI arrays. Requires --cache_volumes.",
+    )
+    p.add_argument(
+        "--roi_focus_every_batches",
+        type=int,
+        default=1,
+        help="Compute live ROI-focus diagnostics every N training batches instead of every batch.",
+    )
+    p.add_argument(
+        "--nonfinite_check_every_batches",
+        type=int,
+        default=1,
+        help="Synchronize to check nonfinite training loss every N batches. Use 1 for strict checking; 0 disables the explicit check.",
+    )
     p.add_argument("--log_every_batches", type=int, default=50)
     p.add_argument("--amp", action="store_true")
+    p.add_argument("--allow_tf32", dest="allow_tf32", action="store_true")
+    p.add_argument("--no_allow_tf32", dest="allow_tf32", action="store_false")
+    p.set_defaults(allow_tf32=True)
+    p.add_argument(
+        "--matmul_precision",
+        type=str,
+        default="high",
+        choices=("highest", "high", "medium"),
+        help="torch.set_float32_matmul_precision setting for CUDA matmuls.",
+    )
 
     p.add_argument("--resume", dest="resume", action="store_true")
     p.add_argument("--no_resume", dest="resume", action="store_false")
@@ -3673,6 +3848,11 @@ def parse_args():
     p.add_argument("--body_ct_thr_hu", type=float, default=-500.0)
     p.add_argument("--body_close_r", type=int, default=2)
     p.add_argument("--body_max_frac", type=float, default=0.995)
+    p.add_argument(
+        "--sync_sanitize_checks",
+        action="store_true",
+        help="Synchronize and warn when sanitizing nonfinite backbone tensors. Slower; intended for debugging.",
+    )
 
     p.add_argument("--strict_swinvit_layout", dest="strict_swinvit_layout", action="store_true")
     p.add_argument("--no_strict_swinvit_layout", dest="strict_swinvit_layout", action="store_false")
@@ -3779,6 +3959,12 @@ def parse_args():
         raise ValueError("--roi_focus_warmup_epochs must be >= 0.")
     if float(args.roi_focus_warmup_survival_weight) < 0.0:
         raise ValueError("--roi_focus_warmup_survival_weight must be >= 0.")
+    if int(args.volume_cache_size) < 0:
+        raise ValueError("--volume_cache_size must be >= 0.")
+    if int(args.roi_focus_every_batches) < 1:
+        raise ValueError("--roi_focus_every_batches must be >= 1.")
+    if int(args.nonfinite_check_every_batches) < 0:
+        raise ValueError("--nonfinite_check_every_batches must be >= 0.")
     if int(args.loc_feature_from_end) < 1:
         raise ValueError("--loc_feature_from_end must be >= 1.")
     if float(args.epoch_gradcam_teacher_force_alpha) > 1.0:
@@ -3849,6 +4035,7 @@ def main():
     else:
         device = parse_device(args.device)
     bind_cuda_device(device)
+    configure_cuda_performance(args, device)
 
     scaler, autocast_ctx = make_amp(device, enabled=bool(args.amp))
     print(f"[info] device={device} amp={bool(args.amp and device.type=='cuda')} use_lora={bool(args.use_lora)}")
@@ -3990,7 +4177,10 @@ def main():
         "lr_head": float(args.lr_head),
         "lr_clin": float(args.lr_clin),
         "lr_rad": float(args.lr_rad),
+        "batch_size": int(args.batch_size),
+        "eval_batch_size": int(args.eval_batch_size),
         "grad_accumulation_steps": int(args.grad_accumulation_steps),
+        "nonfinite_check_every_batches": int(args.nonfinite_check_every_batches),
         "time_bin_width_days": float(args.time_bin_width_days),
         "hazard_smooth_lambda": float(args.hazard_smooth_lambda),
         "use_lora": bool(args.use_lora),

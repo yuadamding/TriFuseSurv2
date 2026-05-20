@@ -19,6 +19,10 @@ CLINICAL_SCHEMA: dict[str, str] = {
     "N": "ordinal",
     "M": "ordinal",
     "NSTAGE": "ordinal",
+    "T_RAW": "categorical",
+    "N_RAW": "categorical",
+    "M_RAW": "categorical",
+    "NSTAGE_RAW": "categorical",
     "SMOKE": "ordinal",
     "ALCOHOL": "ordinal",
     "HPV": "ordinal",
@@ -28,14 +32,47 @@ CLINICAL_SCHEMA: dict[str, str] = {
     "TX": "categorical",
 }
 
+RAW_STAGE_SOURCE_COLUMNS: dict[str, str] = {
+    "T_RAW": "T",
+    "N_RAW": "N",
+    "M_RAW": "M",
+    "NSTAGE_RAW": "NSTAGE",
+}
+
+
+def normalize_raw_stage_value(col: str, val: Any) -> str:
+    """Preserve TNM/stage subclass semantics as stable categorical strings."""
+
+    if val is None or pd.isna(val):
+        return ""
+    s = str(val).strip().upper()
+    if s == "":
+        return ""
+    s = re.sub(r"\s+", "", s)
+    col_u = str(col).upper()
+    if col_u == "NSTAGE_RAW":
+        s = s.replace("STAGE", "").replace("STG", "")
+        if s and not s.startswith(("0", "I", "V")):
+            m = re.search(r"(IV|III|II|I|V|0|[0-9]+[A-Z]*)", s)
+            if m is not None:
+                s = m.group(1)
+    elif col_u in {"T_RAW", "N_RAW", "M_RAW"}:
+        prefix = col_u[0]
+        m = re.search(rf"({prefix}(?:IS|X|[0-9]+[A-Z]*))", s)
+        if m is not None:
+            s = m.group(1)
+        elif s and not s.startswith(prefix):
+            s = f"{prefix}{s}"
+    return s
+
 
 def parse_ordinal_value(col: str, val: Any) -> float:
     """Parse an ordinal or semi-structured value to float.
 
-    This is a lossy reduction: TNM sub-stages (e.g. T4a → 4, N2b → 2) and
-    Roman numeral suffixes (IVA → 4) collapse to the coarse numeric stage.
-    Subclass letters are discarded.  If finer staging semantics are needed,
-    encode TNM subclasses as separate categorical features instead.
+    This ordinal path is intentionally lossy: TNM sub-stages (e.g. T4a → 4,
+    N2b → 2) and Roman numeral suffixes (IVA → 4) collapse to the coarse
+    numeric stage. The parallel *_RAW categorical features preserve subclass
+    labels for the burden token.
     """
 
     if val is None or pd.isna(val):
@@ -106,6 +143,29 @@ class SemanticClinicalTokenEncoder:
         frac = valid / max(len(series), 1)
         return frac >= threshold
 
+    @staticmethod
+    def _column_series(df: pd.DataFrame, col: str) -> pd.Series | None:
+        source = RAW_STAGE_SOURCE_COLUMNS.get(str(col).upper())
+        if source is not None and source in df.columns:
+            return df[source].apply(lambda v, c=col: normalize_raw_stage_value(c, v))
+        if col in df.columns:
+            if str(col).upper() in RAW_STAGE_SOURCE_COLUMNS:
+                return df[col].apply(lambda v, c=col: normalize_raw_stage_value(c, v))
+            return df[col]
+        return None
+
+    @staticmethod
+    def _row_value(row: pd.Series, col: str) -> Any:
+        source = RAW_STAGE_SOURCE_COLUMNS.get(str(col).upper())
+        if source is not None and source in row.index:
+            return normalize_raw_stage_value(col, row.get(source, None))
+        if col in row.index:
+            val = row.get(col, None)
+            if str(col).upper() in RAW_STAGE_SOURCE_COLUMNS:
+                return normalize_raw_stage_value(col, val)
+            return val
+        return None
+
     @classmethod
     def fit(
         cls,
@@ -120,9 +180,9 @@ class SemanticClinicalTokenEncoder:
             categorical_specs = []
 
             for col in cols:
-                if col not in df.columns:
+                series = cls._column_series(df, col)
+                if series is None:
                     continue
-                series = df[col]
                 non_na = series.dropna()
                 if len(non_na) == 0:
                     continue
@@ -151,7 +211,10 @@ class SemanticClinicalTokenEncoder:
                     std = std if std > 1e-6 else 1.0
                     numeric_specs.append(NumericFeatureSpec(col, mean, std, ordinal))
                 else:
-                    cats = sorted({str(v).strip() for v in non_na.values if str(v).strip() != ""})
+                    if str(col).upper() in RAW_STAGE_SOURCE_COLUMNS:
+                        cats = sorted({normalize_raw_stage_value(col, v) for v in non_na.values if normalize_raw_stage_value(col, v) != ""})
+                    else:
+                        cats = sorted({str(v).strip() for v in non_na.values if str(v).strip() != ""})
                     if not cats:
                         continue
                     mapping = {cat: idx for idx, cat in enumerate(cats)}
@@ -197,18 +260,25 @@ class SemanticClinicalTokenEncoder:
     def _encode_categorical(self, row: pd.Series, spec: CategoricalFeatureSpec) -> list[float]:
         dim = len(spec.mapping) + 1
         vec = np.zeros(dim, dtype=np.float32)
-        val = row.get(spec.name, None)
+        val = self._row_value(row, spec.name)
         if val is None or pd.isna(val):
             idx = spec.unk_index
         else:
-            idx = spec.mapping.get(str(val).strip(), spec.unk_index)
+            key = (
+                normalize_raw_stage_value(spec.name, val)
+                if str(spec.name).upper() in RAW_STAGE_SOURCE_COLUMNS
+                else str(val).strip()
+            )
+            idx = spec.mapping.get(key, spec.unk_index)
         vec[idx] = 1.0
         return vec.tolist()
 
     def _categorical_is_present(self, row: pd.Series, spec: CategoricalFeatureSpec) -> bool:
-        val = row.get(spec.name, None)
+        val = self._row_value(row, spec.name)
         if val is None or pd.isna(val):
             return False
+        if str(spec.name).upper() in RAW_STAGE_SOURCE_COLUMNS:
+            return normalize_raw_stage_value(spec.name, val) != ""
         return str(val).strip() != ""
 
     def encode_row_tokens(self, row: pd.Series) -> "OrderedDict[str, np.ndarray]":

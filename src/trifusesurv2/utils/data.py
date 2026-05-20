@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import random
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -102,6 +103,10 @@ def rand_intensity(ct: np.ndarray, p: float = 0.3):
     return np.clip(ct, 0.0, 1.0).astype(np.float32)
 
 
+def _torch_float32(array: np.ndarray) -> torch.Tensor:
+    return torch.from_numpy(np.ascontiguousarray(array, dtype=np.float32))
+
+
 class _BasePreprocessedSurvivalDataset(Dataset):
     """Shared NIfTI loading and tabular encoding for survival datasets."""
 
@@ -125,6 +130,8 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         data_root: Optional[str] = None,
         mode: str = "eval",
         spatial_augment: bool = True,
+        cache_volumes: bool = False,
+        volume_cache_size: int = 0,
     ):
         self.meta = meta.reset_index(drop=True)
         self.id_col = id_col
@@ -143,10 +150,26 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         self.data_root = str(Path(data_root)) if data_root else None
         self.mode = mode
         self.spatial_augment = bool(spatial_augment)
+        self.cache_volumes = bool(cache_volumes)
+        self.volume_cache_size = max(0, int(volume_cache_size))
+        self._volume_cache: OrderedDict[tuple[str, bool], np.ndarray] = OrderedDict()
 
-    def _load_nii(self, path: str) -> np.ndarray:
+    def _load_nii(self, path: str, *, binary_mask: bool = False) -> np.ndarray:
+        key = (str(path), bool(binary_mask))
+        if self.cache_volumes and self.volume_cache_size > 0 and key in self._volume_cache:
+            arr = self._volume_cache.pop(key)
+            self._volume_cache[key] = arr
+            return arr
         img = sitk.ReadImage(str(path))
-        return sitk.GetArrayFromImage(img).astype(np.float32)
+        arr = sitk.GetArrayFromImage(img).astype(np.float32)
+        if binary_mask:
+            arr = (arr > 0.5).astype(np.float32)
+        arr = np.ascontiguousarray(arr)
+        if self.cache_volumes and self.volume_cache_size > 0:
+            self._volume_cache[key] = arr
+            while len(self._volume_cache) > self.volume_cache_size:
+                self._volume_cache.popitem(last=False)
+        return arr
 
     def _zeros_like_expected(self) -> np.ndarray:
         shape = self.expected_dhw if self.expected_dhw is not None else (128, 256, 256)
@@ -180,8 +203,8 @@ class _BasePreprocessedSurvivalDataset(Dataset):
             ln = self._zeros_like_expected()
         else:
             ct = self._load_nii(ct_path)
-            pt = (self._load_nii(pt_path) > 0.5).astype(np.float32)
-            ln = (self._load_nii(ln_path) > 0.5).astype(np.float32)
+            pt = self._load_nii(pt_path, binary_mask=True)
+            ln = self._load_nii(ln_path, binary_mask=True)
 
         if self.expected_dhw is not None:
             if tuple(ct.shape) != self.expected_dhw:
@@ -228,13 +251,13 @@ class PreprocessedContourAwareDataset(_BasePreprocessedSurvivalDataset):
     def __getitem__(self, idx):
         ct, pt, ln, t, e, t_multi, e_multi, clin_t, rad_t, pid = self._load_case(idx)
         return (
-            torch.tensor(ct[None, ...], dtype=torch.float32),
-            torch.tensor(pt[None, ...], dtype=torch.float32),
-            torch.tensor(ln[None, ...], dtype=torch.float32),
+            _torch_float32(ct[None, ...]),
+            _torch_float32(pt[None, ...]),
+            _torch_float32(ln[None, ...]),
             torch.tensor(t, dtype=torch.float32),
             torch.tensor(e, dtype=torch.float32),
-            torch.tensor(t_multi, dtype=torch.float32),
-            torch.tensor(e_multi, dtype=torch.float32),
+            _torch_float32(t_multi),
+            _torch_float32(e_multi),
             clin_t,
             rad_t,
             pid,
@@ -428,6 +451,8 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         data_root: Optional[str] = None,
         mode: str = "eval",
         spatial_augment: Optional[bool] = None,
+        cache_volumes: bool = False,
+        volume_cache_size: int = 0,
     ):
         if bool(node_topology_dir) and bool(spatial_augment):
             raise ValueError(
@@ -453,6 +478,8 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
             data_root=data_root,
             mode=mode,
             spatial_augment=allow_spatial_augment,
+            cache_volumes=cache_volumes,
+            volume_cache_size=volume_cache_size,
         )
         self.clinical_token_encoder = clinical_token_encoder
         self.radiomics_token_encoder = radiomics_token_encoder
@@ -488,20 +515,20 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
             node_mat = self.node_topology_scaler.transform_nodes(node_mat)
 
         return {
-            "x": torch.tensor(ct[None, ...], dtype=torch.float32),
-            "mask_pt": torch.tensor(pt[None, ...], dtype=torch.float32),
-            "mask_ln": torch.tensor(ln[None, ...], dtype=torch.float32),
+            "x": _torch_float32(ct[None, ...]),
+            "mask_pt": _torch_float32(pt[None, ...]),
+            "mask_ln": _torch_float32(ln[None, ...]),
             "t": torch.tensor(t, dtype=torch.float32),
             "e": torch.tensor(e, dtype=torch.float32),
-            "t_all": torch.tensor(t_multi, dtype=torch.float32),
-            "e_all": torch.tensor(e_multi, dtype=torch.float32),
-            "clinical_tokens": torch.tensor(clin_mat, dtype=torch.float32),
-            "clinical_presence": torch.tensor(clin_presence, dtype=torch.float32),
-            "radiomics_tokens": torch.tensor(rad_mat, dtype=torch.float32),
-            "radiomics_presence": torch.tensor(rad_presence, dtype=torch.float32),
-            "node_tokens": torch.tensor(node_mat, dtype=torch.float32),
-            "node_presence": torch.tensor(node_presence, dtype=torch.float32),
-            "topology_token": torch.tensor(topology_vec[None, :], dtype=torch.float32),
+            "t_all": _torch_float32(t_multi),
+            "e_all": _torch_float32(e_multi),
+            "clinical_tokens": _torch_float32(clin_mat),
+            "clinical_presence": _torch_float32(clin_presence),
+            "radiomics_tokens": _torch_float32(rad_mat),
+            "radiomics_presence": _torch_float32(rad_presence),
+            "node_tokens": _torch_float32(node_mat),
+            "node_presence": _torch_float32(node_presence),
+            "topology_token": _torch_float32(topology_vec[None, :]),
             "topology_presence": torch.tensor([topology_present], dtype=torch.float32),
             "pid": pid,
         }

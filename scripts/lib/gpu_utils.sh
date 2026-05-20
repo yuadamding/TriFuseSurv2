@@ -5,6 +5,7 @@
 tf_detect_gpu_ids() {
   local -a ids=()
   local visible="${CUDA_VISIBLE_DEVICES:-}"
+  local python_bin="${PYTHON_BIN:-python3}"
   local item
 
   if [[ -n "$visible" && "$visible" != "NoDevFiles" ]]; then
@@ -14,11 +15,11 @@ tf_detect_gpu_ids() {
       item="$(printf '%s' "$item" | tr -d '[:space:]')"
       [[ -n "$item" ]] && ids+=("$item")
     done < <(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null || true)
-  elif command -v python3 >/dev/null 2>&1; then
+  elif command -v "$python_bin" >/dev/null 2>&1; then
     while IFS= read -r item; do
       item="$(printf '%s' "$item" | tr -d '[:space:]')"
       [[ -n "$item" ]] && ids+=("$item")
-    done < <(python3 - <<'PY'
+    done < <("$python_bin" - <<'PY'
 try:
     import torch
     for i in range(int(torch.cuda.device_count())):
@@ -150,10 +151,58 @@ if missing:
     sys.stderr.write(
         "[error] activate the package environment first, or install runtime dependencies with:\n"
         "  cd TriFuseSurv2_package\n"
-        "  python3 -m pip install -e .\n"
+        "  bash scripts/install_env.sh\n"
+        "  source \"$(conda info --base)/etc/profile.d/conda.sh\"\n"
+        "  conda activate \"$PWD/.conda_env\"\n"
         "\n"
-        "[note] python -m pip install -e . --no-deps only refreshes TriFuseSurv2 code; "
-        "it does not install missing modules.\n"
+        "Without activation, set PYTHON_BIN to the Miniforge env Python.\n"
+    )
+    raise SystemExit(1)
+PY
+}
+
+tf_require_torch_cuda() {
+  local python_bin="${PYTHON_BIN:-python3}"
+  if ! command -v "$python_bin" >/dev/null 2>&1; then
+    echo "[error] required python executable not found: $python_bin" >&2
+    return 1
+  fi
+
+  "$python_bin" - <<'PY'
+import os
+import sys
+
+try:
+    import torch
+except Exception as exc:
+    sys.stderr.write(f"[error] failed to import torch: {exc}\n")
+    raise SystemExit(1)
+
+print(
+    "[cuda-check] "
+    f"torch={getattr(torch, '__version__', '<unknown>')} "
+    f"torch_cuda={torch.version.cuda} "
+    f"cuda_available={torch.cuda.is_available()} "
+    f"device_count={torch.cuda.device_count()} "
+    f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}",
+    flush=True,
+)
+
+if torch.version.cuda is None:
+    sys.stderr.write(
+        "[error] PyTorch is CPU-only in the active environment. Recreate the "
+        "Miniforge env with CUDA PyTorch:\n"
+        "  cd TriFuseSurv2_package\n"
+        "  rm -rf .conda_env\n"
+        "  PYTORCH_SPEC='pytorch=2.5.1=*cuda12.4*' PYTORCH_CUDA_SPEC=pytorch-cuda=12.4 "
+        "bash scripts/install_env.sh\n"
+    )
+    raise SystemExit(1)
+
+if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+    sys.stderr.write(
+        "[error] CUDA PyTorch is installed, but no CUDA device is visible. "
+        "Run this from a GPU node/session and verify nvidia-smi works.\n"
     )
     raise SystemExit(1)
 PY

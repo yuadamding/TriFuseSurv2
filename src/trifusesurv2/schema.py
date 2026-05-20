@@ -49,7 +49,7 @@ RADIOLOGY_HABITATS: tuple[str, ...] = (
 PROGNOSTIC_CLINICAL_TOKEN_GROUPS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
     [
         ("biology", ("HPV", "PATHOLOGY")),
-        ("burden", ("T", "N", "M", "NSTAGE")),
+        ("burden", ("T", "N", "M", "NSTAGE", "T_RAW", "N_RAW", "M_RAW", "NSTAGE_RAW")),
         ("host", ("AGE", "SEX", "RACE", "KFCF", "SMOKE", "ALCOHOL")),
     ]
 )
@@ -57,7 +57,7 @@ PROGNOSTIC_CLINICAL_TOKEN_GROUPS: "OrderedDict[str, tuple[str, ...]]" = OrderedD
 TREATMENT_AWARE_CLINICAL_TOKEN_GROUPS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
     [
         ("biology", ("HPV", "PATHOLOGY")),
-        ("burden", ("T", "N", "M", "NSTAGE")),
+        ("burden", ("T", "N", "M", "NSTAGE", "T_RAW", "N_RAW", "M_RAW", "NSTAGE_RAW")),
         ("host", ("AGE", "SEX", "RACE", "KFCF", "SMOKE", "ALCOHOL")),
         ("treatment", ("TX",)),
     ]

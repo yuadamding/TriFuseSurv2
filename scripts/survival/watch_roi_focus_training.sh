@@ -8,6 +8,7 @@ cd "$WORKSPACE_ROOT"
 METRICS_CSV="${METRICS_CSV:-}"
 OUT_DIR="${OUT_DIR:-runs}"
 FOLD="${FOLD:-}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 DISCOVER="${DISCOVER:-1}"
 LATEST_N="${LATEST_N:-8}"
 CHECK_LATEST_N="${CHECK_LATEST_N:-$LATEST_N}"
@@ -88,7 +89,7 @@ run_once() {
     return 2
   fi
 
-  python3 - "$metrics" <<'PY'
+  "$PYTHON_BIN" - "$metrics" <<'PY'
 from __future__ import annotations
 
 import csv

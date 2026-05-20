@@ -69,7 +69,7 @@ fi
 export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 if [[ "$SKIP_REQUIREMENTS_CHECK" != "1" && "$SKIP_REQUIREMENTS_CHECK" != "true" && "$SKIP_REQUIREMENTS_CHECK" != "yes" ]]; then
   source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
-  tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom rt_utils cv2
+  tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom
 fi
 
 mkdir -p "$OUT_DIR"
