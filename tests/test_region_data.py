@@ -60,6 +60,9 @@ class RegionDataTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.output = self.root / 'output'
         self.config = {'setting': {'binWidth': 25}, 'featureClass': {'firstorder': ['Mean']}}
+        self.grid_config = {'schema_version': 1, 'spacing_xyz': [1.0, 1.5, 2.0], 'origin_xyz': [0.0, 0.0, 0.0],
+                            'direction': [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                            'units': 'mm', 'coordinate_system': 'LPS'}
 
     def case(self, pid='001', *, ln_available=True, value=0.5, scan_id=None):
         source = self.root / 'sources' / pid
@@ -81,6 +84,7 @@ class RegionDataTests(unittest.TestCase):
         row['radiomics_ct_path'] = row['hu']
         job = dict(row=copy.deepcopy(row), index=0, id_col='patient_id', meta_dir=str(source), out_root=str(self.output),
                    out_csv_dir=str(self.output), output_size_dhw=(32, 32, 32), region_mode='verified',
+                   sampling_policy='common_grid', grid_config=copy.deepcopy(self.grid_config),
                    margin_mm=10.0, valid_tissue_policy='full_fov', overwrite=False,
                    expand_to_aspect=True, fail_empty_roi=True, ct_col='ct', mask_pt_col='pt', mask_ln_col='ln')
         result = crop._process_one(job)
@@ -127,6 +131,25 @@ class RegionDataTests(unittest.TestCase):
             self.assertEqual(features[f'region_id__{name}'], manifest['regions'][name]['image_region_id'])
             self.assertEqual(features[f'feature_status__{name}'], 'valid')
 
+    def test_fractional_lattice_phase_survives_disk_at_large_lps_origins(self):
+        _, _, job = self.case()
+        for key in ('ct', 'pt', 'ln', 'hu'):
+            path = job['row'][key]
+            image = sitk.ReadImage(path)
+            image.SetOrigin((-1000.3, -400.7, -200.2))
+            sitk.WriteImage(image, path)
+        job['grid_config']['spacing_xyz'] = [1.3, 1.5, 2.0]
+        job['grid_config']['origin_xyz'] = [.123456789, .234567891, .345678912]
+        job['out_root'] = job['out_csv_dir'] = str(self.root / 'precise')
+        result = crop._process_one(job)
+        manifest = load_region_manifest(Path(job['out_root']) / result['region_manifest_path'])
+        image_path = Path(job['out_root']) / result['ct_out_path']
+        self.assertEqual(image_path.suffix, '.mha')
+        actual = sitk.ReadImage(str(image_path))
+        self.assertEqual(actual.GetOrigin(), tuple(manifest['image']['geometry']['origin_xyz']))
+        self.assertEqual(actual.GetSpacing(), tuple(job['grid_config']['spacing_xyz']))
+        load_region_arrays(manifest, ct_path=image_path)
+
     def test_encoder_and_dataset_reject_mismatched_radiomics(self):
         cases = [self.case('001'), self.case('002', value=0.7)]
         rows = [self.features(manifest) for _, manifest, _ in cases]
@@ -164,9 +187,11 @@ class RegionDataTests(unittest.TestCase):
         source = self.root / 'input.csv'
         pd.DataFrame([job['row']]).rename(columns={'patient_id': 'Patient_ID'}).to_csv(source, index=False)
         output = self.root / 'cli_output'
+        config = self.root / 'grid.json'; config.write_text(json.dumps(self.grid_config))
         with contextlib.redirect_stdout(io.StringIO()):
             crop.main(['--meta_csv', str(source), '--out_root', str(output), '--ct_col', 'ct',
                        '--mask_pt_col', 'pt', '--mask_ln_col', 'ln', '--valid_tissue_policy', 'full_fov',
+                       '--grid_config_json', str(config),
                        '--output_size', '32', '32', '32'])
         meta = read_identifier_csv(output / 'cohort_preprocessed_stage2_roi.csv')
         self.assertIn('Patient_ID', meta)
@@ -176,6 +201,71 @@ class RegionDataTests(unittest.TestCase):
         self.assertEqual(meta.loc[0, 'radiomics_scan_id'], '00001')
         manifest = load_region_manifest(output / meta.loc[0, 'region_manifest_path'], '001')
         self.assertEqual(manifest['scan_id'], '00001')
+        self.assertEqual(manifest['sampling']['policy'], 'common_grid')
+        self.assertEqual(manifest['image']['geometry']['spacing_xyz'], [1.0, 1.5, 2.0])
+
+    def test_verified_cli_requires_an_explicit_common_grid(self):
+        _, _, job = self.case()
+        source = self.root / 'input.csv'; pd.DataFrame([job['row']]).to_csv(source, index=False)
+        output = self.root / 'not_created'
+        with self.assertRaisesRegex(ValueError, 'requires --grid_config_json'):
+            crop.main(['--meta_csv', str(source), '--out_root', str(output), '--ct_col', 'ct',
+                       '--mask_pt_col', 'pt', '--mask_ln_col', 'ln', '--valid_tissue_policy', 'full_fov'])
+        self.assertFalse(output.exists())
+
+    def test_common_grid_overflow_fails_before_output_publication(self):
+        _, _, job = self.case()
+        output = self.root / 'too_small'
+        job.update(out_root=str(output), out_csv_dir=str(output), output_size_dhw=(8, 8, 8))
+        with self.assertRaisesRegex(ValueError, 'canvas overflow'):
+            crop._process_one(job)
+        self.assertFalse(output.exists())
+
+    def test_legacy_resize_remains_an_explicit_diagnostic_path(self):
+        _, _, job = self.case()
+        output = self.root / 'legacy_resize'
+        job.update(out_root=str(output), out_csv_dir=str(output), sampling_policy='legacy_resize')
+        result = crop._process_one(job)
+        manifest = load_region_manifest(output / result['region_manifest_path'], '001')
+        self.assertEqual(manifest['sampling']['policy'], 'legacy_resize')
+        self.assertTrue(manifest['sampling']['diagnostic_only'])
+        self.assertNotEqual(manifest['image']['geometry']['spacing_xyz'], self.grid_config['spacing_xyz'])
+
+    def test_remote_node_changes_crop_but_not_primary_common_grid_measurements(self):
+        cases = [self.case('001'), self.case('002')]
+        distant_job = cases[1][2]
+        path = Path(distant_job['row']['ln'])
+        image = sitk.ReadImage(str(path))
+        array = sitk.GetArrayFromImage(image)
+        array[22:25, 22:25, 34:37] = 1
+        changed = sitk.GetImageFromArray(array); changed.CopyInformation(image)
+        sitk.WriteImage(changed, str(path))
+        manifests = []
+        for _, _, job in cases:
+            output = self.root / 'common_phantom'
+            job = copy.deepcopy(job)
+            job.update(out_root=str(output), out_csv_dir=str(output), output_size_dhw=(64, 64, 64))
+            result = crop._process_one(job)
+            manifests.append(load_region_manifest(output / result['region_manifest_path'], job['row']['patient_id']))
+        first, second = manifests
+        self.assertEqual(first['sampling']['policy_id'], second['sampling']['policy_id'])
+        self.assertEqual(first['sampling']['full_grid_geometry'], second['sampling']['full_grid_geometry'])
+        self.assertNotEqual(first['sampling']['crop_start_dhw'], second['sampling']['crop_start_dhw'])
+        left, right = [self.features(manifest) for manifest in manifests]
+        for prefix in ('PT_intratumor__', 'PT_peritumor_10mm__'):
+            for feature in ('original_firstorder_Mean', 'original_shape_VoxelVolume'):
+                self.assertEqual(left[prefix + feature], right[prefix + feature])
+        for name in ('pt_intra', 'pt_peri'):
+            self.assertEqual(first['regions'][name]['physical_volume_mm3'], second['regions'][name]['physical_volume_mm3'])
+            self.assertEqual(first['sampling']['regions'][name]['image_volume_mm3'], second['sampling']['regions'][name]['image_volume_mm3'])
+        self.assertEqual(first['image']['geometry']['spacing_xyz'], self.grid_config['spacing_xyz'])
+
+    def test_radiomics_sampling_policy_binding_cannot_be_changed(self):
+        _, manifest, _ = self.case()
+        row = self.features(manifest)
+        row['sampling_policy_id'] = 'different-grid'
+        with self.assertRaisesRegex(ValueError, 'sampling policy'):
+            validate_radiomics_binding(row, manifest)
 
     def test_verified_warm_cache_avoids_hashes_and_decodes_and_returns_copies(self):
         row, _, _ = self.case()

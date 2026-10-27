@@ -50,6 +50,10 @@ def inspect_manifest(path, *, patient_id=None, scan_id=None, attributes=None):
         raise ValueError("Metadata acquisition identifier differs from manifest scan_id.")
     reference = ReferenceGeometry.from_dict(manifest["reference_geometry"])
     model = ReferenceGeometry.from_dict(manifest["image"]["geometry"])
+    sampling = manifest.get("sampling", {})
+    if sampling.get("policy") == "common_grid":
+        from trifusesurv2.preprocessing.sampling import validate_sampling_metadata
+        validate_sampling_metadata(manifest)
     if str(manifest["image"]["scan_id"]) != str(manifest["scan_id"]):
         raise ValueError("Model image and reference acquisition identities differ.")
     patient = {
@@ -57,6 +61,8 @@ def inspect_manifest(path, *, patient_id=None, scan_id=None, attributes=None):
         "manifest_path": str(path), "manifest_sha256": hashlib.sha256(payload).hexdigest(),
         "validation_scope": SCOPE, **(attributes or {}),
         "model_shape_dhw": "x".join(map(str, model.shape_dhw)),
+        "sampling_policy": sampling.get("policy", "legacy_unrecorded"),
+        "sampling_policy_id": sampling.get("policy_id"),
         "model_voxel_volume_mm3": model.voxel_volume_mm3,
         "model_spacing_anisotropy": max(model.spacing_xyz) / min(model.spacing_xyz),
     }
@@ -115,6 +121,8 @@ def distribution(values):
 def aggregate(patients, regions):
     return {
         "patient_scan_count": len(patients),
+        "sampling_policies": dict(Counter(row.get("sampling_policy", "legacy_unrecorded") for row in patients)),
+        "common_grid_policy_ids": sorted({row["sampling_policy_id"] for row in patients if row.get("sampling_policy_id")}),
         "metrics": {name: distribution(row.get(name) for row in patients) for name in NUMERIC_METRICS},
         "regions": {
             habitat: {

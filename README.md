@@ -8,8 +8,18 @@ improved prognosis or clinical validity.
 Start with the [anatomical correspondence workflow](docs/anatomical_correspondence.md)
 for input requirements, migration, comparison settings, and remaining study gates.
 The principal comparison recipe disables both image-token dropout paths.
+It also requires every patient to use the same explicit common-grid policy.
+The preprocessor maps the full available source onto that physical lattice,
+then crops/pads by integer offsets; it never resizes an overflowing canvas.
 `Patient_ID` is the default patient key, with an unambiguous `patient_id` alias
 accepted. Acquisition and provenance identifiers retain their original strings.
+
+The [development sampling proposal](docs/common_grid_qualification.md) records
+the local input audit, candidate grid and extraction configuration. The local
+613-case inventory contains previously prepared inputs with missing original
+CT/RTSTRUCT paths and no qualified HU provenance. It is not a ready verified
+cohort. Actual PyRadiomics and training qualification on the authorized single
+Kubernetes H100 remain pending; no clinical results are claimed.
 
 ## Contents
 
@@ -20,7 +30,7 @@ src/trifusesurv2/
   encoders/                          # clinical and radiomics token encoders
   utils/                             # data loading, survival metrics, ROI focus metrics
   data/                              # lightweight token batch containers
-  preprocessing/                     # physical compartments, provenance and loading
+  preprocessing/                     # physical compartments, common lattice, provenance and loading
   explain/gradcam_v2_core.py         # optional epoch Grad-CAM core
   schema.py
 
@@ -82,15 +92,17 @@ PYTHON_BIN="$PWD/.conda_env/bin/python" bash scripts/survival/search_roi_constra
 
 ## ROI-Crop Preprocessing
 
-The survival model can train on ROI-focused crops instead of the original
-`128x256x256` volumes. Use crops with margin, not exact outside-mask zeroing,
-because the model's `pt_peri` and `ln_peri` tokens need real peritumoral CT
-context.
+The survival model can train on ROI-focused canvases containing the complete
+declared compartments. Common-grid preprocessing is the verified CLI default
+and requires an explicit JSON configuration for physical spacing, direction
+and lattice origin. It has no automatic resolution choice. Image context is
+retained inside the available source FOV; exterior padding contributes no
+compartment support.
 
-CT inputs must already be finite and normalized to `[0,1]` with the same
-preprocessing for training and evaluation. Raw HU inputs are rejected by both
-the crop preprocessor and the dataset loader; choosing `BODY_CT_THR=auto` does
-not normalize an image.
+Learned-image CT inputs must already be finite and normalized to `[0,1]` with
+the same preprocessing for training and evaluation. Raw HU cannot replace that
+input; a separately bound HU image from the same acquisition may serve the
+radiomics branch. Choosing `BODY_CT_THR=auto` does not normalize an image.
 
 Patient IDs must be unique after directory-name sanitization. The preprocessor
 checks all IDs before writing output. Each generated case includes
@@ -105,26 +117,37 @@ using the same 10 mm Euclidean definition, excludes both tumor interiors, and
 intersects an explicitly supplied valid-tissue mask. Shell overlap is allowed
 and recorded. Regions are constructed before cropping, persisted, and used by
 both CT pooling and radiomics. Empty shells remain empty. Missing annotations
-remain distinct from known absence.
+remain distinct from known absence. Common-grid images and masks are compressed
+`.mha` files, preserving the double-precision geometry needed for arbitrary
+lattice phase. Geometry is checked after writing and before publication. The
+diagnostic legacy resize path retains `.nii.gz` output.
 
 Metadata must include acquisition, contour and intensity provenance, plus the
 valid-tissue definition; see the [required fields](docs/anatomical_correspondence.md#input-contract).
 Existing crops and old radiomics CSVs are **not** automatically qualified.
 
-From the workspace root:
+Example after reference metadata and a sampling policy have been qualified:
 
 ```bash
-cd /storage/TriFuseSurv
-
-PYTHONPATH="$PWD/TriFuseSurv2/src" \
-"$PWD/TriFuseSurv2/.conda_env/bin/python" \
-  TriFuseSurv2/scripts/preprocess_roi_inputs.py \
-  --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
-  --out_root OPSCC_preprocessed_roi_96x128x128 \
-  --output_size 96 128 128 \
+PYTHONPATH=src python scripts/preprocess_roi_inputs.py \
+  --meta_csv /path/to/qualified_reference_metadata.csv \
+  --id_col Patient_ID \
+  --sampling_policy common_grid \
+  --grid_config_json /path/to/qualified_grid.json \
+  --out_root /path/to/new_verified_inputs \
+  --output_size 96 160 96 \
   --region_mode verified --margin_mm 10 \
   --workers 4
 ```
+
+Canvas size is D/H/W; physical spacing is x/y/z. The proposed development
+configuration is [1 × 1 × 3 mm](configs/common_grid_candidate.json), which gives
+this canvas a 96 × 160 × 288 mm physical FOV in x/y/z. That candidate is not a
+frozen clinical policy. A larger spatial extent requires a larger canvas or
+bucket with the same lattice. Overflow fails explicitly. The former
+patient-dependent resize remains available only as the explicit
+`--sampling_policy legacy_resize` diagnostic and cannot enter a principal
+F0–F4 comparison.
 
 Extract matching radiomics with a reviewed explicit configuration, then launch
 one selected fusion mode against the generated metadata:
@@ -133,17 +156,17 @@ one selected fusion mode against the generated metadata:
 FUSION_MODE=F3 REGION_MODE=verified DEPLOYMENT_MODE=expert \
 COMPARISON_RECIPE=principal ID_COL=Patient_ID \
 ENDPOINT=OS DEBUG_FOLD=3 \
-META_CSV=OPSCC_preprocessed_roi_96x128x128/cohort_preprocessed_stage2_roi.csv \
-RADIOMICS_SOURCE=regions_radiomics.csv \
-IMG_SIZE="96 128 128" \
+META_CSV=/path/to/new_verified_inputs/verified_metadata.csv \
+RADIOMICS_SOURCE=/path/to/qualified_regions_radiomics.csv \
+IMG_SIZE="96 160 96" \
 OUT_DIR=runs/fusion_f3_os_fold03 \
-bash TriFuseSurv2/scripts/survival/train_contour_aware_survival.sh
+bash scripts/survival/train_contour_aware_survival.sh
 ```
 
-`96x128x128` is about 5.3x fewer voxels than `128x256x256`, so it should
-improve GPU step time and may allow more aggressive batch/checkpoint settings.
-If nodal disease is far from the primary tumor, use a larger crop such as
-`128 160 160` or a larger margin.
+Use the actual generated metadata filename. Neither local preprocessed CSV
+already satisfies these provenance and qualification prerequisites. The first
+controlled contrast remains F2 versus F3; matched splits, initialization,
+measurements and training settings are required.
 
 When `SEARCH_PROFILE=auto`, any `IMG_SIZE` smaller than `128 256 256` selects
 the ROI-crop search profile. That profile uses larger train batches
@@ -198,6 +221,13 @@ CACHE_VOLUMES=0
 VOLUME_CACHE_SIZE=6
 ROI_FOCUS_EVERY_BATCHES=1
 ```
+
+The search contract fingerprints the checkpoint actually selected for each
+relevant fold and for backbone configuration alignment, using the trainer's
+explicit-file, `all/`, and fold-directory resolution rules. Resolved paths,
+existence and SHA256 are checked before skipping completed trials or changing
+receipts. Replacing checkpoint bytes at the same path, making a previously
+missing initialization available, or changing directory selection rejects reuse.
 
 The search is restart-aware. By default, rerunning the same command with the
 same `OUT_ROOT` skips trials marked `done` with return code `0`, retries failed
@@ -296,7 +326,8 @@ python -m unittest discover -s tests -v
 These checks use synthetic inputs and temporary mocked launchers, including a
 small real CPU model forward/backward pass. They cover preprocessing reuse,
 patient identity, physical shells, image/radiomics identity, missing annotations,
-F0–F4 routing, ROI pooling, checkpoint recovery, survival column overrides,
+common-grid invariance under distant nodes, integer crop/padding and canvas
+changes, F0–F4 routing, ROI pooling, checkpoint recovery, survival column overrides,
 selection direction, and process cleanup. The extractor adapter is tested with
 a synthetic implementation; this does not qualify a PyRadiomics installation,
 full-cohort performance, or CUDA execution.

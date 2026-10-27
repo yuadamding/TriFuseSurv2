@@ -326,6 +326,7 @@ root = Path(sys.argv[1])
 package = Path(sys.argv[3]).resolve()
 sys.path.insert(0, str(package / 'src'))
 from trifusesurv2.utils.provenance import source_contract_identity
+from trifusesurv2.utils.warmstart import launcher_warmstart_settings, warmstart_fingerprints
 
 separator = sys.argv.index('--trials', 4)
 common = dict(item.split('=', 1) for item in sys.argv[4:separator])
@@ -379,12 +380,17 @@ inputs['region_manifests'] = sorted(manifests, key=lambda item: item['path'])
 wrapper_identity = file_identity(sys.argv[2])
 train_script_identity = file_identity(inherited['TRAIN_SCRIPT']) if inherited.get('TRAIN_SCRIPT') else None
 trials = []
+warmstart_cache = {}
 for encoded in sys.argv[separator + 1:]:
     name, env, args = encoded.split('|', 2)
     # Preserve every assignment and argument, including ordered overrides.
-    trials.append({'name': name, 'env': shlex.split(env), 'args': shlex.split(args)})
+    env_assignments, arguments = shlex.split(env), shlex.split(args)
+    effective_env = {**inherited, **common, **dict(item.split('=', 1) for item in env_assignments)}
+    warmstart_settings = launcher_warmstart_settings(effective_env, arguments)
+    trials.append({'name': name, 'env': env_assignments, 'args': arguments,
+                   'warmstart': warmstart_fingerprints(warmstart_settings, cache=warmstart_cache)})
 current = {
-    'schema_version': 2,
+    'schema_version': 3,
     'source_identity': source_contract_identity(package),
     'train_wrapper': wrapper_identity,
     'train_script': train_script_identity,

@@ -53,6 +53,8 @@ def extract_case(manifest, extractor, config, *, software_version: str) -> dict[
         'radiomics_config_sha256': canonical_json_sha256(config),
         'radiomics_software': f'PyRadiomics {software_version}',
     }
+    if manifest.get('sampling') is not None:
+        row['sampling_policy_id'] = manifest['sampling']['policy_id']
     for habitat, prefix in DEFAULT_GROUP_PREFIXES.items():
         record = manifest['regions'][habitat]
         row[f'region_id__{habitat}'] = record['image_region_id']

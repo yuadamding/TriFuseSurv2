@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Create fixed-size ROI-crop inputs for TriFuseSurv2 survival training.
 
-Verified mode defines physical 10 mm compartments on the reference acquisition
-before cropping and writes their model-grid supports and provenance manifest.
+Verified mode defines physical 10 mm compartments on the reference acquisition,
+resamples to an explicitly configured common physical lattice, then crops/pads
+without resizing and writes shared supports plus a provenance manifest.
 The output metadata rewrites CT/PT/LN paths and adds region_manifest_path.
 Legacy mode retains the historical voxel-margin crop without verified regions.
 """
@@ -377,23 +378,6 @@ def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
     margin_mm = float(job.get("margin_mm", 10.0))
     if not np.isfinite(margin_mm) or margin_mm < 10.0:
         raise ValueError("Verified --margin_mm must be finite and at least the fixed 10 mm shell width.")
-    margin = tuple(np.ceil(margin_mm / np.asarray(geometry.spacing_dhw)).astype(int))
-    union = np.zeros(geometry.shape_dhw, dtype=bool)
-    for lesion in contours.values():
-        if lesion is not None:
-            union |= lesion
-    start, end, status = _bbox_from_mask(
-        union, margin_dhw=margin, output_size_dhw=shape,
-        expand_to_aspect=bool(job["expand_to_aspect"]), fail_empty_roi=bool(job["fail_empty_roi"]),
-    )
-    # The reference shells are defined before cropping. Ensure all available
-    # declared tissue survives; FOV-boundary truncation remains separately recorded.
-    crop_slices = tuple(slice(int(a), int(b)) for a, b in zip(start, end))
-    for name, support in masks.items():
-        if int(support[crop_slices].sum()) != int(support.sum()):
-            raise ValueError(f"{pid}/{name}: physical crop would truncate its authoritative support.")
-    ct_crop = _resample_to_size(_crop_image(ct, start, end), shape, is_mask=False)
-    image_geometry = ReferenceGeometry.from_image(ct_crop)
     radiomics_ct = ct
     radiomics_transform = intensity
     raw_col = str(job.get("radiomics_ct_col", "radiomics_ct_path"))
@@ -409,6 +393,59 @@ def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("Radiomics CT must contain finite intensities.")
         radiomics_transform = _required_text(row, "radiomics_intensity_transform")
         sources["radiomics_ct"] = {"path": str(path.resolve()), **_file_fingerprint(path)}
+    sampling_policy = str(job.get("sampling_policy", "legacy_resize"))
+    if sampling_policy == "common_grid":
+        from trifusesurv2.preprocessing.sampling import CommonGridPolicy, sample_common_grid
+        if not job.get("grid_config"):
+            raise ValueError("Common-grid preprocessing requires an explicit spacing/orientation/phase grid configuration.")
+        if bool(job["fail_empty_roi"]) and not any(support.any() for support in masks.values()):
+            raise ValueError("empty PT/LN ROI mask")
+        grid_policy = CommonGridPolicy.from_dict(job["grid_config"])
+        sampled = sample_common_grid(
+            {"image": ct, "radiomics_image": radiomics_ct}, masks, geometry, grid_policy, shape,
+            context_margin_mm=max(0.0, margin_mm - 10.0),
+            reference_region_ids={name: record["region_id"] for name, record in manifest["regions"].items()},
+        )
+        ct_crop, raw_crop = sampled.images["image"], sampled.images["radiomics_image"]
+        model_masks = sampled.mask_images
+        image_geometry = sampled.geometry
+        sampling = sampled.metadata
+        start = np.asarray(sampling["crop_start_dhw"], dtype=np.int64)
+        end = start + np.asarray(shape, dtype=np.int64)
+        margin = tuple(np.ceil(margin_mm / np.asarray(image_geometry.spacing_dhw)).astype(int))
+        status = "common_grid_crop_pad"
+        spatial_transform = "full acquisition resampled once to a declared common physical lattice, then integer crop/pad without resizing"
+        for name, record in sampling["regions"].items():
+            if record["retained_reference_voxels"] != int(masks[name].sum()):
+                raise ValueError(f"{pid}/{name}: common-grid crop loses source support voxel centers.")
+    elif sampling_policy == "legacy_resize":
+        from trifusesurv2.preprocessing.region_io import canonical_json_sha256
+        margin = tuple(np.ceil(margin_mm / np.asarray(geometry.spacing_dhw)).astype(int))
+        union = np.zeros(geometry.shape_dhw, dtype=bool)
+        for lesion in contours.values():
+            if lesion is not None:
+                union |= lesion
+        start, end, status = _bbox_from_mask(
+            union, margin_dhw=margin, output_size_dhw=shape,
+            expand_to_aspect=bool(job["expand_to_aspect"]), fail_empty_roi=bool(job["fail_empty_roi"]),
+        )
+        crop_slices = tuple(slice(int(a), int(b)) for a, b in zip(start, end))
+        for name, support in masks.items():
+            if int(support[crop_slices].sum()) != int(support.sum()):
+                raise ValueError(f"{pid}/{name}: physical crop would truncate its authoritative support.")
+        ct_crop = _resample_to_size(_crop_image(ct, start, end), shape, is_mask=False)
+        raw_crop = _resample_to_size(_crop_image(radiomics_ct, start, end), shape, is_mask=False)
+        model_masks = {name: _resample_to_size(_crop_image(_array_image(support, ct), start, end), shape, is_mask=True)
+                       for name, support in masks.items()}
+        image_geometry = ReferenceGeometry.from_image(ct_crop)
+        configuration = {"output_shape_dhw": list(shape), "margin_mm": margin_mm,
+                         "expand_to_aspect": bool(job["expand_to_aspect"])}
+        sampling = {"policy": "legacy_resize", "policy_version": 1, "diagnostic_only": True,
+                    "configuration": configuration, "policy_id": canonical_json_sha256(configuration),
+                    "source_geometry": geometry.to_dict(), "image_geometry": image_geometry.to_dict()}
+        spatial_transform = "diagnostic legacy physical ROI crop followed by patient-dependent linear intensity resizing"
+    else:
+        raise ValueError(f"Unknown sampling policy: {sampling_policy}")
     inputs = {
         "schema_version": 2, "patient_id": pid, "scan_id": scan_id,
         "sources": sources, "margin_mm": margin_mm, "output_size_dhw": list(shape),
@@ -418,15 +455,21 @@ def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
         "radiomics_intensity_transform": radiomics_transform,
         "segmentation_provenance": manifest.get("segmentation_provenance"),
         "midline_lps_x_mm": midline,
+        "sampling_policy": sampling_policy, "sampling": sampling,
     }
     case_dir = out_root / _safe_id(pid)
     if case_dir.resolve().parent != out_root.resolve():
         raise ValueError("Patient output directory must remain inside out_root.")
     manifest_path = case_dir / "region_manifest.json"
     provenance_path = case_dir / "roi_crop_provenance.json"
-    ct_out, pt_out, ln_out = (case_dir / n for n in ("ct_roi.nii.gz", "mask_primary_roi.nii.gz", "mask_nodal_roi.nii.gz"))
-    expected_names = ["ct_roi.nii.gz", "ct_radiomics.nii.gz", "mask_primary_roi.nii.gz", "mask_nodal_roi.nii.gz"]
-    expected_names += [f"region_{name}.nii.gz" for name in masks]
+    # NIfTI-1 stores geometry as float32. Large LPS origins and a fractional
+    # lattice phase can therefore change on disk. MetaImage retains the double
+    # precision physical geometry required by the common-grid contract.
+    extension = ".mha" if sampling_policy == "common_grid" else ".nii.gz"
+    ct_out, pt_out, ln_out = (case_dir / (n + extension) for n in ("ct_roi", "mask_primary_roi", "mask_nodal_roi"))
+    raw_name = "ct_radiomics" + extension
+    expected_names = [ct_out.name, raw_name, pt_out.name, ln_out.name]
+    expected_names += [f"region_{name}{extension}" for name in masks]
     expected_names += ["region_manifest.json"]
     existing = any((case_dir / name).exists() for name in expected_names) or provenance_path.exists()
     if existing and not bool(job["overwrite"]):
@@ -448,16 +491,15 @@ def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
         case_dir.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=".regions-", dir=case_dir) as temporary:
             stage = Path(temporary)
-            sitk.WriteImage(ct_crop, str(stage / ct_out.name))
-            raw_crop = _resample_to_size(_crop_image(radiomics_ct, start, end), shape, is_mask=False)
-            sitk.WriteImage(raw_crop, str(stage / "ct_radiomics.nii.gz"))
+            sitk.WriteImage(ct_crop, str(stage / ct_out.name), True)
+            sitk.WriteImage(raw_crop, str(stage / raw_name), True)
             for name, support in masks.items():
-                image = _resample_to_size(_crop_image(_array_image(support, ct), start, end), shape, is_mask=True)
+                image = model_masks[name]
                 arr = sitk.GetArrayFromImage(image) > 0.5
-                path = stage / f"region_{name}.nii.gz"
-                sitk.WriteImage(image, str(path))
+                path = stage / f"region_{name}{extension}"
+                sitk.WriteImage(image, str(path), True)
                 if name in {"pt_intra", "ln_intra"}:
-                    sitk.WriteImage(image, str(stage / (pt_out.name if name == "pt_intra" else ln_out.name)))
+                    sitk.WriteImage(image, str(stage / (pt_out.name if name == "pt_intra" else ln_out.name)), True)
                 record = manifest["regions"][name]
                 image_hash = mask_checksum(arr)
                 record.update(image_mask_path=path.name, image_mask_sha256=image_hash,
@@ -476,14 +518,36 @@ def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
                     "reference_boundary_truncated": record["reference_boundary_truncated"],
                     "resampling": "nearest-neighbor support representation; volume is measured, not assumed conserved",
                 }
-            for key, name, transform in (("image", ct_out.name, intensity), ("radiomics_image", "ct_radiomics.nii.gz", radiomics_transform)):
+                if sampling_policy == "common_grid":
+                    sampled_region = sampling["regions"][name]
+                    record["crop_completeness"].update(
+                        fraction=sampled_region["retained_reference_fraction"],
+                        retained_reference_voxels=sampled_region["retained_reference_voxels"],
+                        reference_retention_definition="source voxel centers inside the final crop cell field of view",
+                        full_grid_voxels=sampled_region["full_grid_voxels"],
+                        full_grid_volume_mm3=sampled_region["full_grid_volume_mm3"],
+                        retained_grid_voxels=sampled_region["image_voxels"],
+                        disappeared_on_full_grid=sampled_region["disappeared_on_full_grid"],
+                        resampling="reference support resampled once to the common lattice, followed by lossless integer crop/pad",
+                    )
+            for key, name, transform in (("image", ct_out.name, intensity), ("radiomics_image", raw_name, radiomics_transform)):
                 manifest[key] = {"path": name, "sha256": _file_fingerprint(stage / name)["sha256"],
                                  "geometry": image_geometry.to_dict(), "intensity_transform": transform,
-                                 "scan_id": scan_id, "spatial_transform": "physical ROI crop followed by linear intensity resampling"}
+                                 "scan_id": scan_id, "spatial_transform": spatial_transform,
+                                 "sampling_policy_id": sampling["policy_id"]}
             manifest["intensity_pipelines"] = {"image": intensity, "radiomics": radiomics_transform}
             manifest["source_files"] = sources
-            manifest["crop"] = {"margin_mm": margin_mm, "bbox_zyx": [start.tolist(), end.tolist()], "retains_all_available_reference_support": True}
+            manifest["sampling"] = sampling
+            manifest["crop"] = {"margin_mm": margin_mm, "bbox_zyx": [start.tolist(), end.tolist()],
+                                "bbox_grid": "full_common_grid" if sampling_policy == "common_grid" else "reference_grid",
+                                "retains_all_available_reference_support": True}
             validate_region_manifest(manifest)
+            if sampling_policy == "common_grid":
+                from trifusesurv2.preprocessing.sampling import validate_sampling_metadata
+                validate_sampling_metadata(manifest)
+                for name in expected_names:
+                    if name.endswith(extension):
+                        assert_same_geometry(image_geometry, sitk.ReadImage(str(stage / name)))
             (stage / manifest_path.name).write_text(json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n")
             receipt = {"inputs": inputs, "outputs": {name: _file_fingerprint(stage / name) for name in expected_names}}
             (stage / provenance_path.name).write_text(json.dumps(receipt, sort_keys=True, indent=2, allow_nan=False) + "\n")
@@ -496,6 +560,7 @@ def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
         "mask_nodal_out_path": _relpath(ln_out, out_csv_dir), "region_manifest_path": _relpath(manifest_path, out_csv_dir),
         "roi_crop_status": status, "roi_crop_bbox_zyx": json.dumps([start.tolist(), end.tolist()]),
         "roi_crop_margin_voxels": json.dumps(list(map(int, margin))), "roi_crop_margin_mm": margin_mm,
+        "sampling_policy": sampling_policy, "sampling_policy_id": sampling["policy_id"],
         "roi_crop_output_size_dhw": json.dumps(list(shape)), "roi_crop_source_ct": str(ct_path),
     }
 
@@ -518,6 +583,10 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Legacy mode only: one isotropic margin or three margins in D H W voxel order.",
     )
     p.add_argument("--region_mode", choices=("verified", "legacy"), default="verified")
+    p.add_argument("--sampling_policy", choices=("common_grid", "legacy_resize"), default="common_grid",
+                   help="Verified sampling: common lattice and integer crop/pad, or explicit legacy resize diagnostic.")
+    p.add_argument("--grid_config_json", default="",
+                   help="Required for common_grid: explicit spacing_xyz, origin_xyz, direction, units and LPS convention.")
     p.add_argument("--margin_mm", type=float, default=10.0, help="Verified physical crop margin; at least the fixed 10 mm shell.")
     p.add_argument("--scan_id_col", default="scan_id")
     p.add_argument("--valid_tissue_col", default="valid_tissue_out_path")
@@ -530,7 +599,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no_expand_to_aspect",
         action="store_true",
-        help="Do not expand the ROI bounding box toward the output-size aspect ratio before resampling.",
+        help="Legacy resize only: do not expand the ROI box toward the output-size aspect ratio.",
     )
     return p
 
@@ -578,6 +647,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable_indices = [int(i) for i in df.index]
 
     _validate_output_ids(df.loc[runnable_indices, args.id_col].tolist())
+    grid_config = None
+    if args.region_mode == "verified" and args.sampling_policy == "common_grid":
+        if not args.grid_config_json:
+            raise ValueError("Verified common_grid requires --grid_config_json; choose and qualify a physical lattice explicitly.")
+        from trifusesurv2.preprocessing.sampling import CommonGridPolicy
+        grid_config = CommonGridPolicy.from_dict(json.loads(Path(args.grid_config_json).read_text())).to_dict()
     df[args.id_col] = df[args.id_col].astype(str)
     out_root.mkdir(parents=True, exist_ok=True)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -586,6 +661,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         {
             "index": int(i),
             "region_mode": args.region_mode, "margin_mm": args.margin_mm,
+            "sampling_policy": args.sampling_policy, "grid_config": grid_config,
             "scan_id_col": args.scan_id_col, "valid_tissue_col": args.valid_tissue_col,
             "valid_tissue_policy": args.valid_tissue_policy, "radiomics_ct_col": args.radiomics_ct_col,
             "deployment_mode": args.deployment_mode,
@@ -606,9 +682,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         for i in runnable_indices
     ]
 
+    sampling_summary = (f"sampling_policy={args.sampling_policy} margin_mm={args.margin_mm}"
+                        if args.region_mode == "verified" else f"legacy_margin_dhw={margin_dhw}")
     print(
         f"[roi-preprocess] meta_csv={meta_csv} rows={len(df)} runnable={len(jobs)} "
-        f"out_root={out_root} output_size_dhw={output_size_dhw} margin_dhw={margin_dhw}"
+        f"out_root={out_root} output_size_dhw={output_size_dhw} {sampling_summary}"
     )
 
     results: list[dict[str, Any]] = []
@@ -636,6 +714,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if "region_manifest_path" in result:
             df.at[idx, "region_manifest_path"] = result["region_manifest_path"]
             df.at[idx, "roi_crop_margin_mm"] = result["roi_crop_margin_mm"]
+            df.at[idx, "sampling_policy"] = result["sampling_policy"]
+            df.at[idx, "sampling_policy_id"] = result["sampling_policy_id"]
         for key in (
             "roi_crop_status",
             "roi_crop_bbox_zyx",

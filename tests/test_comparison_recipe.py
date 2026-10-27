@@ -40,6 +40,9 @@ class ComparisonRecipeTests(unittest.TestCase):
         self.env = dict(os.environ)
         for name in ("COMPARISON_RECIPE", "TOKEN_DROPOUT", "V2_IMAGE_HABITAT_DROPOUT_P", "FUSION_MODE", "ID_COL", "SEED", "REGION_MODE", "V2_NUM_HEADS"):
             self.env.pop(name, None)
+        for prefix in ("CONTOUR_WARMSTART", "SHARED_SEG_PRETRAIN"):
+            for suffix in ("CKPT", "DIR", "NAME"):
+                self.env.pop(f"{prefix}_{suffix}", None)
         self.env.update(
             PYTHON_BIN=str(self.python_mock), DEVICE="cpu", MOCK_ARGUMENTS=str(self.capture),
             OUT_DIR=str(self.root / "outputs"),
@@ -178,13 +181,17 @@ class ComparisonRecipeTests(unittest.TestCase):
                 finally:
                     path.write_bytes(original)
 
-    def test_search_source_digest_rejects_changed_program_defaults(self):
-        copied = self.root / "copied-package"
+    def copy_search_package(self, name="copied-package"):
+        copied = self.root / name
         shutil.copytree(PACKAGE / "src", copied / "src", ignore=shutil.ignore_patterns("__pycache__"))
         scripts = copied / "scripts/survival"
         scripts.mkdir(parents=True)
         for name in (SEARCH.name, LAUNCHER.name, "train_with_roi_focus_watch.sh"):
             shutil.copy2(PACKAGE / "scripts/survival" / name, scripts / name)
+        return scripts
+
+    def test_search_source_digest_rejects_changed_program_defaults(self):
+        scripts = self.copy_search_package()
         with mock.patch(f"{__name__}.SEARCH", scripts / SEARCH.name):
             result, out_root = self.run_search("full")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -215,6 +222,87 @@ class ComparisonRecipeTests(unittest.TestCase):
         result, _ = self.run_search("full", out_root=out_root, WORKERS="3", LOG_EVERY_BATCHES="1", TRIAL_LIMIT="2")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((out_root / "search_recipe_contract.json").read_bytes(), contract)
+
+    def completed_search(self, **overrides):
+        result, out_root = self.run_search("full", TRIAL_LIMIT="1", **overrides)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        contract = json.loads((out_root / "search_recipe_contract.json").read_text())
+        trial = out_root / ("00_" + contract["trials"][0]["name"])
+        trial.mkdir()
+        (trial / "status.txt").write_text("done\n")
+        (trial / "status.rc").write_text("0\n")
+        result, _ = self.run_search("full", out_root=out_root, TRIAL_LIMIT="1", WORKERS="3", **overrides)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("action=skip_done", result.stdout)
+        receipts = {path.relative_to(out_root): path.read_bytes()
+                    for path in out_root.rglob("*") if path.is_file()}
+        return out_root, receipts, contract
+
+    def assert_warmstart_reuse_rejected(self, out_root, receipts, **overrides):
+        result, _ = self.run_search("full", out_root=out_root, TRIAL_LIMIT="1", WORKERS="3", **overrides)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Search recipe contract changed", result.stderr)
+        self.assertNotIn("action=skip_done", result.stdout)
+        for path, content in receipts.items():
+            self.assertEqual((out_root / path).read_bytes(), content)
+
+    def test_search_fingerprints_explicit_warmstart_before_accepting_completed_trial(self):
+        checkpoint = self.root / "weights.pt"
+        checkpoint.write_bytes(b"original synthetic weights")
+        overrides = {"CONTOUR_WARMSTART_CKPT": str(checkpoint)}
+        out_root, receipts, contract = self.completed_search(**overrides)
+        bound = contract["trials"][0]["warmstart"]["folds"]["3"]
+        self.assertEqual(bound["path"], str(checkpoint))
+        self.assertTrue(bound["exists"])
+        self.assertEqual(len(bound["sha256"]), 64)
+        checkpoint.write_bytes(b"replacement synthetic weights")
+        self.assert_warmstart_reuse_rejected(out_root, receipts, **overrides)
+
+    def test_search_rejects_previously_missing_legacy_warmstart_becoming_available(self):
+        checkpoint = self.root / "not-yet-available.pt"
+        overrides = {"SHARED_SEG_PRETRAIN_CKPT": str(checkpoint)}
+        out_root, receipts, contract = self.completed_search(**overrides)
+        self.assertFalse(contract["trials"][0]["warmstart"]["folds"]["3"]["exists"])
+        checkpoint.write_bytes(b"new synthetic weights")
+        self.assert_warmstart_reuse_rejected(out_root, receipts, **overrides)
+
+    def test_search_rejects_changed_directory_fallback_selection(self):
+        directory = self.root / "warmstart-directory"
+        fallback = directory / "fold_03/seg_best.pt"
+        fallback.parent.mkdir(parents=True)
+        fallback.write_bytes(b"fallback synthetic weights")
+        overrides = {"SHARED_SEG_PRETRAIN_DIR": str(directory), "SHARED_SEG_PRETRAIN_NAME": "chosen.pt"}
+        out_root, receipts, contract = self.completed_search(**overrides)
+        self.assertEqual(contract["trials"][0]["warmstart"]["folds"]["3"]["path"], str(fallback))
+        preferred = directory / "all/chosen.pt"
+        preferred.parent.mkdir()
+        preferred.write_bytes(b"preferred synthetic weights")
+        self.assert_warmstart_reuse_rejected(out_root, receipts, **overrides)
+
+    def test_search_fingerprints_effective_per_trial_env_and_cli_overrides(self):
+        inherited = self.root / "inherited.pt"
+        trial_env = self.root / "trial-env.pt"
+        trial_cli = self.root / "trial-cli.pt"
+        for path in (inherited, trial_env, trial_cli):
+            path.write_bytes(path.name.encode())
+        scripts = self.copy_search_package("trial-package")
+        search = scripts / SEARCH.name
+        original = search.read_text()
+        edited = original.replace(
+            '"r2_bs2_lowdrop_aux35_big384|BATCH_SIZE=2',
+            f'"r2_bs2_lowdrop_aux35_big384|CONTOUR_WARMSTART_CKPT={trial_env} BATCH_SIZE=2', 1,
+        ).replace('$PRED_TRAIN|"', f'$PRED_TRAIN|--shared_seg_pretrain_ckpt {trial_cli} --debug_fold=1"', 1)
+        self.assertNotEqual(edited, original)
+        search.write_text(edited)
+        overrides = {"CONTOUR_WARMSTART_CKPT": str(inherited)}
+        with mock.patch(f"{__name__}.SEARCH", search):
+            out_root, receipts, contract = self.completed_search(**overrides)
+            first = contract["trials"][0]["warmstart"]["folds"]
+            self.assertEqual(set(first), {"1"})
+            self.assertEqual(first["1"]["path"], str(trial_cli))
+            self.assertEqual(contract["trials"][1]["warmstart"]["folds"]["3"]["path"], str(inherited))
+            trial_cli.write_bytes(b"replacement per-trial initialization")
+            self.assert_warmstart_reuse_rejected(out_root, receipts, **overrides)
 
     def test_cli_principal_defaults_and_robustness_validation(self):
         from trifusesurv2.multimodal_survival.train import parse_args

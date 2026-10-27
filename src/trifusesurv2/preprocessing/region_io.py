@@ -115,6 +115,19 @@ def load_region_manifest(path: str | Path, patient_id: str | None = None, *, dep
     if str(image.get('scan_id', '')) != str(manifest['scan_id']):
         raise ValueError('Bound image acquisition differs from the region manifest.')
     image_geometry = ReferenceGeometry.from_dict(image['geometry'])
+    sampling = manifest.get('sampling')
+    if sampling is not None:
+        if sampling.get('policy') == 'common_grid':
+            from trifusesurv2.preprocessing.sampling import validate_sampling_metadata
+            validate_sampling_metadata(manifest)
+        elif sampling.get('policy') == 'legacy_resize':
+            if not sampling.get('diagnostic_only') or sampling.get('policy_id') != canonical_json_sha256(sampling['configuration']):
+                raise ValueError('Legacy resize sampling must retain its explicit diagnostic configuration.')
+        else:
+            raise ValueError('Unknown region sampling policy.')
+        for key in ('image', 'radiomics_image'):
+            if manifest.get(key, {}).get('sampling_policy_id') != sampling['policy_id']:
+                raise ValueError(f'{key}: sampling policy differs from the region manifest.')
     for habitat in RADIOLOGY_HABITATS:
         record = manifest['regions'][habitat]
         if not all(record.get(k) for k in ('image_region_id', 'image_mask_path', 'image_mask_sha256', 'image_geometry')):
@@ -165,6 +178,9 @@ def load_region_arrays(manifest: Mapping[str, Any], *, ct_path: str | Path) -> t
         if mask_checksum(arr) != record['image_mask_sha256']:
             raise ValueError(f'{habitat}: model mask checksum differs from its region manifest.')
         arr = arr.astype(bool)
+        if manifest.get('sampling', {}).get('policy') == 'common_grid':
+            if int(arr.sum()) != manifest['sampling']['regions'][habitat]['image_voxels']:
+                raise ValueError(f'{habitat}: loaded mask volume differs from common-grid accounting.')
         if bool(record['feature_validity']['image']) != bool(record['support_valid'] and arr.any()):
             raise ValueError(f'{habitat}: image feature validity contradicts the loaded support.')
         masks.append(arr.astype(np.float32))
@@ -190,6 +206,8 @@ def validate_radiomics_binding(row: Mapping[str, Any], manifest: Mapping[str, An
     """Reject a radiomics row unless it declares the exact persisted image supports."""
     if require_identifier(row.get('scan_id'), name='scan_id') != str(manifest['scan_id']):
         raise ValueError('Radiomics acquisition scan_id does not match the image region manifest.')
+    if manifest.get('sampling') is not None and row.get('sampling_policy_id') != manifest['sampling']['policy_id']:
+        raise ValueError('Radiomics sampling policy does not match the image region manifest.')
     image = manifest.get('radiomics_image')
     if not image:
         raise ValueError('Region manifest has no qualified radiomics intensity image.')

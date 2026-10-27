@@ -1,0 +1,69 @@
+{
+  "scope": "Source CSV declarations plus two preprocessed CT header/range checks; no radiomics, clinical outcome analysis or acquisition qualification",
+  "metadata_sha256": "f79bdf507e9bd35e4619da440255244d73f8a1cef096a160c3ca4c61734a2bfe",
+  "case_count": 613,
+  "unique_patient_count": 613,
+  "nonmissing_acquisition_ids": 613,
+  "source_spacing_xyz_mm": {
+    "minimum": [
+      0.3125,
+      0.3125,
+      0.784661
+    ],
+    "median": [
+      0.488281,
+      0.488281,
+      1.0
+    ],
+    "maximum": [
+      0.607422,
+      0.607422,
+      5.43103
+    ]
+  },
+  "slice_spacing_gt_2_mm": 251,
+  "slice_spacing_gt_3_mm": 50,
+  "declared_target_spacing": {
+    "[0.5, 0.5, 1.0]": 613
+  },
+  "declared_target_size": {
+    "[128, 256, 256]": 613
+  },
+  "crop_modes": {
+    "union_bbox": 612,
+    "ct_foreground": 1
+  },
+  "primary_qc": {
+    "PT:aligned": 593,
+    "pt:aligned": 2,
+    "PT:aligned;PeriTumor:aligned": 17,
+    "PT:failed(RuntimeError)": 1
+  },
+  "nodal_qc": {
+    "empty": 97,
+    "MetaLymphnode:aligned": 513,
+    "MetaLymphnode:aligned;MetaLymphnode2:aligned": 1,
+    "Metalymphnodes:aligned": 1,
+    "MetaLymphnode:failed(RuntimeError)": 1
+  },
+  "available_original_patient_directories": 0,
+  "available_original_rtstruct_files": 0,
+  "inspected_preprocessed_ct_count": 2,
+  "inspected_preprocessed_ct_spacing_xyz_mm": [
+    0.5,
+    0.5,
+    1.0
+  ],
+  "inspected_preprocessed_ct_size_xyz": [
+    128,
+    256,
+    256
+  ],
+  "inspected_preprocessed_ct_range": [
+    0.0,
+    1.0
+  ],
+  "candidate_grid_config": "configs/common_grid_candidate.json",
+  "candidate_radiomics_config": "configs/radiomics_normalized_candidate.json",
+  "status": "proposal; not clinically qualified"
+}

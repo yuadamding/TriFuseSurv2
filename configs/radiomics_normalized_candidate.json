@@ -1,0 +1,20 @@
+{
+  "imageType": {"Original": {}},
+  "featureClass": {
+    "firstorder": [], "shape": [], "glcm": [], "glrlm": [],
+    "glszm": [], "gldm": [], "ngtdm": []
+  },
+  "setting": {
+    "binWidth": 0.0125,
+    "normalize": false,
+    "correctMask": false,
+    "resampledPixelSpacing": null,
+    "resegmentRange": null,
+    "force2D": false,
+    "distances": [1],
+    "label": 1,
+    "minimumROIDimensions": 2,
+    "geometryTolerance": 0.000001,
+    "voxelArrayShift": 0
+  }
+}

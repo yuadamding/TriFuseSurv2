@@ -32,6 +32,9 @@ from torch.nn.parameter import UninitializedParameter
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from trifusesurv2.utils.provenance import source_identity, source_contract_identity
+from trifusesurv2.utils.warmstart import (
+    candidate_checkpoint_names, resolve_checkpoint_for_config, resolve_checkpoint_for_fold,
+)
 from trifusesurv2.utils.experiment import (
     canonical_experiment_spec, changed_contract_fields, experiment_spec_sha256, scheduler_t_max, execution_topology,
 )
@@ -2476,52 +2479,15 @@ def select_df_by_ids(meta: pd.DataFrame, ids: List[str], id_col: str, strict: bo
 
 
 def _candidate_contour_warmstart_names(args) -> List[str]:
-    names: List[str] = []
-    for value in [
-        getattr(args, "contour_warmstart_name", "best.pt"),
-        getattr(args, "shared_seg_pretrain_name", "best.pt"),
-        "best.pt",
-        "seg_best.pt",
-    ]:
-        name = str(value or "").strip()
-        if name and name not in names:
-            names.append(name)
-    return names
+    return candidate_checkpoint_names(args)
 
 
 def _resolve_existing_contour_warmstart_ckpt_for_cfg(args) -> str:
-    ckpt = getattr(args, "contour_warmstart_ckpt", "") or getattr(args, "shared_seg_pretrain_ckpt", "") or ""
-    if ckpt and os.path.isfile(ckpt):
-        return ckpt
-
-    d = getattr(args, "contour_warmstart_dir", "") or getattr(args, "shared_seg_pretrain_dir", "") or ""
-    if d:
-        for name in _candidate_contour_warmstart_names(args):
-            p_all = os.path.join(d, "all", name)
-            if os.path.isfile(p_all):
-                return p_all
-            for f in range(int(getattr(args, "cv_folds", 4))):
-                p = os.path.join(d, f"fold_{f:02d}", name)
-                if os.path.isfile(p):
-                    return p
-    return ""
+    return resolve_checkpoint_for_config(args)
 
 
 def _resolve_contour_warmstart_ckpt_for_fold(args, fold: int) -> str:
-    ckpt = getattr(args, "contour_warmstart_ckpt", "") or getattr(args, "shared_seg_pretrain_ckpt", "") or ""
-    if ckpt and os.path.isfile(ckpt):
-        return ckpt
-
-    d = getattr(args, "contour_warmstart_dir", "") or getattr(args, "shared_seg_pretrain_dir", "") or ""
-    if d:
-        for name in _candidate_contour_warmstart_names(args):
-            p_all = os.path.join(d, "all", name)
-            if os.path.isfile(p_all):
-                return p_all
-            p_fold = os.path.join(d, f"fold_{int(fold):02d}", name)
-            if os.path.isfile(p_fold):
-                return p_fold
-    return ckpt
+    return resolve_checkpoint_for_fold(args, fold)
 
 
 def _image_encoder_mode(args) -> str:
@@ -2694,6 +2660,24 @@ def _validate_comparison_recipe(args) -> None:
                              "for a separately identified image-dropout experiment.")
 
 
+def _validate_principal_sampling(args, manifests) -> None:
+    """Principal contrasts cannot silently inherit extent-dependent resizing."""
+    if args.fusion_mode == "legacy" or args.comparison_recipe != "principal":
+        return
+    if not manifests:
+        raise ValueError("The principal F0–F4 comparison requires verified common_grid inputs.")
+    policy_ids = set()
+    for manifest in manifests.values():
+        sampling = manifest.get("sampling", {})
+        if sampling.get("policy") != "common_grid" or not sampling.get("policy_id"):
+            raise ValueError("The principal F0–F4 comparison requires common_grid sampling; "
+                             "regenerate inputs using an explicit grid configuration. "
+                             "Legacy resizing is diagnostic only under comparison_recipe=robustness.")
+        policy_ids.add(sampling["policy_id"])
+    if len(policy_ids) != 1:
+        raise ValueError("All principal-comparison patients must share one common_grid policy_id.")
+
+
 def run_one_fold(
     fold: int,
     args,
@@ -2745,6 +2729,7 @@ def run_one_fold(
             manifest_col=args.region_manifest_col, data_root=data_root,
             deployment_mode=args.deployment_mode,
         )
+    _validate_principal_sampling(args, region_manifests)
 
     if v2_requested:
         clin_enc = SemanticClinicalTokenEncoder.fit(tr_df)

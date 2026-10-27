@@ -14,9 +14,11 @@ revision.
 
 The subsequent targeted corrections lock semantic settings on resume, preserve
 literal acquisition IDs, disable image-token dropout for principal comparisons,
-and cache validated region payloads. Physical sampling qualification is still a
-separate requirement; exact shared masks do not establish crop-independent
-radiomics measurements.
+and cache validated region payloads. A common physical lattice is now
+implemented, with synthetic acceptance checks for unchanged regional sampling.
+Real-case sampling and extraction qualification remain separate requirements;
+the [candidate proposal and input limitations](common_grid_qualification.md)
+record that boundary.
 
 ## Physical definition
 
@@ -35,13 +37,22 @@ are discrete voxel-center measurements, not distances to reconstructed
 subvoxel contour surfaces. See [SciPy EDT](https://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.distance_transform_edt.html)
 and [SimpleITK physical geometry](https://simpleitk.readthedocs.io/en/master/fundamentalConcepts.html).
 
-Regions are generated **before** the crop. A physical margin of at least 10 mm
-is required. The preprocessor verifies that all reference support is retained
-and records this fraction separately from source-field-of-view truncation.
-It resamples intensities linearly and masks with nearest neighbor onto one
-model grid, recording new support identities, volumes and volume ratios.
+Regions are generated **before** the crop. Common-grid preprocessing maps each
+intensity image once with linear interpolation and each compartment once with
+nearest neighbor onto the full available source-FOV lattice. Its spacing,
+direction and origin/phase come from an explicit configuration independent of
+lesion extent. Subsequent crops and padding use integer lattice offsets and
+never resize tissue. A physical margin of at least 10 mm is required; context
+beyond the already defined 10 mm shells is added when the margin is larger.
+The required canvas includes every projected source support center and mapped
+support voxel. Overflow is an error, requiring a larger canvas or bucket.
+
+The preprocessor records source-center retention, new support identities,
+volumes and volume ratios separately from source-field-of-view truncation.
 Resampling does not imply exact volume preservation; a small region lost during
-resampling becomes unavailable for image features. Field-of-view truncation
+resampling becomes unavailable for image features even when every source center
+remains inside the crop. Padding stays outside all compartment supports and
+cannot restore missing source tissue. Field-of-view truncation
 flags require cohort QC and do not constitute a complete biological shell.
 
 CT pooling and radiomics use these same **persisted model-grid masks**. The
@@ -104,13 +115,30 @@ From the repository, with dependencies available:
 PYTHONPATH=src python scripts/preprocess_roi_inputs.py \
   --meta_csv /path/to/qualified_reference_metadata.csv \
   --id_col Patient_ID \
+  --sampling_policy common_grid \
+  --grid_config_json /path/to/qualified_grid.json \
   --out_root /path/to/new_verified_crops \
-  --output_size 96 128 128 --margin_mm 10 --region_mode verified
+  --output_size 96 160 96 --margin_mm 10 --region_mode verified
 ```
+
+`common_grid` is the verified CLI default, but a grid configuration is always
+required; no physical resolution is inferred. The configuration contains
+`schema_version: 1`, `spacing_xyz`, `origin_xyz`, a nine-element orthonormal
+`direction`, `units: "mm"`, and `coordinate_system: "LPS"`. Its canonical hash
+is the source-independent policy ID. Output dimensions are D/H/W.
+The bundled [candidate grid](../configs/common_grid_candidate.json) supplies
+development values only. Local legacy CSVs lack the required verified manifests
+and qualified tissue/intensity provenance; these examples do not make them ready
+for direct principal-study ingestion.
 
 Each case contains normalized CT, a radiomics intensity image, four compartment
 masks, supervision-mask copies, `region_manifest.json`, and a crop provenance
-receipt. The output CSV adds `region_manifest_path`. Regeneration checks source
+receipt. Common-grid images and masks use compressed MetaImage (`.mha`) output:
+NIfTI header precision can shift a noninteger lattice origin sufficiently to
+break the geometry contract. Written geometry is checked before publication;
+phase tolerances are not relaxed to accommodate a lossy header. The explicit
+legacy resize path retains `.nii.gz`. The output CSV adds `region_manifest_path`.
+Regeneration checks source
 and output hashes; incompatible or partial outputs require a new root or an
 explicit overwrite. Existing source data is not modified.
 
@@ -118,7 +146,10 @@ Each region identifies patient, acquisition, contour source/version, anatomy,
 reference geometry and support checksum. The model-grid representation adds
 its own geometry, checksum and region ID. Loading checks those identities
 against the actual CT and masks, rejects truncated crops and enforces exclusion
-rules. Provenance records establish traceability; they do not independently
+rules. Common-grid records also bind the full lattice, integer crop offset,
+padding, source/model mask checksums, volume accounting and disappearance flags.
+Loading checks these against the configured spacing, direction and phase.
+Provenance records establish traceability; they do not independently
 prove the truth of supplied clinical/segmentation declarations.
 
 Render a standalone QC image for one manifest with Matplotlib (included in the
@@ -138,13 +169,22 @@ flag; it is an engineering phantom, not clinical qualification.
 
 ## Qualify and freeze physical sampling
 
-The current cropper resizes each patient-specific PT/LN union crop to a fixed
-tensor shape. Its model spacing therefore depends on crop extent. Adding a
-distant node can change the sampling, measured volume and intensity statistics
-of an otherwise unchanged primary region. This mechanism is covered by a
-synthetic regression; it is not an estimate of the effect in this cohort.
-The existing cropper remains available, but its variable sampling is not a
-qualified principal-study policy.
+The new default common-grid path is implemented in
+[`preprocessing/sampling.py`](../src/trifusesurv2/preprocessing/sampling.py).
+Synthetic tests hold the source CT and primary support fixed while adding a
+distant node outside the primary shell. Canonical sampled lattice indices,
+binary primary supports and float32 normalized-CT/HU values remain exactly
+equal. Tests also cover integer crop shifts, padding, larger canvases, rotated
+and reflected anisotropic sources, disappearing small supports and overflow.
+They establish regional measurement properties; a patient's prediction can
+legitimately change when nodal disease changes.
+
+The previous resize path remains explicit as
+`--sampling_policy legacy_resize`. Its model spacing depends on the
+patient-specific PT/LN crop, so a distant node can alter unchanged primary
+measurements. It is labeled diagnostic and is rejected for principal F0–F4
+comparisons. The trainer requires all principal-study patients to use one
+validated `common_grid` policy ID.
 
 Before complete-cohort extraction, inspect declared spacing distributions,
 model/reference volume ratios, small-support disappearance and crop/FOV flags:
@@ -159,7 +199,8 @@ PYTHONPATH=src python scripts/audit_region_sampling.py \
 The optional institution/protocol/burden flags refer to actual supplied
 metadata columns. The audit writes patient and region CSVs, failures and a
 JSON summary with distributions, strata and descriptive burden associations.
-It reads manifests only: it does not verify image bytes, inspect outcomes,
+It reads manifests only and checks common-grid declarations when present:
+it does not verify image bytes, inspect outcomes,
 extract features, select a resolution, or grant a qualification pass. Use the
 QC renderer and the chosen PyRadiomics environment for the image/feature checks.
 
@@ -169,25 +210,27 @@ empty/invalid shells. Compare representative features under crop changes while
 holding source CT and the compartment fixed. Include source-grid history:
 resampling already performed before this cropper also affects measurement.
 
-The recommended next policy is a common physical lattice: choose spacing and
-orientation from acquisition quality and compute constraints, bind the lattice
-origin/phase independently of tumor extent, then crop by integer grid offsets.
-Padding or size buckets should accommodate extent without resizing. Fixed
-spacing alone is insufficient if crop-dependent origin changes subvoxel phase.
-Validate invariance under a distant node and integer-offset padding/crop changes,
-plus small-region and rotated/anisotropic cases. This common-grid implementation,
-the numeric spacing and actual extraction configuration remain to be qualified
-and frozen before the expensive F2/F3 study. No setting is selected from outcomes.
+The implementation requires all lattice parameters explicitly because fixed
+spacing alone is insufficient when origin/phase changes. A source-independent
+policy ID is necessary for a principal run, but it is not a scientific
+qualification certificate. Numeric spacing, intensity handling, extraction
+configuration and software must still be qualified and frozen from acquisition
+quality, representative cases and compute constraints. Crop-dependent filtering
+or intensity normalization can introduce additional changes even on a common
+lattice and must be tested in the actual extraction environment. No setting is
+selected from outcomes. The current development candidate and pending single
+H100 checks are documented in [common-grid qualification](common_grid_qualification.md).
 
 ## Extract and bind radiomics
 
 `scripts/extract_region_radiomics.py` is an optional PyRadiomics adapter. Install
 PyRadiomics separately in a qualified extraction environment (the package
 declares a `radiomics` extra), and supply a nonempty explicit JSON configuration.
-For example, this tiny configuration is useful for engineering checks only:
+For example, this tiny configuration is useful for engineering checks of
+normalized intensities only:
 
 ```json
-{"imageType":{"Original":{}},"featureClass":{"firstorder":["Mean"]},"setting":{"binWidth":25}}
+{"imageType":{"Original":{}},"featureClass":{"firstorder":["Mean"]},"setting":{"binWidth":0.0125,"normalize":false}}
 ```
 
 ```bash
@@ -202,7 +245,8 @@ The adapter disallows extraction-time support changes such as resampling,
 resegmentation or mask correction. It records extraction errors as invalid
 features and writes a separate extraction receipt. The reference manifest is
 preserved. Extracted rows bind acquisition, intensity checksum/transform,
-configuration/hash, software/version and each exact image-region ID and mask checksum.
+configuration/hash, software/version, sampling policy ID and each exact
+image-region ID and mask checksum.
 
 External CSVs must provide the same contract. Habitat column names alone are
 insufficient. Valid feature rows must contain finite values and agree with
@@ -286,6 +330,11 @@ that recipe; direct Python invocations set desired rates explicitly. No change
 to the fusion architecture or claim of improved accuracy follows from this
 regularization choice.
 
+Principal F0–F4 inputs must also share one validated common-grid policy. A
+legacy resize manifest or mixed lattice policy IDs cannot satisfy that gate.
+Passing it verifies the software contract, not the adequacy of a candidate
+resolution, clinical endpoint, acquisition or radiomics configuration.
+
 Use the existing launcher with `FUSION_MODE=F0` through `F4`; keep `META_CSV`,
 `RADIOMICS_SOURCE`, `SPLITS_DIR`, `SEED`, backbone weights, optimizer/objective,
 dropout, batch size and training budget fixed. Give each mode/fold/seed a
@@ -318,6 +367,14 @@ experiment; it cannot be enabled later to reinterpret an existing run.
 Search output roots also bind their recipe before skipping completed trials or
 rewriting search manifests. Use separate `OUT_ROOT` values across recipes/modes;
 historical roots lacking the recipe contract cannot be silently reused.
+The search resolves and fingerprints the actual warm-start file for every
+relevant fold and, when enabled, backbone configuration alignment. Resolution
+matches the trainer's explicit file, `all/`, fold directory and checkpoint-name
+precedence, including trailing CLI overrides. Resolved path, existence and SHA256
+are compared before a completed trial is skipped or receipts are modified.
+Changed bytes at the same path, a missing checkpoint becoming available, or a
+different selected directory checkpoint require a new search contract/root.
+Operational allowlist changes remain separate from initialization identity.
 F0/F1 capacities differ;
 report counts and use comparable tuning opportunities instead of claiming
 identical capacity for all modes.
@@ -337,11 +394,17 @@ Freeze direct comparisons on the same patients with the same splits/seeds.
 Previously searched folds are development data. Fit all preprocessing within
 training data and keep segmenter/backbone training independent of evaluation.
 
-Then screen and confirm F2 versus F3, F1 and a strong simple comparator, reporting
-parameter counts and paired uncertainty on supported horizons. A separate
-clinical/burden baseline ladder is still needed. Choose discrimination/calibration
-metrics and censoring conventions before final results. No new evaluation
-method or confirmatory study is implemented by this change.
+Begin with F2 versus F3 under the same eligible patients, measurements,
+splits/seeds, initialization, objective, checkpoint rule and budget. The planned
+baseline ladder includes clinical-only C0 and clinical plus physical
+burden/geometry C1; these baseline fits are not implemented or reported here.
+Predefine the endpoint, time origin, ascertainment, checkpoint-selection rule,
+supported evaluation horizons and censoring conventions. Report paired
+differences on the same patients, discrimination, calibration and uncertainty;
+separate patient-sampling uncertainty from variability across training seeds.
+Previously explored folds and short development pilots do not provide
+confirmatory evidence. No new evaluation method or confirmatory result is
+implemented by this change.
 
 Only after establishing the core comparison should contour sensitivity guide
 the next extension: synchronized alternate contours with recomputed radiomics,
