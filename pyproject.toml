@@ -16,9 +16,14 @@ dependencies = [
   "pandas",
   "pydicom",
   "scikit-learn",
+  "scipy",
   "SimpleITK",
   "torch>=2.5,<2.10",
 ]
+
+[project.optional-dependencies]
+radiomics = ["pyradiomics"]
+qc = ["matplotlib"]
 
 [project.scripts]
 trifusesurv2-train = "trifusesurv2.multimodal_survival.train:main"

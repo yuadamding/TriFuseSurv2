@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Joint contour-aware multimodal survival training for TriFuseSurv.
 
-Recommended workflow:
+Verified workflow:
 - CT-only shared SwinUNETR encoder
 - internal PT/LN localization heads
-- ROI tokens built from PT/LN and PT/LN peritumoral supports
+- ROI tokens built from persisted, shared physical compartment supports
 - GT masks used for localization/support supervision
-- optional GT-mask teacher forcing for survival ROI tokens
+- F0–F4 share one training path; teacher forcing applies only in legacy mode
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from torch.utils.data import DataLoader
 from torch.nn.parameter import UninitializedParameter
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from trifusesurv2.utils.provenance import source_identity
 
 from trifusesurv2.models.swinunetr_backbone_utils import load_swinunetr_pretrained
 from trifusesurv2.models.swinunetr_shared_roi_token_backbone import soft_shell_around_mask
@@ -62,7 +63,7 @@ from trifusesurv2.utils.data import resolve_preprocessed_case_path
 from trifusesurv2.schema import NODE_TOPOLOGY_FEATURES
 from trifusesurv2 import __version__ as TRIFUSESURV2_VERSION
 
-ROI_FOCUS_ROI_NAMES = ("pt", "ln", "pt_peri")
+ROI_FOCUS_ROI_NAMES = ("pt", "ln", "pt_peri", "pt_localizer", "ln_localizer")
 
 
 # =============================================================================
@@ -433,6 +434,10 @@ def _unpack_surv_batch(batch):
             topology_token=batch.get("topology_token"),
             topology_presence=batch.get("topology_presence"),
             voxel_spacing_dhw=batch.get("voxel_spacing_dhw"),
+            region_masks=batch.get("region_masks"),
+            region_validity=batch.get("region_validity"),
+            region_states=batch.get("region_states"),
+            physical_geometry=batch.get("physical_geometry"),
             pid=batch["pid"],
         )
     if len(batch) == 6:
@@ -473,6 +478,24 @@ def _to_optional_device_tensor(x: Optional[torch.Tensor], device: torch.device):
     if x is None:
         return None
     return x.to(device, non_blocking=True)
+
+
+def _region_forward_kwargs(payload, device) -> Dict[str, torch.Tensor]:
+    return {
+        name: payload[name].to(device, non_blocking=True)
+        for name in ("region_masks", "region_validity", "region_states", "physical_geometry")
+        if payload.get(name) is not None
+    }
+
+
+def _valid_region_loss(loss_fn, prediction, target, valid=None, **kwargs):
+    """Missing annotations supply no localization target; known absence still does."""
+    if valid is not None:
+        valid = valid.to(device=prediction.device, dtype=torch.bool)
+        prediction, target = prediction[valid], target[valid]
+    if prediction.shape[0] == 0:
+        return prediction.sum() * 0.0
+    return loss_fn(prediction, target, **kwargs)
 
 
 def _unwrap_model(model: nn.Module) -> nn.Module:
@@ -615,6 +638,7 @@ def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_a
                 topology_token=_prep_optional_token_tensor(payload, "topology_token", device) if topology_enabled else None,
                 topology_presence=_prep_optional_token_tensor(payload, "topology_presence", device) if topology_enabled else None,
                 teacher_force_alpha=float(teacher_force_alpha),
+                **_region_forward_kwargs(payload, device),
             )
     else:
         clin = _prep_optional_tensor(payload, "clin", device)
@@ -1415,6 +1439,7 @@ def generate_epoch_gradcam_probe(
                 teacher_force_alpha=float(teacher_force_alpha),
                 return_aux=True,
                 return_cam_features=True,
+                **_region_forward_kwargs(payload, device),
             )
             logits = mm.forward_from_image_tokens(
                 image_tokens=image_tokens,
@@ -1429,6 +1454,7 @@ def generate_epoch_gradcam_probe(
                 topology_presence=topology_presence,
                 return_aux=False,
                 return_attention=False,
+                region_states=_to_optional_device_tensor(payload.get("region_states"), device),
             )
             target = select_survival_target(
                 mm,
@@ -1740,6 +1766,9 @@ def train_one_epoch(
         mask_pt = _to_optional_device_tensor(payload["mask_pt"], device)
         mask_ln = _to_optional_device_tensor(payload["mask_ln"], device)
         voxel_spacing_dhw = payload.get("voxel_spacing_dhw")
+        annotation_validity = _to_optional_device_tensor(payload.get("region_validity"), device)
+        pt_valid = annotation_validity[:, 0] if annotation_validity is not None else None
+        ln_valid = annotation_validity[:, 2] if annotation_validity is not None else None
         batches_since_step += 1
         batch_roi_focus: Dict[str, float] = {}
         last_planned_batch = planned_batches > 0 and batch_idx == planned_batches
@@ -1783,6 +1812,7 @@ def train_one_epoch(
                     p=eff_v2_topology_drop,
                 )
                 v2_kwargs = dict(
+                    **_region_forward_kwargs(payload, device),
                     clinical_presence=clin_pres,
                     radiomics_presence=rad_pres,
                     node_tokens=node_tokens,
@@ -1916,9 +1946,10 @@ def train_one_epoch(
                 loc_pt_target = _resize_mask_target(mask_pt, tuple(int(x) for x in loc_aux["loc_pt_logits"].shape[2:]))
                 loc_ln_target = _resize_mask_target(mask_ln, tuple(int(x) for x in loc_aux["loc_ln_logits"].shape[2:]))
                 if float(loc_loss_pt_lambda) > 0.0:
-                    loss_loc_pt = float(loc_loss_pt_lambda) * _localization_loss_from_logits(
+                    loss_loc_pt = float(loc_loss_pt_lambda) * _valid_region_loss(_localization_loss_from_logits,
                         loc_aux["loc_pt_logits"].float(),
                         loc_pt_target.float(),
+                        valid=pt_valid,
                         bce_weight=float(loc_bce_weight),
                         dice_weight=float(loc_dice_weight),
                         balanced_bce=bool(loc_balanced_bce),
@@ -1926,9 +1957,10 @@ def train_one_epoch(
                     )
                     loss = loss + loss_loc_pt
                 if float(loc_loss_ln_lambda) > 0.0:
-                    loss_loc_ln = float(loc_loss_ln_lambda) * _localization_loss_from_logits(
+                    loss_loc_ln = float(loc_loss_ln_lambda) * _valid_region_loss(_localization_loss_from_logits,
                         loc_aux["loc_ln_logits"].float(),
                         loc_ln_target.float(),
+                        valid=ln_valid,
                         bce_weight=float(loc_bce_weight),
                         dice_weight=float(loc_dice_weight),
                         balanced_bce=bool(loc_balanced_bce),
@@ -1938,22 +1970,24 @@ def train_one_epoch(
                 if float(loc_presence_lambda) > 0.0 and ("pt_presence_logits" in loc_aux) and ("ln_presence_logits" in loc_aux):
                     pt_present_target = (mask_pt.flatten(1).sum(dim=1) > 0.0).float()
                     ln_present_target = (mask_ln.flatten(1).sum(dim=1) > 0.0).float()
-                    pres_loss = F.binary_cross_entropy_with_logits(loc_aux["pt_presence_logits"].float(), pt_present_target)
-                    pres_loss = pres_loss + F.binary_cross_entropy_with_logits(loc_aux["ln_presence_logits"].float(), ln_present_target)
+                    pres_loss = _valid_region_loss(F.binary_cross_entropy_with_logits, loc_aux["pt_presence_logits"].float(), pt_present_target, pt_valid)
+                    pres_loss = pres_loss + _valid_region_loss(F.binary_cross_entropy_with_logits, loc_aux["ln_presence_logits"].float(), ln_present_target, ln_valid)
                     loss_loc_presence = float(loc_presence_lambda) * pres_loss
                     loss = loss + loss_loc_presence
                 if float(mask_support_lambda) > 0.0 and "pt_prob" in loc_aux and "ln_prob" in loc_aux:
-                    support_loss = _mask_support_loss_from_probs(
+                    support_loss = _valid_region_loss(_mask_support_loss_from_probs,
                         loc_aux["pt_prob"],
                         mask_pt,
+                        valid=pt_valid,
                         bce_weight=float(mask_support_bce_weight),
                         dice_weight=float(mask_support_dice_weight),
                         balanced_bce=bool(mask_support_balanced_bce),
                         pos_weight_cap=float(mask_support_pos_weight_cap),
                     )
-                    support_loss = support_loss + _mask_support_loss_from_probs(
+                    support_loss = support_loss + _valid_region_loss(_mask_support_loss_from_probs,
                         loc_aux["ln_prob"],
                         mask_ln,
+                        valid=ln_valid,
                         bce_weight=float(mask_support_bce_weight),
                         dice_weight=float(mask_support_dice_weight),
                         balanced_bce=bool(mask_support_balanced_bce),
@@ -1962,8 +1996,8 @@ def train_one_epoch(
                     loss_mask_support = float(mask_support_lambda) * support_loss
                     loss = loss + loss_mask_support
                 if float(mask_focus_lambda) > 0.0 and "pt_prob" in loc_aux and "ln_prob" in loc_aux:
-                    focus_loss = _prob_mass_inside_target_loss_from_probs(loc_aux["pt_prob"], mask_pt)
-                    focus_loss = focus_loss + _prob_mass_inside_target_loss_from_probs(loc_aux["ln_prob"], mask_ln)
+                    focus_loss = _valid_region_loss(_prob_mass_inside_target_loss_from_probs, loc_aux["pt_prob"], mask_pt, pt_valid)
+                    focus_loss = focus_loss + _valid_region_loss(_prob_mass_inside_target_loss_from_probs, loc_aux["ln_prob"], mask_ln, ln_valid)
                     loss_mask_focus = float(mask_focus_lambda) * focus_loss
                     loss = loss + loss_mask_focus
                 with torch.no_grad():
@@ -1973,6 +2007,7 @@ def train_one_epoch(
                             pred_prob=pt_focus_prob.detach(),
                             used_support=loc_aux.get("pt_used", loc_aux["pt_prob"]).detach(),
                             target_mask=mask_pt.detach(),
+                            annotation_validity=pt_valid,
                         )
                         _accumulate_roi_focus("pt", pt_focus)
                         if write_live_roi_focus:
@@ -1983,26 +2018,39 @@ def train_one_epoch(
                             pred_prob=ln_focus_prob.detach(),
                             used_support=loc_aux.get("ln_used", loc_aux["ln_prob"]).detach(),
                             target_mask=mask_ln.detach(),
+                            annotation_validity=ln_valid,
                         )
                         _accumulate_roi_focus("ln", ln_focus)
                         if write_live_roi_focus:
                             batch_roi_focus.update(_roi_focus_scalars("ln", ln_focus))
                     if "pt_shell" in loc_aux:
-                        pt_peri_target = _peritumoral_shell_target(
-                            mask_pt,
-                            radius=int(pt_shell_radius),
-                            thickness_mm=float(pt_shell_thickness_mm),
-                            voxel_spacing_dhw=voxel_spacing_dhw,
-                            body=loc_aux.get("body"),
-                        )
+                        if payload.get("region_masks") is not None:
+                            pt_peri_target = payload["region_masks"][:, 1:2].to(device)
+                        else:
+                            pt_peri_target = _peritumoral_shell_target(
+                                mask_pt, radius=int(pt_shell_radius), thickness_mm=float(pt_shell_thickness_mm),
+                                voxel_spacing_dhw=voxel_spacing_dhw, body=loc_aux.get("body"),
+                            ) * (1.0 - mask_ln)
                         pt_peri_focus = roi_focus_metrics(
                             pred_prob=loc_aux["pt_shell"].detach(),
                             used_support=loc_aux["pt_shell"].detach(),
                             target_mask=pt_peri_target.detach(),
+                            annotation_validity=annotation_validity[:, 1] if annotation_validity is not None else None,
                         )
                         _accumulate_roi_focus("pt_peri", pt_peri_focus)
                         if write_live_roi_focus:
                             batch_roi_focus.update(_roi_focus_scalars("pt_peri", pt_peri_focus))
+                    # Persisted support checks can be perfect by construction.
+                    # Report actual contour predictions independently of that support.
+                    for name, target, valid in (("pt", mask_pt, pt_valid), ("ln", mask_ln, ln_valid)):
+                        if f"{name}_prob" in loc_aux:
+                            predicted_focus = roi_focus_metrics(
+                                pred_prob=loc_aux[f"{name}_prob"].detach(),
+                                target_mask=target.detach(), annotation_validity=valid,
+                            )
+                            _accumulate_roi_focus(f"{name}_localizer", predicted_focus)
+                            if write_live_roi_focus:
+                                batch_roi_focus.update(_roi_focus_scalars(f"{name}_localizer", predicted_focus))
 
         check_nonfinite_loss = (
             nonfinite_period > 0
@@ -2186,7 +2234,7 @@ def save_checkpoint(
 ):
     ck_args = dict(vars(args))
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
-    ck_args.setdefault("commit_sha", os.environ.get("TRIFUSESURV2_COMMIT_SHA", "daaaa363020b7e27b93981f62dfa17821489e1ea"))
+    ck_args.update(source_identity())
     state = {
         "epoch": int(epoch),
         "num_time_bins": int(num_time_bins),
@@ -2195,6 +2243,7 @@ def save_checkpoint(
         "args": ck_args,
         "software_version": ck_args["software_version"],
         "commit_sha": ck_args["commit_sha"],
+        "source_identity": source_identity(),
         "model_class": _unwrap_model(model).__class__.__name__,
     }
     if encoders is not None:
@@ -2621,6 +2670,13 @@ def _archive_checkpoints_for_fresh_run(ckpt_paths: Sequence[Path], args) -> None
 # =============================================================================
 # run_one_fold
 # =============================================================================
+def _validate_resume_model_contract(previous: Dict[str, Any], current: Dict[str, Any]) -> None:
+    """Bind continuation to the same inputs and fusion experiment, even for F2/F3."""
+    if previous != current:
+        changed = sorted(key for key in set(previous) | set(current) if previous.get(key) != current.get(key))
+        raise RuntimeError(f"[CKPT] Model/input contract changed ({', '.join(changed)}); start a new experiment.")
+
+
 def run_one_fold(
     fold: int,
     args,
@@ -2659,6 +2715,14 @@ def run_one_fold(
 
     v2_requested = str(getattr(args, "model_version", "v2")).strip().lower() == "v2"
     train_ids = tr_df[args.id_col].astype(str).tolist()
+    region_manifests = None
+    if v2_requested and args.region_mode == "verified":
+        from trifusesurv2.preprocessing.region_io import load_region_manifests
+        region_manifests = load_region_manifests(
+            pd.concat([tr_df, va_df, te_df]), id_col=args.id_col,
+            manifest_col=args.region_manifest_col, data_root=data_root,
+            deployment_mode=args.deployment_mode,
+        )
 
     if v2_requested:
         clin_enc = SemanticClinicalTokenEncoder.fit(tr_df)
@@ -2678,6 +2742,8 @@ def run_one_fold(
                 total_pcs_per_group=int(getattr(args, "v2_radiomics_pcs_per_group", args.radiomics_pca_total_components)),
                 require_presence_columns=bool(getattr(args, "v2_require_radiomics_presence_columns", True)),
                 random_state=int(args.seed),
+                require_region_provenance=(args.region_mode == "verified"),
+                region_manifests=region_manifests,
             )
         else:
             rad_enc = RadiomicsEncoder.fit(train_ids, all_ids, args.radiomics_root, args.radiomics_pca_total_components, args.seed)
@@ -2729,6 +2795,9 @@ def run_one_fold(
         if v2_requested:
             return PreprocessedHabitatSurvivalDataset(
                 frame,
+                region_mode=args.region_mode,
+                region_manifest_col=args.region_manifest_col,
+                deployment_mode=args.deployment_mode,
                 clinical_token_encoder=clin_enc,
                 radiomics_token_encoder=rad_enc,
                 node_topology_dir=str(getattr(args, "node_topology_dir", "") or ""),
@@ -2876,7 +2945,7 @@ def run_one_fold(
     backbone_cfg.update(dict(
         force_presence_from_raw_masks=False,
         raw_mask_threshold=0.5,
-        fallback_peri_to_intra=True,
+        fallback_peri_to_intra=False,
     ))
 
     if str(getattr(args, "model_version", "v2")).strip().lower() == "v2":
@@ -2886,9 +2955,11 @@ def run_one_fold(
         _log(f"[MODEL][fold {fold:02d}] constructing v2 habitat-aligned model")
         v2_backbone_cfg = dict(backbone_cfg)
         v2_backbone_cfg.pop("image_encoder_mode", None)
+        v2_backbone_cfg["require_verified_regions"] = (args.region_mode == "verified")
         v2_backbone = ContourAwareROITokenBackbone(**v2_backbone_cfg)
         base_model = ContourAwareHabitatSurvivalModel(
             backbone=v2_backbone,
+            fusion_mode=args.fusion_mode,
             num_time_bins=int(fold_num_time_bins),
             time_bin_width_days=float(args.time_bin_width_days),
             radiomics_token_dim=int(rad_dim),
@@ -2962,6 +3033,26 @@ def run_one_fold(
                 print("  ", s)
 
     materialize_lazy_modules(base_model, tr_loader, device, autocast_ctx)
+    model_parameters = sum(p.numel() for p in base_model.parameters())
+    trainable_parameters = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+    _log(f"[MODEL] fusion={args.fusion_mode} regions={args.region_mode} parameters={model_parameters} trainable={trainable_parameters}")
+    from trifusesurv2.preprocessing.region_io import file_sha256
+    model_contract = {
+        "source_identity": source_identity(),
+        "fusion_mode": args.fusion_mode, "region_mode": args.region_mode,
+        "deployment_mode": args.deployment_mode, "primary_endpoint": args.endpoint,
+        "time_col": args.time_col, "event_col": args.event_col, "seed": args.seed,
+        "parameters": model_parameters, "trainable_parameters": trainable_parameters,
+        "time_bin_width_days": args.time_bin_width_days, "num_time_bins": fold_num_time_bins,
+        "train_ids": train_ids, "val_ids": va_df[args.id_col].astype(str).tolist(),
+        "test_ids": te_df[args.id_col].astype(str).tolist(),
+        "metadata_sha256": file_sha256(args.meta_csv),
+        "region_manifest_sha256": {pid: file_sha256(m["_manifest_path"]) for pid, m in (region_manifests or {}).items()},
+        "radiomics_csv_sha256": file_sha256(_v2_radiomics_csv_path(args)) if v2_requested and args.use_radiomics else None,
+    }
+    contract_path = fold_dir / "model_contract.json"
+    if args.resume and contract_path.is_file():
+        _validate_resume_model_contract(json.loads(contract_path.read_text()), model_contract)
 
     if getattr(args, "ddp", False) and _DDP_INITIALIZED:
         from torch.nn.parallel import DistributedDataParallel as DDP
@@ -3017,6 +3108,16 @@ def run_one_fold(
     start_epoch = 1
     fully_restored = False
     if args.resume:
+        if ckpt_last.is_file():
+            previous_checkpoint = torch.load(ckpt_last, map_location="cpu", weights_only=False)
+            previous = previous_checkpoint.get("args", {})
+            for key, legacy_value in (("fusion_mode", "legacy"), ("region_mode", "legacy"), ("deployment_mode", "expert")):
+                if previous.get(key, legacy_value) != getattr(args, key):
+                    raise RuntimeError(f"[CKPT] Cannot resume after changing {key}; start a new experiment.")
+            previous_contract = (previous_checkpoint.get("encoders") or {}).get("model_contract")
+            if previous_contract is not None or args.region_mode == "verified":
+                _validate_resume_model_contract(previous_contract or {}, model_contract)
+            del previous_checkpoint
         start_epoch, fully_restored = load_checkpoint(ckpt_last, int(fold_num_time_bins), model, optimizer, scaler, scheduler, ema, swa)
         if start_epoch > 1 and (not fully_restored) and (not bool(getattr(args, "allow_partial_resume", False))):
             raise RuntimeError(
@@ -3040,6 +3141,11 @@ def run_one_fold(
     is_main_rank = (not _DDP_INITIALIZED) or _is_main_process()
     if is_main_rank:
         _archive_checkpoints_for_fresh_run([ckpt_last, ckpt_best], args)
+        if contract_path.is_file() and not args.resume:
+            ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+            contract_path.rename(contract_path.with_name(f"model_contract_archived_{ts}.json"))
+        with contract_path.open("w") as handle:
+            json.dump(model_contract, handle, indent=2)
         _reset_metrics_log_if_needed(metrics_csv, start_epoch=start_epoch, fully_restored=fully_restored, args=args)
         _reset_roi_focus_live_log_if_needed(roi_focus_live_csv, start_epoch=start_epoch, fully_restored=fully_restored)
         best_report_score = metric_selection_score(checkpoint_report_metric(ckpt_best), args.report_metric)
@@ -3062,6 +3168,10 @@ def run_one_fold(
         "clinical_token_dim": int(clin_dim),
         "radiomics_token_dim": int(rad_dim),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
+        "fusion_mode": args.fusion_mode,
+        "region_mode": args.region_mode,
+        "deployment_mode": args.deployment_mode,
+        "model_contract": model_contract,
     }
 
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
@@ -3516,7 +3626,10 @@ def run_one_fold(
         "fold": int(fold),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
         "software_version": TRIFUSESURV2_VERSION,
-        "commit_sha": os.environ.get("TRIFUSESURV2_COMMIT_SHA", "daaaa363020b7e27b93981f62dfa17821489e1ea"),
+        **source_identity(),
+        "fusion_mode": args.fusion_mode,
+        "region_mode": args.region_mode,
+        "deployment_mode": args.deployment_mode,
         "time_bin_width_days": float(args.time_bin_width_days),
         "eval_teacher_force_alpha": float(final_eval_teacher_force_alpha),
         "survival_uses_teacher_forced_masks": bool(args.survival_uses_teacher_forced_masks),
@@ -3897,7 +4010,7 @@ def parse_args():
     p.add_argument("--pt_shell_radius", type=int, default=3, help="Fallback PT shell radius in voxels when PT shell thickness in mm is disabled or spacing is unavailable.")
     p.add_argument("--ln_shell_radius", type=int, default=3, help="LN shell radius in voxels unless --ln_shell_thickness_mm is positive.")
     p.add_argument("--pt_shell_thickness_mm", type=float, default=10.0, help="Physical PT peritumoral shell thickness in mm. Positive values override --pt_shell_radius when voxel spacing is available.")
-    p.add_argument("--ln_shell_thickness_mm", type=float, default=0.0, help="Optional physical LN peritumoral shell thickness in mm. Nonpositive keeps --ln_shell_radius.")
+    p.add_argument("--ln_shell_thickness_mm", type=float, default=10.0, help="Legacy-path physical LN shell width. Verified regions use the persisted 10-mm definition.")
     p.add_argument("--teacher_force_epochs", type=int, default=0)
     p.add_argument("--teacher_force_start", type=float, default=0.0)
     p.add_argument("--teacher_force_end", type=float, default=0.0)
@@ -3974,6 +4087,10 @@ def parse_args():
     # v2 habitat-aligned model
     p.add_argument("--model_version", type=str, default="v2", choices=["v1", "v2"],
                    help="v2 default: habitat-aligned cross-attention; v1: SwinUNETR+MoE late-fusion")
+    p.add_argument("--fusion_mode", choices=["F0", "F1", "F2", "F3", "F4", "legacy"], default="F3")
+    p.add_argument("--region_mode", choices=["verified", "legacy"], default="verified")
+    p.add_argument("--region_manifest_col", default="region_manifest_path")
+    p.add_argument("--deployment_mode", choices=["expert", "automated"], default="expert")
     p.add_argument("--v2_model_dim", type=int, default=256)
     p.add_argument("--v2_num_heads", type=int, default=8)
     p.add_argument("--v2_transformer_layers", type=int, default=2)
@@ -3984,8 +4101,8 @@ def parse_args():
     p.set_defaults(v2_require_radiomics_presence_columns=True)
     p.add_argument("--node_topology_dir", type=str, default="")
     p.add_argument("--v2_max_nodes", type=int, default=16)
-    p.add_argument("--v2_node_token_dim", type=int, default=9)
-    p.add_argument("--v2_topology_dim", type=int, default=len(NODE_TOPOLOGY_FEATURES))
+    p.add_argument("--v2_node_token_dim", type=int, default=0)
+    p.add_argument("--v2_topology_dim", type=int, default=0)
     p.add_argument(
         "--v2_clinical_group_dropout_p",
         type=float,
@@ -4009,6 +4126,15 @@ def parse_args():
     )
 
     args = p.parse_args()
+    if args.fusion_mode != "legacy":
+        if args.model_version != "v2" or args.region_mode != "verified":
+            raise ValueError("F0–F4 comparisons require v2 and verified region manifests; use fusion_mode=legacy for historical inputs.")
+        if args.v2_node_token_dim or args.v2_topology_dim or args.node_topology_dir:
+            raise ValueError("Individual-node/topology inputs are a separate experiment and must be disabled for F0–F4.")
+    if args.region_mode == "verified" and args.model_version != "v2":
+        raise ValueError("Verified region inputs require model_version=v2.")
+    if args.deployment_mode == "automated" and args.region_mode != "verified":
+        raise ValueError("Automated claims require verified provenance for all contour-dependent inputs.")
 
     if args.time_col == "" or args.event_col == "":
         tcol, ecol = ENDPOINT_MAP[args.endpoint]
@@ -4261,6 +4387,9 @@ def main():
 
     summary = {
         "exp_name": args.exp_name,
+        "fusion_mode": args.fusion_mode,
+        "region_mode": args.region_mode,
+        "deployment_mode": args.deployment_mode,
         "folds_run": folds,
         "fold_num_time_bins": [int(r.get("num_time_bins", 0)) for r in fold_results],
         "fold_train_max_time_days": [float(r.get("train_max_time_days", float("nan"))) for r in fold_results],

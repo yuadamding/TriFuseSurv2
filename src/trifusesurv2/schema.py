@@ -45,6 +45,33 @@ RADIOLOGY_HABITATS: tuple[str, ...] = (
     "ln_peri",
 )
 
+# Region states describe anatomy/annotation, not padded-token availability.
+REGION_STATUS_CODES: dict[str, int] = {"present": 0, "absent": 1, "missing": 2, "invalid": 3}
+REGION_MANIFEST_VERSION = 1
+PHYSICAL_GEOMETRY_FEATURES: tuple[str, ...] = (
+    "pt_volume_mm3",
+    "ln_volume_mm3",
+    "pt_ln_centroid_distance_mm",
+    "pt_ln_min_surface_distance_mm",
+    "ln_voxel_rms_spread_mm",
+    "ln_left_flag",
+    "ln_right_flag",
+    "ln_bilateral_flag",
+    "node_count",
+    "largest_node_volume_mm3",
+)
+
+# Order of the original descriptors; these are explicitly crop dependent.
+CROP_GEOMETRY_FEATURES: tuple[str, ...] = (
+    "crop_pt_voxel_fraction", "crop_ln_voxel_fraction",
+    "crop_pt_peri_voxel_fraction", "crop_ln_peri_voxel_fraction",
+    "crop_body_voxel_fraction", "crop_log1p_ln_to_pt_fraction_ratio",
+    "crop_pt_centroid_z", "crop_pt_centroid_y", "crop_pt_centroid_x",
+    "crop_ln_centroid_z", "crop_ln_centroid_y", "crop_ln_centroid_x",
+    "crop_ln_minus_pt_z", "crop_ln_minus_pt_y", "crop_ln_minus_pt_x",
+    "crop_pt_ln_centroid_distance", "pt_present", "ln_present", "both_present",
+)
+
 # Prognostic default: no treatment token unless explicitly requested.
 PROGNOSTIC_CLINICAL_TOKEN_GROUPS: "OrderedDict[str, tuple[str, ...]]" = OrderedDict(
     [

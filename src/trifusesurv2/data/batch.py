@@ -14,6 +14,7 @@ class TokenBlock:
 
     tokens: torch.Tensor
     presence: Optional[torch.Tensor] = None
+    region_ids: Optional[tuple[tuple[str, ...], ...]] = None
 
 
 @dataclass
@@ -31,6 +32,9 @@ def _validate_token_block(block: TokenBlock, name: str, *, expected_n: Optional[
         raise ValueError(f"{name}.tokens must be [B, N, D], got shape {tuple(t.shape)}")
     if expected_n is not None and t.shape[1] != expected_n:
         raise ValueError(f"{name}.tokens expected N={expected_n}, got {t.shape[1]}")
+    if block.region_ids is not None:
+        if len(block.region_ids) != t.shape[0] or any(len(row) != t.shape[1] for row in block.region_ids):
+            raise ValueError(f"{name}.region_ids must match token batch/group shape")
     if block.presence is not None:
         p = block.presence
         if p.dim() != 2 or p.shape[0] != t.shape[0] or p.shape[1] != t.shape[1]:
@@ -50,6 +54,7 @@ class HabitatBatch:
     nodes: Optional[TokenBlock] = None
     topology: Optional[TokenBlock] = None
     survival: Optional[SurvivalTargets] = None
+    verified_regions: bool = False
 
     def validate(
         self,
@@ -70,6 +75,19 @@ class HabitatBatch:
             _validate_token_block(self.radiomics, "radiomics", expected_n=num_radiomics_habitats)
             if self.radiomics.tokens.shape[0] != B:
                 raise ValueError(f"radiomics batch size {self.radiomics.tokens.shape[0]} != image batch size {B}")
+
+        if self.verified_regions and self.radiomics is not None:
+            from trifusesurv2.schema import IMAGE_HABITATS, RADIOLOGY_HABITATS
+            _validate_token_block(self.image, "image", expected_n=len(IMAGE_HABITATS))
+            _validate_token_block(self.radiomics, "radiomics", expected_n=len(RADIOLOGY_HABITATS))
+            if self.image.region_ids is None or self.radiomics.region_ids is None:
+                raise ValueError("Verified fusion requires image and radiomics region identities.")
+            for b in range(B):
+                for j, name in enumerate(RADIOLOGY_HABITATS):
+                    i = IMAGE_HABITATS.index(name)
+                    image_id = self.image.region_ids[b][i]
+                    if not image_id or image_id != self.radiomics.region_ids[b][j]:
+                        raise ValueError(f"Image/radiomics correspondence mismatch for {name} in row {b}")
 
         if self.clinical is not None:
             _validate_token_block(self.clinical, "clinical", expected_n=num_clinical_groups)
@@ -105,7 +123,7 @@ class HabitatBatch:
             if block is None:
                 return None
             presence = block.presence.to(device) if block.presence is not None else None
-            return TokenBlock(tokens=block.tokens.to(device), presence=presence)
+            return TokenBlock(tokens=block.tokens.to(device), presence=presence, region_ids=block.region_ids)
 
         survival = None
         if self.survival is not None:
@@ -120,4 +138,5 @@ class HabitatBatch:
             nodes=move(self.nodes),
             topology=move(self.topology),
             survival=survival,
+            verified_regions=self.verified_regions,
         )

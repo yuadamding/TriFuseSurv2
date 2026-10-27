@@ -165,7 +165,7 @@ class InstallerTests(unittest.TestCase):
             base = root / "miniforge-mock"
             modules = root / "modules"
             modules.mkdir()
-            for name in ("einops", "numpy", "pandas", "pydicom", "SimpleITK", "sklearn", "monai"):
+            for name in ("einops", "numpy", "pandas", "pydicom", "SimpleITK", "sklearn", "scipy", "monai"):
                 (modules / f"{name}.py").touch()
             (modules / "torch.py").write_text(
                 "from types import SimpleNamespace\n"

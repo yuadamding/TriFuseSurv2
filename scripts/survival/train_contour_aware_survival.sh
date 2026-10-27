@@ -15,12 +15,17 @@ export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS="${ITK_GLOBAL_DEFAULT_NUMBER_OF_THRE
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:512}"
 source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
-tf_require_python_modules numpy pandas SimpleITK torch monai sklearn pydicom
+tf_require_python_modules numpy pandas SimpleITK torch monai sklearn scipy pydicom
 
 META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
 RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
 IMG_SIZE="${IMG_SIZE:-128 256 256}"
 ENDPOINT="${ENDPOINT:-OS}"
+SEED="${SEED:-42}"
+FUSION_MODE="${FUSION_MODE:-F3}"
+REGION_MODE="${REGION_MODE:-verified}"
+DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-expert}"
+REGION_MANIFEST_COL="${REGION_MANIFEST_COL:-region_manifest_path}"
 ENDPOINT_LC="$(printf '%s' "$ENDPOINT" | tr '[:upper:]' '[:lower:]')"
 SPLITS_DIR="${SPLITS_DIR:-runs/opscc_splits_${ENDPOINT_LC}_seed1}"
 OUT_DIR="${OUT_DIR:-runs/contour_aware_survival_${ENDPOINT_LC}}"
@@ -126,7 +131,7 @@ EMA_DECAY="${EMA_DECAY:-0.9995}"
 PT_SHELL_RADIUS="${PT_SHELL_RADIUS:-5}"
 LN_SHELL_RADIUS="${LN_SHELL_RADIUS:-5}"
 PT_SHELL_THICKNESS_MM="${PT_SHELL_THICKNESS_MM:-10.0}"
-LN_SHELL_THICKNESS_MM="${LN_SHELL_THICKNESS_MM:-0.0}"
+LN_SHELL_THICKNESS_MM="${LN_SHELL_THICKNESS_MM:-10.0}"
 SHELL_BODY_FROM_CT="${SHELL_BODY_FROM_CT:-1}"
 BODY_CT_THR="${BODY_CT_THR:-0.02}"
 BODY_CT_THR_HU="${BODY_CT_THR_HU:--500.0}"
@@ -221,6 +226,8 @@ if (( ${#img_size_args[@]} != 3 )); then
 fi
 
 extra_args=()
+extra_args+=(--fusion_mode "$FUSION_MODE" --region_mode "$REGION_MODE"
+             --deployment_mode "$DEPLOYMENT_MODE" --region_manifest_col "$REGION_MANIFEST_COL")
 if [[ -n "$CONTOUR_WARMSTART_CKPT" ]]; then
   extra_args+=(--contour_warmstart_ckpt "$CONTOUR_WARMSTART_CKPT")
 elif [[ -n "$CONTOUR_WARMSTART_DIR" ]]; then
@@ -251,6 +258,7 @@ exec "$PYTHON_BIN" -u -m trifusesurv2.multimodal_survival.train \
   --debug_fold "$DEBUG_FOLD" \
   --strict_splits \
   --endpoint "$ENDPOINT" \
+  --seed "$SEED" \
   --ct_col ct_out_path \
   --mask_pt_col mask_primary_out_path \
   --mask_ln_col mask_nodal_out_path \

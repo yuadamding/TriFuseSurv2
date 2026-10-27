@@ -53,6 +53,10 @@ class ImageTokenBackbone(Protocol):
         teacher_force_alpha: float,
         return_aux: bool,
         return_cam_features: bool = False,
+        region_masks: Optional[torch.Tensor] = None,
+        region_validity: Optional[torch.Tensor] = None,
+        region_states: Optional[torch.Tensor] = None,
+        physical_geometry: Optional[torch.Tensor] = None,
     ) -> Any: ...  # noqa: E704
 
 
@@ -75,6 +79,10 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         Dimensions of per-group token vectors from the v2 encoders. 0 = disabled.
     node_token_dim, topology_dim : int
         Dimensions for node-set and topology tokens. 0 = disabled.
+    fusion_mode :
+        F0 concatenation, F1 flat transformer, F2 unrestricted hierarchy,
+        F3 matched hierarchy (default), F4 matched hierarchy with clinical
+        routing, or explicit legacy mode for the historical node pathway.
     model_dim, num_heads, transformer_layers, dropout :
         Forwarded to ``HabitatAlignedSurvivalModel``.
     """
@@ -97,6 +105,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         radiomics_habitats: tuple[str, ...] = RADIOLOGY_HABITATS,
         clinical_groups: "dict[str, tuple[str, ...]] | None" = None,
         habitat_clinical_context: "dict[str, tuple[str, ...]] | None" = None,
+        fusion_mode: str = "F3",
     ):
         super().__init__()
         self.backbone = backbone
@@ -104,6 +113,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         self.image_encoder_mode = "contour_aware"
         self.num_time_bins = int(num_time_bins)
         self.time_bin_width_days = float(time_bin_width_days)
+        self.fusion_mode = str(fusion_mode).upper()
 
         from collections import OrderedDict
         clin_groups = OrderedDict(clinical_groups or CLINICAL_TOKEN_GROUPS)
@@ -123,6 +133,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
             radiomics_habitats=radiomics_habitats,
             clinical_groups=clin_groups,
             habitat_clinical_context=habitat_clinical_context,
+            fusion_mode=self.fusion_mode,
         )
 
     def hazards_to_risk(self, hazards_logits: torch.Tensor, horizon_days: float) -> torch.Tensor:
@@ -218,6 +229,10 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         return_cam_features: bool = False,
         image_habitat_dropout_p: float = 0.0,
         keep_global_image_habitat: bool = True,
+        region_masks: Optional[torch.Tensor] = None,
+        region_validity: Optional[torch.Tensor] = None,
+        region_states: Optional[torch.Tensor] = None,
+        physical_geometry: Optional[torch.Tensor] = None,
     ):
         """Forward pass: raw CT → backbone → habitat model → survival logits.
 
@@ -249,6 +264,12 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         }
         if return_cam_features:
             backbone_kwargs["return_cam_features"] = True
+        for name, value in (
+            ("region_masks", region_masks), ("region_validity", region_validity),
+            ("region_states", region_states), ("physical_geometry", physical_geometry),
+        ):
+            if value is not None:
+                backbone_kwargs[name] = value
         bb_out = self.backbone(x_img, **backbone_kwargs)
         if request_bb_aux:
             image_tokens, image_presence, bb_aux = bb_out
@@ -266,6 +287,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
 
         habitat_result = self.habitat_model(
             image_tokens=image_tokens,
+            region_states=region_states,
             image_presence=image_presence,
             radiomics_tokens=radiomics_tokens,
             radiomics_presence=radiomics_presence,
@@ -312,6 +334,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         node_presence: Optional[torch.Tensor] = None,
         topology_token: Optional[torch.Tensor] = None,
         topology_presence: Optional[torch.Tensor] = None,
+        region_states: Optional[torch.Tensor] = None,
         return_aux: bool = False,
         return_attention: bool = False,
     ):
@@ -324,6 +347,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         return self.habitat_model(
             image_tokens=image_tokens,
             image_presence=image_presence,
+            region_states=region_states,
             radiomics_tokens=radiomics_tokens,
             radiomics_presence=radiomics_presence,
             clinical_tokens=clinical_tokens,

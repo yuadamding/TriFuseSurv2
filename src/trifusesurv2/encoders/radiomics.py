@@ -6,7 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -69,12 +69,14 @@ class HabitatRadiomicsTokenEncoder:
         pca_specs: dict[str, GroupPCASpec],
         patient_vectors: dict[str, dict[str, np.ndarray]],
         presence_map: dict[str, np.ndarray],
+        region_bindings: dict[str, dict[str, Any]] | None = None,
     ):
         self.group_names = tuple(group_names)
         self.group_index = {name: idx for idx, name in enumerate(self.group_names)}
         self.pca_specs = dict(pca_specs)
         self.patient_vectors = dict(patient_vectors)
         self.presence_map = dict(presence_map)
+        self.region_bindings = dict(region_bindings or {})
         self.token_dims = {name: spec.output_dim for name, spec in self.pca_specs.items()}
         self.max_token_dim = max(self.token_dims.values(), default=0)
         self.output_dim = self.max_token_dim
@@ -100,6 +102,8 @@ class HabitatRadiomicsTokenEncoder:
         presence_columns: dict[str, str] | None = None,
         require_presence_columns: bool = True,
         random_state: int = 1,
+        require_region_provenance: bool = False,
+        region_manifests: Mapping[str, dict] | None = None,
     ) -> "HabitatRadiomicsTokenEncoder":
         group_prefixes = OrderedDict(group_prefixes or DEFAULT_GROUP_PREFIXES)
         presence_columns = dict(presence_columns or DEFAULT_PRESENCE_COLUMNS)
@@ -127,13 +131,34 @@ class HabitatRadiomicsTokenEncoder:
         train_ids_norm = [cls.normalize_patient_id(x) for x in train_ids]
         all_ids_norm = list(dict.fromkeys(cls.normalize_patient_id(x) for x in all_ids))
         wanted = set(all_ids_norm)
+        region_bindings: dict[str, dict[str, Any]] = {}
+        if require_region_provenance:
+            from trifusesurv2.preprocessing.region_io import validate_radiomics_binding
+            if region_manifests is None:
+                raise ValueError("Verified radiomics requires region_manifests for every requested patient.")
+            normalized_manifests = {cls.normalize_patient_id(pid): manifest for pid, manifest in region_manifests.items()}
+            if len(normalized_manifests) != len(region_manifests):
+                raise ValueError("Region manifest patient IDs collide after radiomics ID normalization.")
+            present_ids = set(df["patient_id_norm"])
+            if wanted - present_ids:
+                raise ValueError(f"Missing radiomics rows/provenance for patients: {sorted(wanted - present_ids)[:10]}")
+            configs = set()
+            for _, row in df[df["patient_id_norm"].isin(wanted)].iterrows():
+                pid = row["patient_id_norm"]
+                if pid not in normalized_manifests:
+                    raise ValueError(f"Missing region manifest for patient {pid}")
+                validate_radiomics_binding(row, normalized_manifests[pid], group_names=tuple(group_prefixes))
+                region_bindings[pid] = row.to_dict()
+                configs.add((str(row["radiomics_config_sha256"]), str(row["radiomics_software"])))
+            if len(configs) != 1:
+                raise ValueError("Compared patients must use the same radiomics extraction configuration and software version.")
 
         feature_cols: dict[str, list[str]] = {}
         for name, prefix in group_prefixes.items():
             cols = [c for c in df.columns if c.startswith(prefix) and not c.endswith("__error")]
             usable = []
             for col in cols:
-                series = pd.to_numeric(df[col], errors="coerce")
+                series = pd.to_numeric(df.loc[df["patient_id_norm"].isin(train_ids_norm), col], errors="coerce")
                 if series.notna().any():
                     usable.append(col)
             feature_cols[name] = sorted(usable)
@@ -152,6 +177,8 @@ class HabitatRadiomicsTokenEncoder:
                 cols = feature_cols[group_name]
                 if cols:
                     vals = pd.to_numeric(pd.Series([row[c] for c in cols]), errors="coerce").to_numpy(dtype=np.float32)
+                    if require_region_provenance and str(row[f"feature_status__{group_name}"]) == "valid" and not np.isfinite(vals).all():
+                        raise ValueError(f"[RAD2] {pid}/{group_name}: valid features contain nonfinite values.")
                     vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
                 else:
                     vals = np.zeros((0,), dtype=np.float32)
@@ -165,11 +192,20 @@ class HabitatRadiomicsTokenEncoder:
                             f"[RAD2] Non-numeric presence value for patient {pid} group {group_name}: "
                             f"{row[present_col]!r}"
                         )
+                    if require_region_provenance and float(present_raw) not in {0.0, 1.0}:
+                        raise ValueError(f"[RAD2] {pid}/{group_name}: verified feature presence must be binary.")
                     present = float(present_raw) > 0.0
                 else:
                     if require_presence_columns:
                         raise ValueError(f"[RAD2] Missing presence column for group {group_name}")
                     present = bool(np.any(np.abs(vals) > 0))
+                if require_region_provenance:
+                    feature_valid = str(row[f"feature_status__{group_name}"]) == "valid"
+                    if present != feature_valid:
+                        raise ValueError(f"[RAD2] {pid}/{group_name}: presence disagrees with feature validity.")
+                    present = feature_valid and bool(cols)
+                    if not present:
+                        patient_vectors_raw[pid][group_name] = np.zeros_like(vals)
                 presence_bits[idx] = 1.0 if present else 0.0
 
             presence_map[pid] = presence_bits
@@ -247,7 +283,15 @@ class HabitatRadiomicsTokenEncoder:
             pca_specs=pca_specs,
             patient_vectors=patient_vectors,
             presence_map=presence_map,
+            region_bindings=region_bindings,
         )
+
+    def validate_region_binding(self, pid: str, manifest: Mapping[str, Any]) -> None:
+        from trifusesurv2.preprocessing.region_io import validate_radiomics_binding
+        key = self.normalize_patient_id(pid)
+        if key not in self.region_bindings:
+            raise ValueError(f"Radiomics for {pid} was not fitted with verified region provenance.")
+        validate_radiomics_binding(self.region_bindings[key], manifest, group_names=self.group_names)
 
     def _token_for_group(self, pid: str, group_name: str) -> tuple[np.ndarray, float]:
         pid_norm = self.normalize_patient_id(pid)

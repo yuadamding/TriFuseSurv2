@@ -46,6 +46,7 @@ def roi_focus_metrics(
     pred_prob: torch.Tensor,
     target_mask: torch.Tensor,
     used_support: Optional[torch.Tensor] = None,
+    annotation_validity: Optional[torch.Tensor] = None,
     threshold: float = 0.5,
     eps: float = 1e-6,
 ) -> Dict[str, torch.Tensor]:
@@ -53,8 +54,18 @@ def roi_focus_metrics(
 
     Metrics are batch means. Overlap-style metrics are averaged only over
     samples with a non-empty ground-truth ROI; ``gt_present_frac`` is averaged
-    over the full batch.
+    over the annotated batch. Missing/invalid annotations supply no reference.
     """
+
+    if annotation_validity is not None:
+        valid = annotation_validity.to(device=pred_prob.device, dtype=torch.bool)
+        if valid.shape != (pred_prob.shape[0],):
+            raise ValueError("annotation_validity must contain one flag per sample")
+        pred_prob, target_mask = pred_prob[valid], target_mask[valid]
+        if used_support is not None:
+            used_support = used_support[valid]
+    if pred_prob.shape[0] == 0:
+        return {name: pred_prob.new_tensor(float("nan")) for name in ROI_FOCUS_METRIC_NAMES}
 
     prob = pred_prob.float().clamp(0, 1)
     target = _resize_like(target_mask, prob).float().clamp(0, 1)

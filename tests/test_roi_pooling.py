@@ -85,6 +85,7 @@ class ROIPoolingTests(unittest.TestCase):
             pt_shell_thickness_mm=0.0, pt_shell_radius=1, ln_shell_radius=1,
         )
         model = ContourAwareHabitatSurvivalModel(
+            fusion_mode="legacy",
             backbone=backbone, num_time_bins=4, time_bin_width_days=120,
             radiomics_token_dim=4, clinical_token_dim=4,
             node_token_dim=9, topology_dim=9,

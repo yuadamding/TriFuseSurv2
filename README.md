@@ -1,7 +1,12 @@
 # TriFuseSurv2 Runtime Package
 
-Minimal runtime package for contour-aware OPSCC survival training with strict
-ROI-focus monitoring.
+OPSCC survival training with shared physical CT/radiomics compartments and
+controlled F0–F4 fusion alternatives. The default is **F3, verified regions,
+expert contours**. These are implementation capabilities, not evidence of
+improved prognosis or clinical validity.
+
+Start with the [anatomical correspondence workflow](docs/anatomical_correspondence.md)
+for input requirements, migration, comparison settings, and remaining study gates.
 
 ## Contents
 
@@ -12,6 +17,7 @@ src/trifusesurv2/
   encoders/                          # clinical and radiomics token encoders
   utils/                             # data loading, survival metrics, ROI focus metrics
   data/                              # lightweight token batch containers
+  preprocessing/                     # physical compartments, provenance and loading
   explain/gradcam_v2_core.py         # optional epoch Grad-CAM core
   schema.py
 
@@ -20,6 +26,8 @@ tests/                               # CPU regression checks
 scripts/
   install_env.sh
   preprocess_roi_inputs.py
+  extract_region_radiomics.py         # optional PyRadiomics adapter
+  visualize_region_qc.py              # manifest-validated QC overlays
   lib/gpu_utils.sh
   survival/search_roi_constrained_h100.sh
   survival/train_contour_aware_survival.sh
@@ -88,11 +96,16 @@ different configuration, changed sources, partial outputs, or older crops
 without provenance, choose a new output root or explicitly use `--overwrite`
 to regenerate them. Existing files are retained when reuse validation fails.
 
-`pt_peri` is defined as a 10 mm primary-tumor peritumoral shell by default
-(`PT_SHELL_THICKNESS_MM=10.0`). The loader reads each cropped NIfTI's physical
-voxel spacing, so the shell remains 10 mm after ROI-crop resampling. The older
-`PT_SHELL_RADIUS` setting is now only the fallback voxel radius when spacing is
-unavailable or physical-shell mode is disabled.
+Verified preprocessing constructs both exterior shells on the reference grid
+using the same 10 mm Euclidean definition, excludes both tumor interiors, and
+intersects an explicitly supplied valid-tissue mask. Shell overlap is allowed
+and recorded. Regions are constructed before cropping, persisted, and used by
+both CT pooling and radiomics. Empty shells remain empty. Missing annotations
+remain distinct from known absence.
+
+Metadata must include acquisition, contour and intensity provenance, plus the
+valid-tissue definition; see the [required fields](docs/anatomical_correspondence.md#input-contract).
+Existing crops and old radiomics CSVs are **not** automatically qualified.
 
 From the workspace root:
 
@@ -105,22 +118,21 @@ PYTHONPATH="$PWD/TriFuseSurv2/src" \
   --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
   --out_root OPSCC_preprocessed_roi_96x128x128 \
   --output_size 96 128 128 \
-  --margin_voxels 24 \
+  --region_mode verified --margin_mm 10 \
   --workers 4
 ```
 
-Then launch search against the cropped metadata and matching image size:
+Extract matching radiomics with a reviewed explicit configuration, then launch
+one selected fusion mode against the generated metadata:
 
 ```bash
-GPU_IDS=0,1,2,3 \
-ENDPOINT=OS \
-DEBUG_FOLD=3 \
+FUSION_MODE=F3 REGION_MODE=verified DEPLOYMENT_MODE=expert \
+ENDPOINT=OS DEBUG_FOLD=3 \
 META_CSV=OPSCC_preprocessed_roi_96x128x128/cohort_preprocessed_stage2_roi.csv \
+RADIOMICS_SOURCE=regions_radiomics.csv \
 IMG_SIZE="96 128 128" \
-SEARCH_PROFILE=roi_crop \
-OUT_ROOT=runs/roi_constrained_h100_search_round3_os_fold03_roi96 \
-WATCH_INTERVAL_SECONDS=60 \
-bash TriFuseSurv2/scripts/survival/search_roi_constrained_h100.sh
+OUT_DIR=runs/fusion_f3_os_fold03 \
+bash TriFuseSurv2/scripts/survival/train_contour_aware_survival.sh
 ```
 
 `96x128x128` is about 5.3x fewer voxels than `128x256x256`, so it should
@@ -137,6 +149,11 @@ strictest debugging run. The normalized input requirement applies to every
 search profile.
 
 ## ROI-Constrained 4-H100 Round-3 Search
+
+This is a historical tuning workflow, not the controlled architecture study.
+It now requires verified inputs by default. F0–F4 comparisons must use the same
+patients, splits, seeds, backbone initialization, fitting rules and tuning
+opportunities; save each mode in its own output directory.
 
 ```bash
 GPU_IDS=0,1,2,3 \
@@ -214,9 +231,14 @@ STRICT=1 \
 bash scripts/survival/train_with_roi_focus_watch.sh
 ```
 
-The default training launcher starts fresh (`RESUME=0`), runs an ROI-focus
-warmup with nonzero survival loss, and uses GT-mask ROI teacher forcing for
-survival train/eval/export by default.
+The default launcher starts fresh (`RESUME=0`). In verified mode, persisted
+compartments determine survival pooling during train/eval/export independently
+of the localizer or teacher-forcing settings. Localization remains an auxiliary
+task, with missing/invalid annotations excluded from supervision.
+
+Each fold records parameter counts and an input/model contract. Resume rejects
+changed fusion modes, deployment modes, data identities or split membership,
+including the shape-compatible F2/F3 switch.
 
 The Python entrypoint accepts `--time_col` and `--event_col` overrides for the
 selected primary endpoint. These columns are used consistently for filtering,
@@ -238,12 +260,17 @@ values. Logs and checkpoint metadata retain the original metric values.
 
 `pt_peri_*` refers to the 10 mm primary-tumor peritumoral shell.
 
+In verified mode these support metrics check the supplied regions and may be
+perfect by construction. They do not measure automated segmentation accuracy.
+Separate `pt_localizer_*` and `ln_localizer_*` metrics score predicted contours
+against available annotation; missing/invalid annotations are excluded.
+
 ROI masks use support-preserving reduction on coarser feature grids. Masked
 and weighted attention return zero for empty support instead of pooling the
-whole feature grid. Checkpoint parameter names and shapes are unchanged, but
-predictions can change where earlier mask reduction lost small ROIs. Earlier
-metrics describe the earlier implementation and should be reevaluated when
-comparing results with this revision.
+whole feature grid. The revised fusion and geometry inputs require new training
+runs; older checkpoints/results do not qualify the verified model. Coarse feature
+cells and shared encoder receptive fields can contain surrounding context even
+when pooling uses the declared region.
 
 ## Regression checks
 
@@ -257,6 +284,8 @@ python -m unittest discover -s tests -v
 
 These checks use synthetic inputs and temporary mocked launchers, including a
 small real CPU model forward/backward pass. They cover preprocessing reuse,
-patient identity, normalized CT inputs, ROI pooling, checkpoint recovery,
-survival column overrides, selection direction, and process cleanup. They do
-not establish full-cohort performance or CUDA qualification.
+patient identity, physical shells, image/radiomics identity, missing annotations,
+F0–F4 routing, ROI pooling, checkpoint recovery, survival column overrides,
+selection direction, and process cleanup. The extractor adapter is tested with
+a synthetic implementation; this does not qualify a PyRadiomics installation,
+full-cohort performance, or CUDA execution.

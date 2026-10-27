@@ -1,0 +1,22 @@
+field,required_for,definition_to_supply
+patient_id,all,Deidentified patient identity preserving duplicate linkage across cohorts
+scan_id,all,Selected acquisition identity and repeated-scan selection rule
+original_cohort_id,cohort_audit,Source cohort identity and duplicate reconciliation
+institution,cohort_audit,Institution definition and coding
+treatment_era,cohort_audit,Calendar interval and treatment context
+disease_site,cohort_audit,Eligibility definition and site coding
+imaging_protocol,cohort_audit,Scanner acquisition reconstruction and contrast protocol
+prediction_time,cohort_audit,Intended prognostic time and allowable baseline inputs
+clinical_availability,cohort_audit,Which variables were available at prediction time
+hpv_p16_coding,cohort_audit,Assay coding missingness and discordance handling
+staging_edition,cohort_audit,Edition and raw stage coding
+contour_source,verified_regions,Expert or predicted provenance
+contour_version,verified_regions,Reader or segmenter version and annotation availability
+ct_intensity_transform,verified_regions,Exact normalized CT recipe
+valid_tissue_definition,verified_regions,Qualified tissue-mask definition and source
+endpoint_definition,cohort_audit,OS DSS DFS event definitions and secondary-endpoint roles
+time_origin,cohort_audit,Date origin used to calculate each endpoint duration
+event_ascertainment,cohort_audit,Event coding source and competing-event handling
+censoring_rule,cohort_audit,Last-contact rule and endpoint-specific censoring
+follow_up_support,cohort_audit,Follow-up distribution and supported reporting horizons
+evaluation_history,cohort_audit,Prior use in development tuning or untouched evaluation

@@ -484,7 +484,25 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         spatial_augment: Optional[bool] = None,
         cache_volumes: bool = False,
         volume_cache_size: int = 0,
+        region_mode: str = "legacy",
+        region_manifest_col: str = "region_manifest_path",
+        deployment_mode: str = "expert",
     ):
+        self.region_mode = str(region_mode)
+        if self.region_mode not in {"verified", "legacy"}:
+            raise ValueError(f"Unknown region_mode: {region_mode}")
+        self.region_manifests = {}
+        if self.region_mode == "verified":
+            if spatial_augment:
+                raise ValueError("Verified regions cannot be spatially augmented without transforming all supports/geometry together.")
+            if not strict_files:
+                raise ValueError("Verified regions require strict_files; missing annotations must be explicitly represented in the manifest.")
+            from trifusesurv2.preprocessing.region_io import load_region_manifests
+            self.region_manifests = load_region_manifests(
+                meta, id_col=id_col, manifest_col=region_manifest_col,
+                data_root=data_root, deployment_mode=deployment_mode,
+            )
+            spatial_augment = False
         if bool(node_topology_dir) and bool(spatial_augment):
             raise ValueError(
                 "Spatial augmentation with node_topology_dir is disabled until node centroids/laterality "
@@ -527,25 +545,51 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
 
         clin_mat, clin_presence = self.clinical_token_encoder.encode_row_token_matrix(row)
         clin_mat = _pad_or_trunc_matrix_dim(clin_mat, self.clinical_token_dim)
+        optional = {}
         if self.use_radiomics and self.radiomics_token_encoder is not None:
             rad_mat, rad_presence = self.radiomics_token_encoder.encode_patient_token_matrix(pid)
             rad_mat = _pad_or_trunc_matrix_dim(rad_mat, self.radiomics_token_dim)
-        else:
-            rad_mat = np.zeros((0, int(self.radiomics_token_dim)), dtype=np.float32)
-            rad_presence = np.zeros((0,), dtype=np.float32)
+            optional.update(radiomics_tokens=_torch_float32(rad_mat), radiomics_presence=_torch_float32(rad_presence))
 
-        payload = _read_node_topology_payload(self.node_topology_dir, pid)
-        topology_vec, topology_present = _topology_vector_from_payload(payload)
-        node_mat, node_presence = _node_matrix_from_payload(
-            payload,
-            max_nodes=self.max_nodes,
-            node_dim=self.node_token_dim,
-        )
-        if self.node_topology_scaler is not None:
-            topology_vec = self.node_topology_scaler.transform_topology(topology_vec)
-            node_mat = self.node_topology_scaler.transform_nodes(node_mat)
+        if self.node_topology_dir:
+            payload = _read_node_topology_payload(self.node_topology_dir, pid)
+            topology_vec, topology_present = _topology_vector_from_payload(payload)
+            node_mat, node_presence = _node_matrix_from_payload(
+                payload,
+                max_nodes=self.max_nodes,
+                node_dim=self.node_token_dim,
+            )
+            if self.node_topology_scaler is not None:
+                topology_vec = self.node_topology_scaler.transform_topology(topology_vec)
+                node_mat = self.node_topology_scaler.transform_nodes(node_mat)
+            optional.update(
+                node_tokens=_torch_float32(node_mat), node_presence=_torch_float32(node_presence),
+                topology_token=_torch_float32(topology_vec[None, :]),
+                topology_presence=torch.tensor([topology_present], dtype=torch.float32),
+            )
+
+        verified = {}
+        if self.region_mode == "verified":
+            from trifusesurv2.preprocessing.region_io import load_region_arrays
+            manifest = self.region_manifests[pid]
+            ct_path = resolve_preprocessed_case_path(str(row[self.ct_col]), data_root=self.data_root, patient_id=pid)
+            masks, validity, states, geometry = load_region_arrays(manifest, ct_path=ct_path)
+            if not np.array_equal(pt > 0.5, masks[0] > 0.5) or not np.array_equal(ln > 0.5, masks[2] > 0.5):
+                raise ValueError(f"{pid}: supervision contours differ from declared region interiors.")
+            if self.use_radiomics and self.radiomics_token_encoder is not None:
+                self.radiomics_token_encoder.validate_region_binding(pid, manifest)
+            verified = {
+                "region_masks": _torch_float32(masks),
+                "region_validity": torch.from_numpy(validity),
+                "region_states": torch.from_numpy(states),
+                "physical_geometry": _torch_float32(geometry),
+                "region_manifest_path": manifest["_manifest_path"],
+                "scan_id": str(manifest["scan_id"]),
+            }
 
         return {
+            **verified,
+            **optional,
             "x": _torch_float32(ct[None, ...]),
             "mask_pt": _torch_float32(pt[None, ...]),
             "mask_ln": _torch_float32(ln[None, ...]),
@@ -555,12 +599,6 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
             "e_all": _torch_float32(e_multi),
             "clinical_tokens": _torch_float32(clin_mat),
             "clinical_presence": _torch_float32(clin_presence),
-            "radiomics_tokens": _torch_float32(rad_mat),
-            "radiomics_presence": _torch_float32(rad_presence),
-            "node_tokens": _torch_float32(node_mat),
-            "node_presence": _torch_float32(node_presence),
-            "topology_token": _torch_float32(topology_vec[None, :]),
-            "topology_presence": torch.tensor([topology_present], dtype=torch.float32),
             "voxel_spacing_dhw": _torch_float32(voxel_spacing_dhw),
             "pid": pid,
         }

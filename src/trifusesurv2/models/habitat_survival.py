@@ -1,4 +1,4 @@
-"""Habitat-aligned, node-aware survival model for TriFuseSurv2."""
+"""Controlled fusion alternatives sharing the same inputs and survival heads."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from trifusesurv2.data.batch import HabitatBatch
 from trifusesurv2.schema import (
@@ -14,6 +15,7 @@ from trifusesurv2.schema import (
     DEFAULT_HABITAT_CLINICAL_CONTEXT,
     IMAGE_HABITATS,
     RADIOLOGY_HABITATS,
+    REGION_STATUS_CODES,
     SURVIVAL_ENDPOINTS,
     TREATMENT_AWARE_HABITAT_CLINICAL_CONTEXT,
     TREATMENT_AWARE_CLINICAL_TOKEN_GROUPS,
@@ -213,10 +215,13 @@ class StructuredSurvivalHeads(nn.Module):
 
 
 class HabitatAlignedSurvivalModel(nn.Module):
-    """Habitat-aligned fusion model with optional node-set support.
+    """F0–F4 comparisons over identical regional and clinical information.
 
-    Defaults are aligned to what the established package can actually emit
-    today: contour-aware image habitats and 4 radiomics habitats.
+    F0 concatenates projected measurements and availability into an MLP; F1
+    uses a flat identified-token transformer; F2/F3 use the same local/global
+    hierarchy with unrestricted/matched radiomics edges. F4 additionally
+    restricts clinical edges. The historical optional node pathway is available
+    only through explicit ``legacy`` mode and is outside these comparisons.
     """
 
     def __init__(
@@ -236,8 +241,15 @@ class HabitatAlignedSurvivalModel(nn.Module):
         radiomics_habitats: tuple[str, ...] = RADIOLOGY_HABITATS,
         clinical_groups: OrderedDict[str, tuple[str, ...]] = CLINICAL_TOKEN_GROUPS,
         habitat_clinical_context: dict[str, tuple[str, ...]] | None = None,
+        fusion_mode: str = "F3",
     ):
         super().__init__()
+        self.fusion_mode = str(fusion_mode).upper()
+        if self.fusion_mode not in {"F0", "F1", "F2", "F3", "F4", "LEGACY"}:
+            raise ValueError(f"Unknown fusion_mode: {fusion_mode}")
+        if self.fusion_mode != "LEGACY" and (node_token_dim > 0 or topology_dim > 0):
+            raise ValueError("F0–F4 keep node/topology extensions disabled; use zero dimensions or explicit legacy mode.")
+        self.model_dim = int(model_dim)
         self.image_habitats = tuple(image_habitats)
         self.radiomics_habitats = tuple(radiomics_habitats)
         self.clinical_groups = tuple(clinical_groups.keys())
@@ -247,6 +259,13 @@ class HabitatAlignedSurvivalModel(nn.Module):
             else DEFAULT_HABITAT_CLINICAL_CONTEXT
         )
         self.habitat_clinical_context = dict(habitat_clinical_context or default_clinical_context)
+        if self.fusion_mode in {"F0", "F1", "F2", "F3"}:
+            if habitat_clinical_context is not None and any(
+                set(habitat_clinical_context.get(h, ())) != set(self.clinical_groups)
+                for h in self.image_habitats
+            ):
+                raise ValueError("Restricted clinical routing is an F4 factor; F0–F3 use all clinical groups.")
+            self.habitat_clinical_context = {h: self.clinical_groups for h in self.image_habitats}
 
         self.image_index = habitat_index_map(self.image_habitats)
         self.radiomics_index = habitat_index_map(self.radiomics_habitats)
@@ -284,7 +303,7 @@ class HabitatAlignedSurvivalModel(nn.Module):
         self.habitat_fusers = nn.ModuleDict(
             {
                 habitat: HabitatCrossAttentionBlock(model_dim=model_dim, num_heads=num_heads, dropout=dropout)
-                for habitat in self.image_habitats
+                for habitat in self.image_habitats if self.fusion_mode not in {"F0", "F1"}
             }
         )
 
@@ -297,9 +316,28 @@ class HabitatAlignedSurvivalModel(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.sequence_encoder = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
-        self.prognosis_token = nn.Parameter(torch.zeros(1, 1, model_dim))
-        nn.init.normal_(self.prognosis_token, mean=0.0, std=0.02)
+        self.sequence_encoder = (
+            nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+            if self.fusion_mode != "F0" else None
+        )
+        self.prognosis_token = nn.Parameter(torch.zeros(1, 1, model_dim)) if self.fusion_mode != "F0" else None
+
+        if self.fusion_mode != "LEGACY":
+            # Identities are explicit in the flat transformer as well as local
+            # fusion. All controlled modes receive the same availability data.
+            self.source_embedding = nn.Parameter(torch.empty(3, model_dim))
+            self.anatomical_embedding = nn.Parameter(torch.empty(len(self.image_habitats), model_dim))
+            self.clinical_embedding = nn.Parameter(torch.empty(len(self.clinical_groups), model_dim))
+            self.num_input_slots = len(self.image_habitats) + len(self.radiomics_habitats) + len(self.clinical_groups)
+            self.availability_dim = self.num_input_slots + len(RADIOLOGY_HABITATS) * len(REGION_STATUS_CODES)
+            if self.fusion_mode == "F0":
+                self.concatenation_mlp = nn.Sequential(
+                    nn.Linear(self.num_input_slots * model_dim + self.availability_dim, 2 * model_dim),
+                    nn.GELU(), nn.Dropout(dropout),
+                    nn.Linear(2 * model_dim, model_dim), nn.GELU(),
+                )
+            else:
+                self.availability_proj = nn.Linear(self.availability_dim, model_dim)
 
         self.output_norm = nn.LayerNorm(model_dim)
         self.survival_heads = StructuredSurvivalHeads(
@@ -310,8 +348,12 @@ class HabitatAlignedSurvivalModel(nn.Module):
         )
 
         self._init_weights()
-        # Restore prognosis token init (the sweep above would have overwritten it)
-        nn.init.normal_(self.prognosis_token, mean=0.0, std=0.02)
+        # Initialize identity parameters separately from module weights.
+        if self.prognosis_token is not None:
+            nn.init.normal_(self.prognosis_token, mean=0.0, std=0.02)
+        if self.fusion_mode != "LEGACY":
+            for embedding in (self.source_embedding, self.anatomical_embedding, self.clinical_embedding):
+                nn.init.normal_(embedding, mean=0.0, std=0.02)
 
     def _init_weights(self) -> None:
         """Xavier uniform for Linear layers, ones/zeros for LayerNorm."""
@@ -434,6 +476,154 @@ class HabitatAlignedSurvivalModel(nn.Module):
             pooled[empty_rows, :] = 0.0
         return encoded, pooled, pooled_mask
 
+    def parameter_count(self, *, trainable_only: bool = False) -> int:
+        """Actual instantiated parameter count for capacity reporting."""
+        return sum(p.numel() for p in self.parameters() if not trainable_only or p.requires_grad)
+
+    def local_context_routing(self, *, device=None) -> torch.Tensor:
+        """Allowed edges for fixed query + all radiomics + all clinical contexts.
+
+        F2/F3 have identical parameters and context shapes. Their only local
+        fusion difference is this radiomics routing mask. Global/geometry
+        queries have no regional radiomics counterpart in either mode.
+        """
+        if self.fusion_mode not in {"F2", "F3", "F4"}:
+            raise ValueError("Local context routing applies only to F2/F3/F4.")
+        allowed = torch.zeros(
+            len(self.image_habitats), 1 + len(self.radiomics_habitats) + len(self.clinical_groups),
+            dtype=torch.bool, device=device,
+        )
+        allowed[:, 0] = True
+        for i, habitat in enumerate(self.image_habitats):
+            for j, region in enumerate(self.radiomics_habitats):
+                allowed[i, 1 + j] = habitat in self.radiomics_index and (
+                    self.fusion_mode == "F2" or habitat == region
+                )
+            for j, group in enumerate(self.clinical_groups):
+                allowed[i, 1 + len(self.radiomics_habitats) + j] = (
+                    group in self.habitat_clinical_context.get(habitat, ())
+                )
+        return allowed
+
+    def _controlled_grouped(self, tokens, presence, names, projections, reference):
+        batch_size = reference.shape[0]
+        if tokens is None:
+            if presence is not None and bool(presence.to(torch.bool).any()):
+                raise ValueError("Presence cannot be true when grouped measurements are unavailable.")
+            return reference.new_zeros(batch_size, len(names), self.model_dim), torch.zeros(
+                batch_size, len(names), device=reference.device, dtype=torch.bool
+            )
+        if projections is None or tokens.ndim != 3 or tuple(tokens.shape[:2]) != (batch_size, len(names)):
+            raise ValueError(f"Invalid grouped measurements for {names}: {tuple(tokens.shape)}")
+        mask = torch.ones(tokens.shape[:2], dtype=torch.bool, device=tokens.device) if presence is None else presence.to(
+            device=tokens.device, dtype=torch.bool
+        )
+        if tuple(mask.shape) != tuple(tokens.shape[:2]):
+            raise ValueError("Grouped availability shape must match measurement slots.")
+        clean = torch.where(mask.unsqueeze(-1), tokens, torch.zeros_like(tokens))
+        if not bool(torch.isfinite(clean).all()):
+            raise ValueError("Available grouped measurements must be finite; mark invalid features unavailable.")
+        projected, _ = self._project_grouped_tokens(clean, mask, names, projections)
+        return projected, mask
+
+    def _forward_controlled(
+        self, *, image_tokens, image_presence, radiomics_tokens, radiomics_presence,
+        clinical_tokens, clinical_presence, region_states, return_aux, return_attention,
+    ):
+        self._validate_primary_inputs(image_tokens, image_presence)
+        image_mask = torch.ones(image_tokens.shape[:2], dtype=torch.bool, device=image_tokens.device) if image_presence is None else image_presence.to(
+            device=image_tokens.device, dtype=torch.bool
+        )
+        clean_image = torch.where(image_mask.unsqueeze(-1), image_tokens, torch.zeros_like(image_tokens))
+        if not bool(torch.isfinite(clean_image).all()):
+            raise ValueError("Available image measurements must be finite.")
+        image = self.image_proj(clean_image)
+        radiomics, radiomics_mask = self._controlled_grouped(
+            radiomics_tokens, radiomics_presence, self.radiomics_habitats, self.radiomics_proj, image
+        )
+        clinical, clinical_mask = self._controlled_grouped(
+            clinical_tokens, clinical_presence, self.clinical_groups, self.clinical_proj, image
+        )
+        image = (image + self.source_embedding[0] + self.anatomical_embedding) * image_mask.unsqueeze(-1)
+        if any(name not in self.image_index for name in self.radiomics_habitats):
+            raise ValueError("Each radiomics compartment needs an explicit matching image identity.")
+        rad_identity = self.anatomical_embedding[[self.image_index[name] for name in self.radiomics_habitats]]
+        radiomics = (radiomics + self.source_embedding[1] + rad_identity) * radiomics_mask.unsqueeze(-1)
+        clinical = (clinical + self.source_embedding[2] + self.clinical_embedding) * clinical_mask.unsqueeze(-1)
+
+        if region_states is None:
+            # A missing measurement alone does not establish anatomical absence.
+            states = torch.full(
+                (image.shape[0], len(RADIOLOGY_HABITATS)), REGION_STATUS_CODES["missing"],
+                device=image.device, dtype=torch.long,
+            )
+            for j, name in enumerate(RADIOLOGY_HABITATS):
+                if name in self.image_index:
+                    states[:, j] = torch.where(
+                        image_mask[:, self.image_index[name]], REGION_STATUS_CODES["present"], states[:, j]
+                    )
+        else:
+            states = region_states.to(device=image.device)
+            if tuple(states.shape) != (image.shape[0], len(RADIOLOGY_HABITATS)):
+                raise ValueError("region_states must be [B,4] in the declared compartment order.")
+            if not bool(torch.isfinite(states).all()) or not bool((states == states.long()).all()):
+                raise ValueError("region_states must contain finite integer status codes.")
+            states = states.long()
+            if bool(((states < 0) | (states >= len(REGION_STATUS_CODES))).any()):
+                raise ValueError("Unknown region status code.")
+        availability = torch.cat([
+            image_mask, radiomics_mask, clinical_mask,
+            F.one_hot(states, num_classes=len(REGION_STATUS_CODES)).flatten(1),
+        ], dim=1).to(dtype=image.dtype)
+        all_tokens = torch.cat([image, radiomics, clinical], dim=1)
+        all_mask = torch.cat([image_mask, radiomics_mask, clinical_mask], dim=1)
+        habitat_seq, habitat_mask = image, image_mask
+        habitat_attention = {}
+        if self.fusion_mode == "F0":
+            latent = self.output_norm(self.concatenation_mlp(torch.cat([all_tokens.flatten(1), availability], dim=1)))
+        else:
+            if self.fusion_mode in {"F2", "F3", "F4"}:
+                routing = self.local_context_routing(device=image.device)
+                fused = []
+                for index, habitat in enumerate(self.image_habitats):
+                    query = image[:, index]
+                    context = torch.cat([query.unsqueeze(1), radiomics, clinical], dim=1)
+                    context_mask = torch.cat([image_mask[:, index:index + 1], radiomics_mask, clinical_mask], dim=1)
+                    context_mask = context_mask & routing[index].unsqueeze(0)
+                    result = self.habitat_fusers[habitat](query, context, context_mask, return_attention=return_attention)
+                    if return_attention:
+                        value, weights = result
+                        habitat_attention[habitat] = {
+                            "weights": weights.detach().cpu(),
+                            "context_names": [f"image:{habitat}"] + [f"radiomics:{h}" for h in self.radiomics_habitats] + [f"clinical:{g}" for g in self.clinical_groups],
+                            "context_mask": context_mask.detach().cpu(),
+                        }
+                    else:
+                        value = result
+                    fused.append(value * image_mask[:, index:index + 1].to(value.dtype))
+                habitat_seq = torch.stack(fused, dim=1)
+                all_tokens, all_mask = habitat_seq, habitat_mask
+            seq = torch.cat([
+                self.prognosis_token.expand(image.shape[0], -1, -1),
+                self.availability_proj(availability).unsqueeze(1), all_tokens,
+            ], dim=1)
+            seq_mask = torch.cat([
+                torch.ones(image.shape[0], 2, dtype=torch.bool, device=image.device), all_mask,
+            ], dim=1)
+            encoded = self.sequence_encoder(seq, src_key_padding_mask=~seq_mask)
+            latent = self.output_norm(encoded[:, 0])
+        logits = self.survival_heads(latent)
+        if not return_aux:
+            return logits
+        aux = {
+            "latent": latent, "habitat_tokens": habitat_seq, "habitat_presence": habitat_mask,
+            "region_states": states, "fusion_mode": self.fusion_mode,
+            "node_tokens": None, "node_presence": None, "topology_token": None, "topology_presence": None,
+        }
+        if return_attention:
+            aux.update(habitat_attention=habitat_attention, pt_node_attention=None)
+        return logits, aux
+
     def forward(
         self,
         *,
@@ -447,9 +637,19 @@ class HabitatAlignedSurvivalModel(nn.Module):
         node_presence: Optional[torch.Tensor] = None,
         topology_token: Optional[torch.Tensor] = None,
         topology_presence: Optional[torch.Tensor] = None,
+        region_states: Optional[torch.Tensor] = None,
         return_aux: bool = False,
         return_attention: bool = False,
     ) -> dict[str, torch.Tensor] | tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        if self.fusion_mode != "LEGACY":
+            if node_tokens is not None or topology_token is not None:
+                raise ValueError("Node/topology inputs are outside the controlled F0–F4 comparison.")
+            return self._forward_controlled(
+                image_tokens=image_tokens, image_presence=image_presence,
+                radiomics_tokens=radiomics_tokens, radiomics_presence=radiomics_presence,
+                clinical_tokens=clinical_tokens, clinical_presence=clinical_presence,
+                region_states=region_states, return_aux=return_aux, return_attention=return_attention,
+            )
         self._validate_primary_inputs(image_tokens, image_presence)
         image = self.image_proj(image_tokens)
         image_mask = image_presence.to(torch.bool) if image_presence is not None else torch.ones(
@@ -646,6 +846,7 @@ class HabitatAlignedSurvivalModel(nn.Module):
         return self.forward(
             image_tokens=batch.image.tokens,
             image_presence=batch.image.presence,
+            region_states=getattr(batch, "region_states", None),
             radiomics_tokens=None if batch.radiomics is None else batch.radiomics.tokens,
             radiomics_presence=None if batch.radiomics is None else batch.radiomics.presence,
             clinical_tokens=None if batch.clinical is None else batch.clinical.tokens,

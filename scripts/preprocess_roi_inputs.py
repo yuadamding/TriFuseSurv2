@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Create fixed-size ROI-crop inputs for TriFuseSurv2 survival training.
 
-The output metadata keeps the same schema as the source CSV, but rewrites the
-CT/PT/LN path columns to point at cropped NIfTI files. Crops are centered on the
-union of the primary-tumor and nodal masks plus a configurable margin, then
-resampled to a model-friendly fixed size.
+Verified mode defines physical 10 mm compartments on the reference acquisition
+before cropping and writes their model-grid supports and provenance manifest.
+The output metadata rewrites CT/PT/LN paths and adds region_manifest_path.
+Legacy mode retains the historical voxel-margin crop without verified regions.
 """
 
 from __future__ import annotations
@@ -159,6 +159,8 @@ def _resample_to_size(img: sitk.Image, output_size_dhw: tuple[int, int, int], *,
     resampler.SetTransform(sitk.Transform())
     resampler.SetDefaultPixelValue(0)
     resampler.SetInterpolator(sitk.sitkNearestNeighbor if is_mask else sitk.sitkLinear)
+    if not is_mask:
+        resampler.SetOutputPixelType(sitk.sitkFloat32)
     out = resampler.Execute(img)
 
     if not is_mask:
@@ -178,6 +180,8 @@ def _resolve_required_path(row: Mapping[str, Any], col: str, *, meta_dir: Path, 
 
 
 def _process_one(job: Mapping[str, Any]) -> dict[str, Any]:
+    if job.get("region_mode", "legacy") == "verified":
+        return _process_verified(job)
     row = job["row"]
     index = int(job["index"])
     id_col = str(job["id_col"])
@@ -285,6 +289,216 @@ def _process_one(job: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _required_text(row: Mapping[str, Any], key: str) -> str:
+    value = row.get(key)
+    if value is None or pd.isna(value) or not str(value).strip():
+        raise ValueError(f"Verified preprocessing requires metadata field {key}.")
+    return str(value).strip()
+
+
+def _annotation_available(row: Mapping[str, Any], lesion: str) -> bool:
+    value = row.get(f"{lesion}_annotation_available", True)
+    if pd.isna(value):
+        raise ValueError(f"{lesion}_annotation_available must be explicitly true or false.")
+    if str(value).strip().lower() in {"0", "false", "no"}:
+        return False
+    if str(value).strip().lower() in {"1", "true", "yes"}:
+        return True
+    raise ValueError(f"Invalid {lesion}_annotation_available value: {value!r}")
+
+
+def _array_image(array: np.ndarray, reference: sitk.Image) -> sitk.Image:
+    return _copy_geometry(reference, sitk.GetImageFromArray(array.astype(np.uint8)))
+
+
+def _verified_binary_mask(image: sitk.Image, *, source: Path) -> np.ndarray:
+    array = sitk.GetArrayFromImage(image)
+    if array.ndim != 3 or not np.isfinite(array).all() or not np.isin(array, (0, 1)).all():
+        raise ValueError(f"Verified mask source must contain finite binary 0/1 values on a 3D grid: {source}")
+    return array.astype(bool)
+
+
+def _process_verified(job: Mapping[str, Any]) -> dict[str, Any]:
+    from trifusesurv2.preprocessing.compartments import (
+        ReferenceGeometry, assert_same_geometry, build_compartments,
+        mask_checksum, region_identity, validate_region_manifest,
+    )
+    from trifusesurv2.preprocessing.region_io import validate_deployment, load_region_manifest
+    row = job["row"]
+    pid = _required_text(row, str(job["id_col"]))
+    scan_id = _required_text(row, str(job.get("scan_id_col", "scan_id")))
+    contour_source = _required_text(row, "contour_source")
+    contour_version = _required_text(row, "contour_version")
+    intensity = _required_text(row, "ct_intensity_transform")
+    meta_dir, out_root = Path(job["meta_dir"]), Path(job["out_root"])
+    out_csv_dir = Path(job["out_csv_dir"])
+    shape = tuple(map(int, job["output_size_dhw"]))
+    ct_path = _resolve_required_path(row, str(job["ct_col"]), meta_dir=meta_dir, id_col=str(job["id_col"]))
+    ct = sitk.ReadImage(str(ct_path))
+    geometry = ReferenceGeometry.from_image(ct)
+    validate_normalized_ct(sitk.GetArrayViewFromImage(ct), source=str(ct_path))
+    sources = {"ct": {"path": str(ct_path.resolve()), **_file_fingerprint(ct_path)}}
+    contours = {}
+    for lesion, col in (("pt", job["mask_pt_col"]), ("ln", job["mask_ln_col"])):
+        if not _annotation_available(row, lesion):
+            contours[lesion] = None
+            sources[lesion] = None
+            continue
+        path = _resolve_required_path(row, str(col), meta_dir=meta_dir, id_col=str(job["id_col"]))
+        image = sitk.ReadImage(str(path))
+        assert_same_geometry(geometry, image)
+        contours[lesion] = _verified_binary_mask(image, source=path)
+        sources[lesion] = {"path": str(path.resolve()), **_file_fingerprint(path)}
+    tissue_policy = str(job.get("valid_tissue_policy", "mask"))
+    if tissue_policy not in {"mask", "full_fov"}:
+        raise ValueError(f"Unknown valid tissue policy: {tissue_policy}")
+    if tissue_policy == "full_fov":
+        tissue = np.ones(geometry.shape_dhw, dtype=bool)
+        tissue_source = "explicit_full_field_of_view; includes all imaged voxels without tissue classification"
+    else:
+        path = _resolve_required_path(row, str(job.get("valid_tissue_col", "valid_tissue_out_path")), meta_dir=meta_dir, id_col=str(job["id_col"]))
+        image = sitk.ReadImage(str(path))
+        assert_same_geometry(geometry, image)
+        tissue = _verified_binary_mask(image, source=path)
+        tissue_source = _required_text(row, "valid_tissue_definition")
+        sources["valid_tissue"] = {"path": str(path.resolve()), **_file_fingerprint(path)}
+    midline = row.get("midline_lps_x_mm")
+    midline = None if midline is None or pd.isna(midline) else float(midline)
+    masks, manifest = build_compartments(
+        contours["pt"], contours["ln"], tissue, geometry,
+        patient_id=pid, scan_id=scan_id, contour_source=contour_source,
+        contour_version=contour_version, valid_tissue_source=tissue_source, midline_lps_x=midline,
+    )
+    segmentation = row.get("segmentation_provenance", "")
+    if isinstance(segmentation, str) and segmentation.strip():
+        manifest["segmentation_provenance"] = json.loads(segmentation)
+    validate_deployment(manifest, str(job.get("deployment_mode", "expert")))
+    margin_mm = float(job.get("margin_mm", 10.0))
+    if not np.isfinite(margin_mm) or margin_mm < 10.0:
+        raise ValueError("Verified --margin_mm must be finite and at least the fixed 10 mm shell width.")
+    margin = tuple(np.ceil(margin_mm / np.asarray(geometry.spacing_dhw)).astype(int))
+    union = np.zeros(geometry.shape_dhw, dtype=bool)
+    for lesion in contours.values():
+        if lesion is not None:
+            union |= lesion
+    start, end, status = _bbox_from_mask(
+        union, margin_dhw=margin, output_size_dhw=shape,
+        expand_to_aspect=bool(job["expand_to_aspect"]), fail_empty_roi=bool(job["fail_empty_roi"]),
+    )
+    # The reference shells are defined before cropping. Ensure all available
+    # declared tissue survives; FOV-boundary truncation remains separately recorded.
+    crop_slices = tuple(slice(int(a), int(b)) for a, b in zip(start, end))
+    for name, support in masks.items():
+        if int(support[crop_slices].sum()) != int(support.sum()):
+            raise ValueError(f"{pid}/{name}: physical crop would truncate its authoritative support.")
+    ct_crop = _resample_to_size(_crop_image(ct, start, end), shape, is_mask=False)
+    image_geometry = ReferenceGeometry.from_image(ct_crop)
+    radiomics_ct = ct
+    radiomics_transform = intensity
+    raw_col = str(job.get("radiomics_ct_col", "radiomics_ct_path"))
+    raw_value = row.get(raw_col)
+    if raw_value is not None and not pd.isna(raw_value) and str(raw_value).strip():
+        raw_scan = _required_text(row, "radiomics_scan_id")
+        if raw_scan != scan_id:
+            raise ValueError("Radiomics and normalized CT must declare the same acquisition scan_id.")
+        path = _resolve_required_path(row, raw_col, meta_dir=meta_dir, id_col=str(job["id_col"]))
+        radiomics_ct = sitk.ReadImage(str(path))
+        assert_same_geometry(geometry, radiomics_ct)
+        if not np.isfinite(sitk.GetArrayViewFromImage(radiomics_ct)).all():
+            raise ValueError("Radiomics CT must contain finite intensities.")
+        radiomics_transform = _required_text(row, "radiomics_intensity_transform")
+        sources["radiomics_ct"] = {"path": str(path.resolve()), **_file_fingerprint(path)}
+    inputs = {
+        "schema_version": 2, "patient_id": pid, "scan_id": scan_id,
+        "sources": sources, "margin_mm": margin_mm, "output_size_dhw": list(shape),
+        "bbox_zyx": [start.tolist(), end.tolist()], "contour_source": contour_source,
+        "contour_version": contour_version, "valid_tissue_policy": tissue_policy,
+        "valid_tissue_definition": tissue_source, "ct_intensity_transform": intensity,
+        "radiomics_intensity_transform": radiomics_transform,
+        "segmentation_provenance": manifest.get("segmentation_provenance"),
+        "midline_lps_x_mm": midline,
+    }
+    case_dir = out_root / _safe_id(pid)
+    if case_dir.resolve().parent != out_root.resolve():
+        raise ValueError("Patient output directory must remain inside out_root.")
+    manifest_path = case_dir / "region_manifest.json"
+    provenance_path = case_dir / "roi_crop_provenance.json"
+    ct_out, pt_out, ln_out = (case_dir / n for n in ("ct_roi.nii.gz", "mask_primary_roi.nii.gz", "mask_nodal_roi.nii.gz"))
+    expected_names = ["ct_roi.nii.gz", "ct_radiomics.nii.gz", "mask_primary_roi.nii.gz", "mask_nodal_roi.nii.gz"]
+    expected_names += [f"region_{name}.nii.gz" for name in masks]
+    expected_names += ["region_manifest.json"]
+    existing = any((case_dir / name).exists() for name in expected_names) or provenance_path.exists()
+    if existing and not bool(job["overwrite"]):
+        try:
+            receipt = json.loads(provenance_path.read_text())
+            if receipt.get("inputs") != inputs:
+                raise ValueError("source/configuration differs")
+            actual = {name: _file_fingerprint(case_dir / name) for name in expected_names}
+            if receipt.get("outputs") != actual:
+                raise ValueError("output files differ from recorded fingerprints")
+            persisted = load_region_manifest(manifest_path, pid, deployment_mode=str(job.get("deployment_mode", "expert")))
+            if any(persisted["regions"][name]["region_id"] != manifest["regions"][name]["region_id"] for name in masks):
+                raise ValueError("reference compartment identities differ from the current definition")
+            if persisted["physical_geometry"] != manifest["physical_geometry"]:
+                raise ValueError("physical geometry differs from the current definition")
+        except (OSError, ValueError, AttributeError, KeyError, TypeError) as exc:
+            raise RuntimeError(f"Cannot reuse verified regions for {pid}: {exc}. Use a new --out_root or --overwrite.") from exc
+    else:
+        case_dir.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".regions-", dir=case_dir) as temporary:
+            stage = Path(temporary)
+            sitk.WriteImage(ct_crop, str(stage / ct_out.name))
+            raw_crop = _resample_to_size(_crop_image(radiomics_ct, start, end), shape, is_mask=False)
+            sitk.WriteImage(raw_crop, str(stage / "ct_radiomics.nii.gz"))
+            for name, support in masks.items():
+                image = _resample_to_size(_crop_image(_array_image(support, ct), start, end), shape, is_mask=True)
+                arr = sitk.GetArrayFromImage(image) > 0.5
+                path = stage / f"region_{name}.nii.gz"
+                sitk.WriteImage(image, str(path))
+                if name in {"pt_intra", "ln_intra"}:
+                    sitk.WriteImage(image, str(stage / (pt_out.name if name == "pt_intra" else ln_out.name)))
+                record = manifest["regions"][name]
+                image_hash = mask_checksum(arr)
+                record.update(image_mask_path=path.name, image_mask_sha256=image_hash,
+                              image_geometry=image_geometry.to_dict(),
+                              image_region_id=region_identity(record, mask_sha256=image_hash, geometry=image_geometry))
+                reference_count = int(support.sum())
+                image_volume = int(arr.sum()) * image_geometry.voxel_volume_mm3
+                record["feature_validity"]["image"] = bool(record["support_valid"] and arr.any())
+                record["crop_completeness"] = {
+                    "fraction": 1.0, "retained_reference_voxels": reference_count,
+                    "reference_voxels": reference_count,
+                    "reference_volume_mm3": record["physical_volume_mm3"],
+                    "retained_reference_volume_mm3": reference_count * geometry.voxel_volume_mm3,
+                    "image_volume_mm3": image_volume,
+                    "image_to_reference_volume_ratio": image_volume / record["physical_volume_mm3"] if reference_count else None,
+                    "reference_boundary_truncated": record["reference_boundary_truncated"],
+                    "resampling": "nearest-neighbor support representation; volume is measured, not assumed conserved",
+                }
+            for key, name, transform in (("image", ct_out.name, intensity), ("radiomics_image", "ct_radiomics.nii.gz", radiomics_transform)):
+                manifest[key] = {"path": name, "sha256": _file_fingerprint(stage / name)["sha256"],
+                                 "geometry": image_geometry.to_dict(), "intensity_transform": transform,
+                                 "scan_id": scan_id, "spatial_transform": "physical ROI crop followed by linear intensity resampling"}
+            manifest["intensity_pipelines"] = {"image": intensity, "radiomics": radiomics_transform}
+            manifest["source_files"] = sources
+            manifest["crop"] = {"margin_mm": margin_mm, "bbox_zyx": [start.tolist(), end.tolist()], "retains_all_available_reference_support": True}
+            validate_region_manifest(manifest)
+            (stage / manifest_path.name).write_text(json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n")
+            receipt = {"inputs": inputs, "outputs": {name: _file_fingerprint(stage / name) for name in expected_names}}
+            (stage / provenance_path.name).write_text(json.dumps(receipt, sort_keys=True, indent=2, allow_nan=False) + "\n")
+            for name in expected_names:
+                os.replace(stage / name, case_dir / name)
+            os.replace(stage / provenance_path.name, provenance_path)
+    return {
+        "index": int(job["index"]), "pid": pid,
+        "ct_out_path": _relpath(ct_out, out_csv_dir), "mask_primary_out_path": _relpath(pt_out, out_csv_dir),
+        "mask_nodal_out_path": _relpath(ln_out, out_csv_dir), "region_manifest_path": _relpath(manifest_path, out_csv_dir),
+        "roi_crop_status": status, "roi_crop_bbox_zyx": json.dumps([start.tolist(), end.tolist()]),
+        "roi_crop_margin_voxels": json.dumps(list(map(int, margin))), "roi_crop_margin_mm": margin_mm,
+        "roi_crop_output_size_dhw": json.dumps(list(shape)), "roi_crop_source_ct": str(ct_path),
+    }
+
+
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--meta_csv", default="OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv")
@@ -300,8 +514,15 @@ def build_argparser() -> argparse.ArgumentParser:
         type=int,
         nargs="+",
         default=[24],
-        help="One isotropic margin or three margins in D H W voxel order.",
+        help="Legacy mode only: one isotropic margin or three margins in D H W voxel order.",
     )
+    p.add_argument("--region_mode", choices=("verified", "legacy"), default="verified")
+    p.add_argument("--margin_mm", type=float, default=10.0, help="Verified physical crop margin; at least the fixed 10 mm shell.")
+    p.add_argument("--scan_id_col", default="scan_id")
+    p.add_argument("--valid_tissue_col", default="valid_tissue_out_path")
+    p.add_argument("--valid_tissue_policy", choices=("mask", "full_fov"), default="mask")
+    p.add_argument("--radiomics_ct_col", default="radiomics_ct_path")
+    p.add_argument("--deployment_mode", choices=("expert", "automated", "contour_variation"), default="expert")
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--fail_empty_roi", action="store_true")
@@ -360,6 +581,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs = [
         {
             "index": int(i),
+            "region_mode": args.region_mode, "margin_mm": args.margin_mm,
+            "scan_id_col": args.scan_id_col, "valid_tissue_col": args.valid_tissue_col,
+            "valid_tissue_policy": args.valid_tissue_policy, "radiomics_ct_col": args.radiomics_ct_col,
+            "deployment_mode": args.deployment_mode,
             "row": df.loc[i].to_dict(),
             "id_col": args.id_col,
             "ct_col": args.ct_col,
@@ -404,6 +629,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         df.at[idx, args.ct_col] = result["ct_out_path"]
         df.at[idx, args.mask_pt_col] = result["mask_primary_out_path"]
         df.at[idx, args.mask_ln_col] = result["mask_nodal_out_path"]
+        if "region_manifest_path" in result:
+            df.at[idx, "region_manifest_path"] = result["region_manifest_path"]
+            df.at[idx, "roi_crop_margin_mm"] = result["roi_crop_margin_mm"]
         for key in (
             "roi_crop_status",
             "roi_crop_bbox_zyx",

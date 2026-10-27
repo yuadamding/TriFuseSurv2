@@ -18,7 +18,6 @@ Tokens (B,6,Dtok):
 
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -31,6 +30,7 @@ from trifusesurv2.models.swinunetr_backbone_utils import (
     convert_swinvit_feats_to_channel_first,
     swinvit_features,
 )
+from trifusesurv2.schema import PHYSICAL_GEOMETRY_FEATURES, REGION_STATUS_CODES
 
 
 def masked_mean(feat: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -218,25 +218,6 @@ def binary_close(m: torch.Tensor, r: int) -> torch.Tensor:
     return e
 
 
-def _radius_tuple_from_spacing(
-    *,
-    thickness_mm: float,
-    spacing_dhw,
-    fallback_radius: int,
-) -> Tuple[int, int, int]:
-    if float(thickness_mm) <= 0.0:
-        r = int(max(0, fallback_radius))
-        return r, r, r
-    try:
-        vals = [float(x) for x in list(spacing_dhw)[:3]]
-    except Exception:
-        vals = []
-    if len(vals) != 3 or any((not math.isfinite(v)) or v <= 0.0 for v in vals):
-        r = int(max(0, fallback_radius))
-        return r, r, r
-    return tuple(max(1, int(math.ceil(float(thickness_mm) / max(v, 1e-6)))) for v in vals)
-
-
 def soft_shell_around_mask(
     mask: torch.Tensor,
     *,
@@ -244,71 +225,38 @@ def soft_shell_around_mask(
     thickness_mm: float = 0.0,
     voxel_spacing_dhw: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Differentiable hard-support shell, optionally using physical mm spacing.
+    """Binary Euclidean support for the explicit, unverified legacy path.
 
-    ``voxel_spacing_dhw`` is in array order (z/y/x or D/H/W). When a positive
-    thickness is supplied, each sample is dilated by ceil(thickness_mm / spacing)
-    per axis. This preserves the existing max-pool morphology while making the
-    shell thickness physically meaningful after ROI-crop resampling.
+    Verified runs consume persisted compartments instead. Spacing alone does
+    not qualify acquisition geometry. Voxel-radius mode uses unit spacing;
+    physical mode requires spacing and never silently falls back to voxels.
     """
+    from trifusesurv2.preprocessing.compartments import physical_shell
+    import numpy as np
 
-    m = mask.clamp(0, 1)
-    fallback_radius = int(max(0, radius))
-    if float(thickness_mm) <= 0.0 or voxel_spacing_dhw is None:
-        if fallback_radius <= 0:
-            return m.new_zeros(m.shape)
-        k = 2 * fallback_radius + 1
-        dil = F.max_pool3d(m, kernel_size=k, stride=1, padding=fallback_radius)
-        return (dil - m).clamp(0, 1)
-
-    spacing = voxel_spacing_dhw
-    if torch.is_tensor(spacing):
-        spacing_cpu = spacing.detach().float().cpu()
+    if mask.ndim != 5 or mask.shape[1] != 1:
+        raise ValueError("Shell input must be [B,1,D,H,W]")
+    physical = float(thickness_mm) > 0
+    width = float(thickness_mm) if physical else float(radius)
+    if width <= 0:
+        return torch.zeros_like(mask)
+    if physical and voxel_spacing_dhw is None:
+        raise ValueError("Physical shells require voxel spacing; use persisted verified regions.")
+    if physical:
+        spacing = torch.as_tensor(voxel_spacing_dhw).detach().cpu().numpy()
+        spacing = np.atleast_2d(spacing)
+        if spacing.shape == (1, 3):
+            spacing = np.repeat(spacing, mask.shape[0], axis=0)
+        if spacing.shape != (mask.shape[0], 3):
+            raise ValueError("Voxel spacing must be [B,3] in D,H,W order")
     else:
-        spacing_cpu = torch.as_tensor(spacing, dtype=torch.float32)
-    if spacing_cpu.ndim == 1:
-        spacing_cpu = spacing_cpu.view(1, -1)
-    if spacing_cpu.ndim != 2 or int(spacing_cpu.shape[1]) < 3:
-        return soft_shell_around_mask(m, radius=fallback_radius)
-    if int(spacing_cpu.shape[0]) == 1 and int(m.shape[0]) > 1:
-        spacing_cpu = spacing_cpu.expand(int(m.shape[0]), -1)
-    if int(spacing_cpu.shape[0]) != int(m.shape[0]):
-        return soft_shell_around_mask(m, radius=fallback_radius)
-
-    radii = [
-        _radius_tuple_from_spacing(
-            thickness_mm=float(thickness_mm),
-            spacing_dhw=spacing_cpu[i, :3].tolist(),
-            fallback_radius=fallback_radius,
-        )
-        for i in range(int(m.shape[0]))
-    ]
-    if all(r == radii[0] for r in radii):
-        rz, ry, rx = radii[0]
-        if max(rz, ry, rx) <= 0:
-            return m.new_zeros(m.shape)
-        dil = F.max_pool3d(
-            m,
-            kernel_size=(2 * rz + 1, 2 * ry + 1, 2 * rx + 1),
-            stride=1,
-            padding=(rz, ry, rx),
-        )
-        return (dil - m).clamp(0, 1)
-
-    shells = []
-    for i, (rz, ry, rx) in enumerate(radii):
-        one = m[i : i + 1]
-        if max(rz, ry, rx) <= 0:
-            shells.append(one.new_zeros(one.shape))
-            continue
-        dil = F.max_pool3d(
-            one,
-            kernel_size=(2 * rz + 1, 2 * ry + 1, 2 * rx + 1),
-            stride=1,
-            padding=(rz, ry, rx),
-        )
-        shells.append((dil - one).clamp(0, 1))
-    return torch.cat(shells, dim=0)
+        spacing = np.ones((mask.shape[0], 3))
+    masks = (mask.detach().float().cpu().numpy()[:, 0] > 0.5)
+    shells = np.stack([
+        physical_shell(masks[i], spacing_dhw=spacing[i], width_mm=width)
+        for i in range(mask.shape[0])
+    ])[:, None]
+    return torch.as_tensor(shells, dtype=mask.dtype, device=mask.device)
 
 
 class ContourAwareROITokenBackbone(nn.Module):
@@ -343,7 +291,7 @@ class ContourAwareROITokenBackbone(nn.Module):
         pt_shell_radius: int = 3,
         ln_shell_radius: int = 3,
         pt_shell_thickness_mm: float = 10.0,
-        ln_shell_thickness_mm: float = 0.0,
+        ln_shell_thickness_mm: float = 10.0,
         shell_body_from_ct: bool = True,
         body_ct_thr: Union[str, float] = "auto",
         body_ct_thr_hu: float = -500.0,
@@ -353,7 +301,8 @@ class ContourAwareROITokenBackbone(nn.Module):
         debug_swinvit_layout: bool = False,
         force_presence_from_raw_masks: bool = False,
         raw_mask_threshold: float = 0.5,
-        fallback_peri_to_intra: bool = True,
+        fallback_peri_to_intra: bool = False,
+        require_verified_regions: bool = False,
         sync_sanitize_checks: bool = False,
     ):
         super().__init__()
@@ -384,7 +333,9 @@ class ContourAwareROITokenBackbone(nn.Module):
         self._expected_c = _expected_channels(int(feature_size), max_pow=6)
         self.force_presence_from_raw_masks = bool(force_presence_from_raw_masks)
         self.raw_mask_threshold = float(raw_mask_threshold)
-        self.fallback_peri_to_intra = bool(fallback_peri_to_intra)
+        if fallback_peri_to_intra:
+            raise ValueError("Peritumoral-to-interior substitution is unsupported: an empty shell must remain empty.")
+        self.require_verified_regions = bool(require_verified_regions)
         self.sync_sanitize_checks = bool(sync_sanitize_checks)
         self._warned_sanitized = set()
 
@@ -553,6 +504,10 @@ class ContourAwareROITokenBackbone(nn.Module):
         mask_pt: Optional[torch.Tensor] = None,
         mask_ln: Optional[torch.Tensor] = None,
         voxel_spacing_dhw: Optional[torch.Tensor] = None,
+        region_masks: Optional[torch.Tensor] = None,
+        region_validity: Optional[torch.Tensor] = None,
+        region_states: Optional[torch.Tensor] = None,
+        physical_geometry: Optional[torch.Tensor] = None,
         teacher_force_alpha: float = 0.0,
         return_aux: bool = False,
         return_cam_features: bool = False,
@@ -562,6 +517,40 @@ class ContourAwareROITokenBackbone(nn.Module):
 
         B = x_img.size(0)
         ct = x_img[:, 0:1]
+        verified = region_masks is not None
+        if self.require_verified_regions and not verified:
+            raise ValueError("Verified compartment masks are required; regenerate inputs with region manifests.")
+        if verified:
+            if tuple(region_masks.shape) != (B, 4, *ct.shape[2:]):
+                raise ValueError("region_masks must be [B,4,D,H,W] on the CT grid")
+            if region_validity is None or region_states is None or physical_geometry is None:
+                raise ValueError("Region masks require validity, explicit states, and physical geometry")
+            if region_validity.shape != (B, 4) or region_states.shape != (B, 4):
+                raise ValueError("Region validity/states must be [B,4]")
+            if not ((region_validity == 0) | (region_validity == 1)).all():
+                raise ValueError("Region validity must be binary")
+            if not torch.isfinite(region_states).all() or not (region_states == region_states.long()).all():
+                raise ValueError("Region states must be integer codes")
+            if not torch.isfinite(region_masks).all() or not ((region_masks == 0) | (region_masks == 1)).all():
+                raise ValueError("Verified compartment masks must be finite binary supports")
+            region_masks = region_masks.to(device=ct.device, dtype=ct.dtype)
+            region_validity = region_validity.to(device=ct.device, dtype=torch.bool)
+            region_states = region_states.to(device=ct.device, dtype=torch.long)
+            if not ((region_states >= 0) & (region_states < len(REGION_STATUS_CODES))).all():
+                raise ValueError("Unknown compartment state")
+            has_support = region_masks.flatten(2).any(dim=2)
+            if (has_support != (region_states == REGION_STATUS_CODES["present"])).any():
+                raise ValueError("Compartment states must agree with measured tissue support")
+            expected_validity = (region_states == REGION_STATUS_CODES["present"]) | (region_states == REGION_STATUS_CODES["absent"])
+            if (region_validity != expected_validity).any():
+                raise ValueError("Missing/invalid compartments cannot have valid support")
+            interiors = region_masks[:, 0:1] + region_masks[:, 2:3]
+            if (interiors * (region_masks[:, 1:2] + region_masks[:, 3:4])).any():
+                raise ValueError("Exterior compartments must exclude both tumor interiors")
+            gdim = len(PHYSICAL_GEOMETRY_FEATURES)
+            physical_geometry = physical_geometry.to(device=ct.device, dtype=torch.float32)
+            if physical_geometry.shape != (B, 2 * gdim) or not torch.isfinite(physical_geometry).all():
+                raise ValueError("Physical geometry must contain finite values and validity flags")
 
         if mask_pt is not None:
             mask_pt = mask_pt.to(device=ct.device, dtype=ct.dtype).clamp(0, 1)
@@ -569,7 +558,7 @@ class ContourAwareROITokenBackbone(nn.Module):
             mask_ln = mask_ln.to(device=ct.device, dtype=ct.dtype).clamp(0, 1)
 
         body = None
-        if self.shell_body_from_ct:
+        if self.shell_body_from_ct and not verified:
             thr = self._auto_body_thr(ct) if (isinstance(self.body_ct_thr, str) and self.body_ct_thr == "auto") else float(self.body_ct_thr)
             body = (ct > thr).float()
             if self.body_close_r > 0:
@@ -621,6 +610,11 @@ class ContourAwareROITokenBackbone(nn.Module):
         ln_used = self._roi_support_mask(ln_soft_used)
         pt_used = self._apply_native_support_floor(pt_used, mask_pt, alpha)
         ln_used = self._apply_native_support_floor(ln_used, mask_ln, alpha)
+        if verified:
+            # These persisted supports also identify the corresponding radiomics.
+            # Neither predicted masks nor teacher forcing may change their meaning.
+            pt_used, ln_used = region_masks[:, 0:1], region_masks[:, 2:3]
+            pt_soft_used, ln_soft_used = pt_used, ln_used
 
         raw_pt_source = mask_pt if (mask_pt is not None and alpha > 0.0) else pt_soft_used
         raw_ln_source = mask_ln if (mask_ln is not None and alpha > 0.0) else ln_soft_used
@@ -637,29 +631,17 @@ class ContourAwareROITokenBackbone(nn.Module):
         pres_pt_intra = self._presence_from_mask(pt_used, deep_size)
         pres_ln_intra = self._presence_from_mask(ln_used, deep_size)
 
-        pt_shell = soft_shell_around_mask(
-            pt_used,
-            radius=self.pt_shell_radius,
-            thickness_mm=self.pt_shell_thickness_mm,
-            voxel_spacing_dhw=voxel_spacing_dhw,
-        )
-        ln_shell = soft_shell_around_mask(
-            ln_used,
-            radius=self.ln_shell_radius,
-            thickness_mm=self.ln_shell_thickness_mm,
-            voxel_spacing_dhw=voxel_spacing_dhw,
-        )
-        if body is not None:
-            pt_shell = pt_shell * body
-            ln_shell = ln_shell * body
-
-        if self.fallback_peri_to_intra:
-            pt_shell_sum = pt_shell.sum(dim=(2, 3, 4)).squeeze(1)
-            ln_shell_sum = ln_shell.sum(dim=(2, 3, 4)).squeeze(1)
-            bad_pt_peri = pres_pt_intra & (pt_shell_sum <= 0.0)
-            bad_ln_peri = pres_ln_intra & (ln_shell_sum <= 0.0)
-            pt_shell = torch.where(bad_pt_peri.view(-1, 1, 1, 1, 1), pt_used, pt_shell)
-            ln_shell = torch.where(bad_ln_peri.view(-1, 1, 1, 1, 1), ln_used, ln_shell)
+        if verified:
+            pt_shell, ln_shell = region_masks[:, 1:2], region_masks[:, 3:4]
+        else:
+            pt_shell = soft_shell_around_mask(pt_used, radius=self.pt_shell_radius,
+                thickness_mm=self.pt_shell_thickness_mm, voxel_spacing_dhw=voxel_spacing_dhw)
+            ln_shell = soft_shell_around_mask(ln_used, radius=self.ln_shell_radius,
+                thickness_mm=self.ln_shell_thickness_mm, voxel_spacing_dhw=voxel_spacing_dhw)
+            exterior = 1.0 - torch.maximum(pt_used, ln_used)
+            pt_shell, ln_shell = pt_shell * exterior, ln_shell * exterior
+            if body is not None:
+                pt_shell, ln_shell = pt_shell * body, ln_shell * body
 
         pres_pt_peri = self._presence_from_mask(pt_shell, deep_size)
         pres_ln_peri = self._presence_from_mask(ln_shell, deep_size)
@@ -669,13 +651,18 @@ class ContourAwareROITokenBackbone(nn.Module):
             dim=1,
         )
 
-        if self.force_presence_from_raw_masks:
+        if verified:
+            measured = region_masks.flatten(2).sum(-1) > 0
+            measured &= region_validity & (region_states == REGION_STATUS_CODES["present"])
+            pres[:, 1:5] = measured
+            pres_pt_intra, pres_ln_intra = measured[:, 0], measured[:, 2]
+            # Physical validity/missingness is information even without a lesion.
+            pres[:, 5] = True
+        elif self.force_presence_from_raw_masks:
             pres = pres.clone()
             pres[:, 0] = True
             pres[:, 1] = pt_present_raw
-            pres[:, 2] = pt_present_raw
             pres[:, 3] = ln_present_raw
-            pres[:, 4] = ln_present_raw
             pres[:, 5] = pt_present_raw | ln_present_raw
 
         token_inputs: List[torch.Tensor] = []
@@ -721,6 +708,14 @@ class ContourAwareROITokenBackbone(nn.Module):
                 pres_ln_intra,
             )
         )
+        if verified:
+            values, valid = physical_geometry.split(gdim, dim=1)
+            if not ((valid == 0) | (valid == 1)).all():
+                raise ValueError("Physical geometry validity must be binary")
+            # Fixed unit scaling, not a fit on validation/test statistics.
+            scaled = torch.sign(values) * torch.log1p(values.abs()) * valid
+            state_flags = F.one_hot(region_states, num_classes=len(REGION_STATUS_CODES)).flatten(1).float()
+            token_inputs[-1] = torch.cat([token_inputs[-1], scaled, valid, state_flags], dim=1)
 
         hs: List[torch.Tensor] = []
         for i in range(self.max_tokens):

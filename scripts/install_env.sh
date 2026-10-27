@@ -166,6 +166,7 @@ conda_packages=(
   pydicom
   simpleitk
   scikit-learn
+  scipy
   matplotlib
 )
 if [[ -n "$PYTORCH_SPEC" && "$PYTORCH_SPEC" != "none" ]]; then
@@ -209,6 +210,7 @@ required = {
     "pydicom": "pydicom",
     "SimpleITK": "SimpleITK",
     "sklearn": "scikit-learn",
+    "scipy": "scipy",
     "torch": "pytorch",
     "monai": "monai",
 }
