@@ -15,8 +15,9 @@ src/trifusesurv2/
   explain/gradcam_v2_core.py         # optional epoch Grad-CAM core
   schema.py
 
+environment.yml
+tests/                               # CPU regression checks
 scripts/
-  environment.yml
   install_env.sh
   preprocess_roi_inputs.py
   lib/gpu_utils.sh
@@ -26,9 +27,8 @@ scripts/
   survival/watch_roi_focus_training.sh
 ```
 
-Everything else from the earlier developer bundle has been removed from this
-runtime package: tests, preprocessing commands, legacy search wrappers, DDP/LoRA
-alternate launchers, OOF evaluation scripts, and developer build helpers.
+Legacy search wrappers, DDP/LoRA alternate launchers, OOF evaluation scripts,
+and developer build helpers from the earlier bundle are not included.
 
 ## Install
 
@@ -51,6 +51,9 @@ environment.
 The default conda solve pins `pytorch=2.5.1=*cuda12.4*` plus
 `pytorch-cuda=12.4` from the `pytorch` and `nvidia` channels. This avoids
 CPU-only PyTorch builds that can satisfy looser version pins.
+The installer checks dependency imports and the CUDA build after installation.
+The monitored training launcher requires `setsid` from Linux `util-linux` so
+it can terminate the trainer and its workers together on failure or interruption.
 
 Training launchers default to throughput-oriented settings for one process per
 GPU: CUDA TF32 enabled, cuDNN benchmark enabled unless deterministic mode is
@@ -72,6 +75,19 @@ The survival model can train on ROI-focused crops instead of the original
 because the model's `pt_peri` and `ln_peri` tokens need real peritumoral CT
 context.
 
+CT inputs must already be finite and normalized to `[0,1]` with the same
+preprocessing for training and evaluation. Raw HU inputs are rejected by both
+the crop preprocessor and the dataset loader; choosing `BODY_CT_THR=auto` does
+not normalize an image.
+
+Patient IDs must be unique after directory-name sanitization. The preprocessor
+checks all IDs before writing output. Each generated case includes
+`roi_crop_provenance.json` with crop settings, source hashes, and output hashes
+and geometry. Existing crops are reused only when these checks match. For a
+different configuration, changed sources, partial outputs, or older crops
+without provenance, choose a new output root or explicitly use `--overwrite`
+to regenerate them. Existing files are retained when reuse validation fails.
+
 `pt_peri` is defined as a 10 mm primary-tumor peritumoral shell by default
 (`PT_SHELL_THICKNESS_MM=10.0`). The loader reads each cropped NIfTI's physical
 voxel spacing, so the shell remains 10 mm after ROI-crop resampling. The older
@@ -81,11 +97,11 @@ unavailable or physical-shell mode is disabled.
 From the workspace root:
 
 ```bash
-cd /rsrch8/home/bcb/yding4/opscc
+cd /storage/TriFuseSurv
 
-PYTHONPATH="$PWD/TriFuseSurv2_package/src" \
-"$PWD/TriFuseSurv2_package/.conda_env/bin/python" \
-  TriFuseSurv2_package/scripts/preprocess_roi_inputs.py \
+PYTHONPATH="$PWD/TriFuseSurv2/src" \
+"$PWD/TriFuseSurv2/.conda_env/bin/python" \
+  TriFuseSurv2/scripts/preprocess_roi_inputs.py \
   --meta_csv OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv \
   --out_root OPSCC_preprocessed_roi_96x128x128 \
   --output_size 96 128 128 \
@@ -104,7 +120,7 @@ IMG_SIZE="96 128 128" \
 SEARCH_PROFILE=roi_crop \
 OUT_ROOT=runs/roi_constrained_h100_search_round3_os_fold03_roi96 \
 WATCH_INTERVAL_SECONDS=60 \
-bash TriFuseSurv2_package/scripts/survival/search_roi_constrained_h100.sh
+bash TriFuseSurv2/scripts/survival/search_roi_constrained_h100.sh
 ```
 
 `96x128x128` is about 5.3x fewer voxels than `128x256x256`, so it should
@@ -117,8 +133,8 @@ the ROI-crop search profile. That profile uses larger train batches
 (`BATCH_SIZE=4/6/8`), larger eval batches, lower gradient accumulation, fixed
 normalized-CT body threshold `BODY_CT_THR=0.02`, and less frequent explicit
 nonfinite-loss synchronization. Set `NONFINITE_CHECK_EVERY_BATCHES=1` for the
-strictest debugging run, or `BODY_CT_THR=auto` only if the CT files are raw HU
-instead of normalized preprocessed volumes.
+strictest debugging run. The normalized input requirement applies to every
+search profile.
 
 ## ROI-Constrained 4-H100 Round-3 Search
 
@@ -177,6 +193,11 @@ SEARCH_ACCEPT_COMPLETE_OUTPUTS=0 # require status.txt/status.rc instead
 SEARCH_ALLOW_PARTIAL_RESUME=1 # allow partial checkpoint restores if needed
 ```
 
+Strict recovery checks all model keys and required optimizer, scheduler,
+scaler, EMA and SWA state. EMA may be absent during localization-only warmup;
+SWA may have no averages before its first update. Other missing state requires
+an explicit partial resume or a fresh run.
+
 The summary includes `peak_vram_mib` and `peak_vram_gb`, sampled with
 `nvidia-smi`, plus mean/peak GPU utilization, so trials can be ranked by both
 survival score and actual H100 use. The target peak is about 77 GB; aggressive
@@ -197,6 +218,16 @@ The default training launcher starts fresh (`RESUME=0`), runs an ROI-focus
 warmup with nonzero survival loss, and uses GT-mask ROI teacher forcing for
 survival train/eval/export by default.
 
+The Python entrypoint accepts `--time_col` and `--event_col` overrides for the
+selected primary endpoint. These columns are used consistently for filtering,
+multitask training labels, time bins and evaluation; auxiliary endpoints keep
+their standard columns. Radiomics CSV identifiers are read as strings to
+preserve leading zeros.
+
+`--report_metric nll` and `--report_metric ibs` select lower values for both best
+checkpoints and final exports. AUC, C-index and composite scores select higher
+values. Logs and checkpoint metadata retain the original metric values.
+
 ## ROI Metrics
 
 - `pt_mass`, `ln_mass`, `pt_peri_mass`: fraction of effective ROI probability mass
@@ -206,3 +237,26 @@ survival train/eval/export by default.
 - `pt_dice`, `ln_dice`, `pt_peri_dice`: support Dice against GT.
 
 `pt_peri_*` refers to the 10 mm primary-tumor peritumoral shell.
+
+ROI masks use support-preserving reduction on coarser feature grids. Masked
+and weighted attention return zero for empty support instead of pooling the
+whole feature grid. Checkpoint parameter names and shapes are unchanged, but
+predictions can change where earlier mask reduction lost small ROIs. Earlier
+metrics describe the earlier implementation and should be reevaluated when
+comparing results with this revision.
+
+## Regression checks
+
+From this repository, with runtime dependencies available:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/src" CUDA_VISIBLE_DEVICES='' \
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+python -m unittest discover -s tests -v
+```
+
+These checks use synthetic inputs and temporary mocked launchers, including a
+small real CPU model forward/backward pass. They cover preprocessing reuse,
+patient identity, normalized CT inputs, ROI pooling, checkpoint recovery,
+survival column overrides, selection direction, and process cleanup. They do
+not establish full-cohort performance or CUDA qualification.

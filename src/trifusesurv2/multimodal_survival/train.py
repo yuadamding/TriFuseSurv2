@@ -76,6 +76,16 @@ MULTITASK_TIME_COLS = tuple(ENDPOINT_MAP[name][0] for name in SURVIVAL_ENDPOINTS
 MULTITASK_EVENT_COLS = tuple(ENDPOINT_MAP[name][1] for name in SURVIVAL_ENDPOINTS)
 
 
+def multitask_survival_columns(args) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Use the selected endpoint's column overrides throughout the training path."""
+    time_cols = list(MULTITASK_TIME_COLS)
+    event_cols = list(MULTITASK_EVENT_COLS)
+    primary = ENDPOINT_TO_INDEX[str(args.endpoint).strip().upper()]
+    time_cols[primary] = str(getattr(args, "time_col", "") or time_cols[primary])
+    event_cols[primary] = str(getattr(args, "event_col", "") or event_cols[primary])
+    return tuple(time_cols), tuple(event_cols)
+
+
 def _configure_stdio_line_buffering():
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
@@ -1282,6 +1292,25 @@ def report_metric_value(metrics: Dict[str, float], metric_name: str) -> float:
     return _finite_float(metrics.get(name))
 
 
+def metric_selection_score(value: float, metric_name: str) -> float:
+    """Return a maximization score while keeping recorded metrics in original units."""
+    value = _finite_float(value)
+    if not np.isfinite(value):
+        return float("-inf")
+    return -value if str(metric_name).strip().lower() in {"nll", "ibs"} else value
+
+
+def select_export_candidate(candidates: Dict[str, Dict[str, Any]], metric_name: str, policy: str) -> str:
+    if str(policy).strip().lower() == "ema_priority":
+        return "ema" if "ema" in candidates else "last"
+    scored = [
+        (metric_selection_score(report_metric_value(info["val"], metric_name), metric_name), suffix)
+        for suffix, info in candidates.items()
+    ]
+    finite_scored = [(score, suffix) for score, suffix in scored if np.isfinite(score)]
+    return max(finite_scored, key=lambda item: item[0])[1] if finite_scored else "last"
+
+
 def generate_epoch_gradcam_probe(
     model: nn.Module,
     loader: DataLoader,
@@ -2245,7 +2274,8 @@ def load_model_state_only(path: Path, model: nn.Module) -> bool:
         print(f"[CKPT][WARN] refusing partial survival-head restore from {path}; missing head keys like {missing[:5]}")
         return False
 
-    if not filtered:
+    if set(filtered) != set(target_sd) or set(in_sd) != set(target_sd):
+        print(f"[CKPT][WARN] refusing incomplete model restore from {path}")
         return False
 
     _unwrap_model(model).load_state_dict(filtered, strict=False)
@@ -2264,7 +2294,7 @@ def load_checkpoint(
 ) -> Tuple[int, bool]:
     """
     Returns: (next_epoch, fully_restored)
-    fully_restored=False means optimizer/scheduler may not match, or many keys mismatched.
+    fully_restored=False means model or required training state did not fully restore.
     """
     if not path.is_file():
         return 1, False
@@ -2273,12 +2303,14 @@ def load_checkpoint(
         raise RuntimeError(f"Checkpoint num_time_bins mismatch: ckpt={ck.get('num_time_bins')} current={num_time_bins}")
 
     in_sd = ck.get("model_state", {})
+    if not isinstance(in_sd, dict):
+        raise RuntimeError(f"[CKPT] invalid model_state in {path}")
     target_sd = _unwrap_model(model).state_dict()
 
     filtered = {}
     mismatched = 0
     for k, v in in_sd.items():
-        if k in target_sd and tuple(target_sd[k].shape) == tuple(v.shape):
+        if k in target_sd and torch.is_tensor(v) and tuple(target_sd[k].shape) == tuple(v.shape):
             filtered[k] = v
         else:
             mismatched += 1
@@ -2300,41 +2332,66 @@ def load_checkpoint(
 
     _unwrap_model(model).load_state_dict(filtered, strict=False)
 
-    fully_restored = (mismatched == 0)
+    missing_model_keys = sorted(set(target_sd) - set(filtered))
+    fully_restored = (mismatched == 0 and not missing_model_keys)
+    if missing_model_keys:
+        print(f"[CKPT][WARN] missing model keys: {missing_model_keys[:5]}")
 
-    try:
-        optimizer.load_state_dict(ck.get("optimizer_state", {}))
-    except Exception as ex:
-        fully_restored = False
-        print(f"[CKPT][WARN] optimizer restore failed: {ex}")
-
-    if scaler is not None and ck.get("scaler_state") is not None:
+    for name, component in (("optimizer", optimizer), ("scaler", scaler), ("scheduler", scheduler)):
+        if component is None:
+            continue
         try:
-            scaler.load_state_dict(ck["scaler_state"])
+            saved = ck.get(f"{name}_state")
+            if not isinstance(saved, dict):
+                raise ValueError("required state is missing")
+            missing_fields = set(component.state_dict()) - set(saved)
+            if missing_fields:
+                raise ValueError(f"missing state fields: {sorted(missing_fields)}")
+            component.load_state_dict(saved)
         except Exception as ex:
             fully_restored = False
-            print(f"[CKPT][WARN] scaler restore failed: {ex}")
+            print(f"[CKPT][WARN] {name} restore failed: {ex}")
 
-    if scheduler is not None and ck.get("scheduler_state") is not None:
-        try:
-            scheduler.load_state_dict(ck["scheduler_state"])
-        except Exception as ex:
-            fully_restored = False
-            print(f"[CKPT][WARN] scheduler restore failed: {ex}")
-
+    # EMA is intentionally absent before survival training starts. Otherwise,
+    # silently initializing fresh averages would make an incomplete resume look exact.
+    ck_args = ck.get("args", {})
+    ema_deferred = (
+        bool(ck_args.get("use_ema", False))
+        and 0 < int(ck.get("epoch", 0)) <= int(ck_args.get("roi_focus_warmup_epochs", 0))
+        and float(ck_args.get("roi_focus_warmup_survival_weight", 1.0)) <= 0.0
+    )
     mm = _unwrap_model(model)
-    if ema is not None and ck.get("ema") is not None:
+    for name, component in (("ema", ema), ("swa", swa)):
+        if component is None or (name == "ema" and ck.get(name) is None and ema_deferred):
+            continue
         try:
-            ema.load_state_dict(ck["ema"], model=mm)
+            saved = ck.get(name)
+            if not isinstance(saved, dict):
+                raise ValueError("required state is missing")
+            missing_fields = set(component.state_dict()) - set(saved)
+            if missing_fields:
+                raise ValueError(f"missing state fields: {sorted(missing_fields)}")
+            if bool(saved["track_trainable_only"]) != component.track_trainable_only:
+                raise ValueError("averaging parameter policy changed")
+            params = {
+                n: p for n, p in mm.named_parameters()
+                if not component.track_trainable_only or p.requires_grad
+            }
+            count = int(saved["num_updates" if name == "ema" else "n_averaged"])
+            if count < 0:
+                raise ValueError("negative averaging update count")
+            expected_shadow = set() if name == "swa" and count == 0 else set(params)
+            shadow = saved["shadow"]
+            if not isinstance(shadow, dict) or set(shadow) != expected_shadow:
+                raise ValueError("incomplete averaging parameter state")
+            if name == "swa" and set(saved["param_names"]) != set(params):
+                raise ValueError("SWA parameter names changed")
+            if any(not torch.is_tensor(v) or v.shape != params[n].shape for n, v in shadow.items()):
+                raise ValueError("averaging parameter shapes changed")
+            component.load_state_dict(saved, model=mm)
         except Exception as ex:
             fully_restored = False
-            print(f"[CKPT][WARN] EMA restore failed: {ex}")
-    if swa is not None and ck.get("swa") is not None:
-        try:
-            swa.load_state_dict(ck["swa"], model=mm)
-        except Exception as ex:
-            fully_restored = False
-            print(f"[CKPT][WARN] SWA restore failed: {ex}")
+            print(f"[CKPT][WARN] {name.upper()} restore failed: {ex}")
 
     if mismatched > 0:
         print(f"[CKPT][WARN] {mismatched} mismatched key(s); model warm-started with filtered keys only.")
@@ -2585,7 +2642,7 @@ def run_one_fold(
     roi_focus_live_csv = fold_dir / "roi_focus_live.csv"
     ckpt_last = fold_dir / "last.pt"
     ckpt_best = fold_dir / "best.pt"
-    best_report_metric = float("-inf")
+    best_report_score = float("-inf")
 
     tr_df = select_df_by_ids(meta, split["train"], args.id_col, args.strict_splits, f"fold{fold:02d}/train")
     va_df = select_df_by_ids(meta, split["val"],   args.id_col, args.strict_splits, f"fold{fold:02d}/val")
@@ -2649,14 +2706,15 @@ def run_one_fold(
 
     fold_num_time_bins, fold_max_time = compute_multitask_num_time_bins(tr_df, args)
     print(f"[TIME][fold {fold:02d}] train num_time_bins={fold_num_time_bins} train_max_time={fold_max_time:.1f}d")
+    multi_time_cols, multi_event_cols = multitask_survival_columns(args)
 
     def _make_dataset(frame: pd.DataFrame, mode_name: str):
         common = dict(
             id_col=args.id_col,
             time_col=args.time_col,
             event_col=args.event_col,
-            multi_time_cols=MULTITASK_TIME_COLS,
-            multi_event_cols=MULTITASK_EVENT_COLS,
+            multi_time_cols=multi_time_cols,
+            multi_event_cols=multi_event_cols,
             ct_col=args.ct_col,
             mask_pt_col=args.mask_pt_col,
             mask_ln_col=args.mask_ln_col,
@@ -2984,7 +3042,7 @@ def run_one_fold(
         _archive_checkpoints_for_fresh_run([ckpt_last, ckpt_best], args)
         _reset_metrics_log_if_needed(metrics_csv, start_epoch=start_epoch, fully_restored=fully_restored, args=args)
         _reset_roi_focus_live_log_if_needed(roi_focus_live_csv, start_epoch=start_epoch, fully_restored=fully_restored)
-        best_report_metric = checkpoint_report_metric(ckpt_best)
+        best_report_score = metric_selection_score(checkpoint_report_metric(ckpt_best), args.report_metric)
         best_epoch = checkpoint_epoch(ckpt_best)
         if (
             best_epoch > 0
@@ -2995,7 +3053,7 @@ def run_one_fold(
                 f"[fold {fold:02d}] ignoring warmup best checkpoint for report-metric tracking: "
                 f"epoch={best_epoch} path={ckpt_best}"
             )
-            best_report_metric = float("-inf")
+            best_report_score = float("-inf")
 
     checkpoint_encoders = {
         "clinical": clin_enc,
@@ -3111,6 +3169,7 @@ def run_one_fold(
                 swa.update(mm)
 
         report_metric = report_metric_value(val_met, str(args.report_metric))
+        report_score = metric_selection_score(report_metric, args.report_metric)
         if is_main_rank:
             print(
                 f"[fold {fold:02d}] epoch {epoch:03d} | "
@@ -3212,7 +3271,7 @@ def run_one_fold(
                 encoders=checkpoint_encoders,
             )
             best_checkpoint_eligible = float(survival_loss_weight) > 0.0
-            if best_checkpoint_eligible and np.isfinite(report_metric) and report_metric > best_report_metric:
+            if best_checkpoint_eligible and np.isfinite(report_score) and report_score > best_report_score:
                 save_checkpoint(
                     ckpt_best,
                     epoch=int(epoch),
@@ -3228,8 +3287,8 @@ def run_one_fold(
                     include_training_state=save_full_training_state,
                     encoders=checkpoint_encoders,
                 )
-                best_report_metric = float(report_metric)
-                print(f"[fold {fold:02d}] new best {args.report_metric}={best_report_metric:.4f} -> {ckpt_best}")
+                best_report_score = float(report_score)
+                print(f"[fold {fold:02d}] new best {args.report_metric}={report_metric:.4f} -> {ckpt_best}")
 
         if is_main_rank and bool(getattr(args, "epoch_gradcam", False)):
             gradcam_every = max(1, int(getattr(args, "epoch_gradcam_every", 1)))
@@ -3424,15 +3483,9 @@ def run_one_fold(
     if risks_best is not None and best_val is not None and best_test is not None:
         candidates["best"] = {"val": best_val, "test": best_test, "risks": risks_best, "checkpoint": "best"}
 
-    if str(getattr(args, "export_policy", "best_val")).strip().lower() == "ema_priority":
-        export_suffix = "ema" if "ema" in candidates else "last"
-    else:
-        scored = [
-            (report_metric_value(info["val"], str(args.report_metric)), suffix)
-            for suffix, info in candidates.items()
-        ]
-        finite_scored = [(score, suffix) for score, suffix in scored if np.isfinite(score)]
-        export_suffix = max(finite_scored, key=lambda item: item[0])[1] if finite_scored else "last"
+    export_suffix = select_export_candidate(
+        candidates, str(args.report_metric), str(getattr(args, "export_policy", "best_val"))
+    )
 
     is_final_export_rank = (not _DDP_INITIALIZED) or _is_main_process()
     if not is_final_export_rank:
@@ -3725,7 +3778,8 @@ def parse_args():
         "--report_metric",
         type=str,
         default="auc_1095d",
-        help="Validation metric for best checkpoints. Use 'composite' for AUC/C-index/IBS/NLL composite.",
+        help="Validation metric for best checkpoints: minimize 'nll'/'ibs', maximize other metrics. "
+             "Use 'composite' for AUC/C-index/IBS/NLL composite.",
     )
     p.add_argument(
         "--export_policy",
@@ -4046,7 +4100,8 @@ def _validate_event_column(meta: pd.DataFrame, event_col: str):
 def compute_multitask_num_time_bins(meta: pd.DataFrame, args) -> Tuple[int, float]:
     max_bins = 1
     max_time = 0.0
-    for time_col in MULTITASK_TIME_COLS:
+    time_cols, _ = multitask_survival_columns(args)
+    for time_col in time_cols:
         if time_col not in meta.columns:
             continue
         bins, col_max_time = H.compute_global_num_time_bins(
@@ -4109,17 +4164,21 @@ def main():
     meta = pd.read_csv(args.meta_csv, dtype={args.id_col: str})
     meta[args.id_col] = meta[args.id_col].astype(str)
     data_root = str(Path(args.meta_csv).parent)
+    multi_time_cols, multi_event_cols = multitask_survival_columns(args)
+    missing_primary = {args.time_col, args.event_col} - set(meta.columns)
+    if missing_primary:
+        raise ValueError(f"[DATA] missing primary endpoint columns: {sorted(missing_primary)}")
 
     if (not args.keep_bad_status) and ("status" in meta.columns):
         meta = meta[meta["status"].astype(str).str.lower() == "ok"].copy()
-    for time_col in MULTITASK_TIME_COLS:
+    for time_col in multi_time_cols:
         if time_col in meta.columns:
             meta[time_col] = pd.to_numeric(meta[time_col], errors="coerce")
-    for event_col in MULTITASK_EVENT_COLS:
+    for event_col in multi_event_cols:
         if event_col in meta.columns:
             meta[event_col] = pd.to_numeric(meta[event_col], errors="coerce")
 
-    for event_col in MULTITASK_EVENT_COLS:
+    for event_col in multi_event_cols:
         if event_col not in meta.columns:
             continue
         valid_ep = meta[event_col].notna()
@@ -4128,7 +4187,7 @@ def main():
             meta.loc[valid_ep, event_col] = meta.loc[valid_ep, event_col].astype(int)
 
     valid_any = pd.Series(False, index=meta.index)
-    for time_col, event_col in zip(MULTITASK_TIME_COLS, MULTITASK_EVENT_COLS):
+    for time_col, event_col in zip(multi_time_cols, multi_event_cols):
         if time_col not in meta.columns or event_col not in meta.columns:
             continue
         valid_any = valid_any | _valid_survival_mask_frame(meta, time_col, event_col)

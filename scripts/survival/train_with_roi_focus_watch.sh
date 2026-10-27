@@ -65,6 +65,10 @@ if [[ ! -x "$WATCH_SCRIPT" && ! -f "$WATCH_SCRIPT" ]]; then
   echo "[train+roi-focus][FAIL] ROI watcher not found: $WATCH_SCRIPT" >&2
   exit 1
 fi
+if ! command -v setsid >/dev/null 2>&1; then
+  echo "[train+roi-focus][FAIL] setsid is required to manage the training and watcher process groups." >&2
+  exit 1
+fi
 
 export PYTHONPATH="$PACKAGE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 if [[ "$SKIP_REQUIREMENTS_CHECK" != "1" && "$SKIP_REQUIREMENTS_CHECK" != "true" && "$SKIP_REQUIREMENTS_CHECK" != "yes" ]]; then
@@ -89,17 +93,33 @@ echo "[train+roi-focus] watcher: OUT_DIR=$OUT_DIR FOLD=${watch_fold:-<any>} MIN_
 
 watch_pid=""
 train_pid=""
+# With job control disabled, setsid keeps the background PID as its group ID.
+# Only these newly created groups are signalled, including DataLoader workers.
+set +m
+stop_process_group() {
+  local pid="$1"
+  local attempt
+  kill -TERM -- "-$pid" >/dev/null 2>&1 || kill -TERM "$pid" >/dev/null 2>&1 || true
+  # This grace period applies only after shutdown was requested; training has
+  # no elapsed-time limit. Escalate if a child ignores TERM or hangs on exit.
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    if ! kill -0 -- "-$pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.1
+  done
+  kill -KILL -- "-$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+}
 cleanup_watch() {
   if [[ -n "$watch_pid" ]]; then
-    kill "$watch_pid" >/dev/null 2>&1 || true
-    wait "$watch_pid" >/dev/null 2>&1 || true
+    stop_process_group "$watch_pid"
     watch_pid=""
   fi
 }
 cleanup_train() {
   if [[ -n "$train_pid" ]]; then
-    kill "$train_pid" >/dev/null 2>&1 || true
-    wait "$train_pid" >/dev/null 2>&1 || true
+    stop_process_group "$train_pid"
     train_pid=""
   fi
 }
@@ -114,10 +134,13 @@ is_running_job() {
   return 1
 }
 cleanup_all() {
+  trap '' INT TERM
   cleanup_watch
   cleanup_train
 }
-trap cleanup_all EXIT INT TERM
+trap cleanup_all EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 OUT_DIR="$OUT_DIR" \
 FOLD="$watch_fold" \
@@ -132,7 +155,7 @@ MIN_PROB_MASS_INSIDE_GT="$MIN_PROB_MASS_INSIDE_GT" \
 MIN_SUPPORT_RECALL="$MIN_SUPPORT_RECALL" \
 MIN_SUPPORT_DICE="$MIN_SUPPORT_DICE" \
 MAX_EMPTY_WHEN_GT_PRESENT="$MAX_EMPTY_WHEN_GT_PRESENT" \
-bash "$WATCH_SCRIPT" &
+setsid bash "$WATCH_SCRIPT" &
 watch_pid="$!"
 
 set +e
@@ -140,7 +163,7 @@ ENDPOINT="$ENDPOINT" \
 DEBUG_FOLD="$DEBUG_FOLD" \
 OUT_DIR="$OUT_DIR" \
 EXP_NAME="$EXP_NAME" \
-bash "$TRAIN_SCRIPT" "$@" &
+setsid bash "$TRAIN_SCRIPT" "$@" &
 train_pid="$!"
 train_rc=0
 watch_rc=0
@@ -148,7 +171,7 @@ while true; do
   if [[ -n "$watch_pid" ]] && ! is_running_job "$watch_pid"; then
     wait "$watch_pid"
     watch_rc="$?"
-    watch_pid=""
+    cleanup_watch
     if [[ "$watch_rc" != "0" ]]; then
       echo "[train+roi-focus][FAIL] ROI-focus watcher exited with rc=$watch_rc; stopping training." >&2
       cleanup_train
@@ -159,7 +182,7 @@ while true; do
   if [[ -n "$train_pid" ]] && ! is_running_job "$train_pid"; then
     wait "$train_pid"
     train_rc="$?"
-    train_pid=""
+    cleanup_train
     break
   fi
   sleep 5

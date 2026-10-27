@@ -329,7 +329,7 @@ class RadiomicsEncoder:
         all_ids = list(dict.fromkeys(cls.normalize_patient_id(x) for x in all_ids))
         id_set = set(all_ids)
 
-        df = pd.read_csv(radiomics_csv)
+        df = pd.read_csv(radiomics_csv, dtype={"case_id": str})
         if "case_id" not in df.columns:
             raise ValueError(f"[RAD] Radiomics CSV missing required 'case_id' column: {radiomics_csv}")
 

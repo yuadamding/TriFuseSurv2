@@ -167,30 +167,46 @@ class AttnPool3D(nn.Module):
 
     def forward(self, feat: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         logits = self.attn(feat).flatten(2)
-        raw_logits = logits
+        support = None
         if mask is not None:
             mask_flat = mask.clamp(0, 1).flatten(2).to(dtype=logits.dtype, device=logits.device)
-            has_support = mask_flat.sum(dim=-1, keepdim=True) > self.eps
             if self.mask_mode == "bias":
                 logits = logits + self.mask_bias * mask_flat
-            elif self.mask_mode == "weighted":
-                logits = logits + torch.log(mask_flat.clamp_min(self.eps))
-                logits = torch.where(has_support, logits, raw_logits)
             else:
                 support = mask_flat > self.eps
-                masked_logits = logits.masked_fill(~support, torch.finfo(logits.dtype).min)
-                logits = torch.where(has_support, masked_logits, logits)
+                has_support = support.any(dim=-1, keepdim=True)
+                if self.mask_mode == "weighted":
+                    logits = logits + torch.log(mask_flat.clamp_min(self.eps))
+                logits = logits.masked_fill(~support, torch.finfo(logits.dtype).min)
+                # Empty ROIs must not become global pooling. Keep their softmax
+                # finite, then explicitly remove every unsupported weight below.
+                logits = torch.where(has_support, logits, torch.zeros_like(logits))
         w = torch.softmax(logits / self.temperature, dim=-1)
+        if support is not None:
+            w = w * support.to(w.dtype)
         feat_flat = feat.flatten(2)
         return (feat_flat * w).sum(dim=-1)
 
 
 def interp_mask(mask: torch.Tensor, size: Tuple[int, int, int], mode: str) -> torch.Tensor:
+    """Resize a mask without discarding small ROIs during spatial reduction.
+
+    Point sampling, including trilinear interpolation, can miss an entire ROI
+    between feature-grid sample locations. Max-pool every reduced axis so a
+    feature cell retains support whenever its native region contains ROI.
+    The requested interpolation mode applies to any remaining upsampling.
+    """
+    if mode not in {"nearest", "trilinear"}:
+        raise ValueError(f"Unknown mask_interp mode: {mode}")
+    size = tuple(int(x) for x in size)
+    reduced_size = tuple(min(int(src), dst) for src, dst in zip(mask.shape[2:], size))
+    if reduced_size != tuple(mask.shape[2:]):
+        mask = F.adaptive_max_pool3d(mask, output_size=reduced_size)
+    if tuple(mask.shape[2:]) == size:
+        return mask
     if mode == "nearest":
         return F.interpolate(mask, size=size, mode="nearest")
-    if mode == "trilinear":
-        return F.interpolate(mask, size=size, mode="trilinear", align_corners=False)
-    raise ValueError(f"Unknown mask_interp mode: {mode}")
+    return F.interpolate(mask, size=size, mode="trilinear", align_corners=False)
 
 
 def binary_close(m: torch.Tensor, r: int) -> torch.Tensor:

@@ -103,6 +103,19 @@ def rand_intensity(ct: np.ndarray, p: float = 0.3):
     return np.clip(ct, 0.0, 1.0).astype(np.float32)
 
 
+def validate_normalized_ct(ct: np.ndarray, *, source: str) -> None:
+    """Require the same finite, normalized CT input in training and evaluation."""
+    if ct.size == 0 or not np.isfinite(ct).all():
+        raise ValueError(f"[CT_RANGE] {source}: CT must contain finite intensities in [0, 1].")
+    lo, hi = float(ct.min()), float(ct.max())
+    if lo < 0.0 or hi > 1.0:
+        raise ValueError(
+            f"[CT_RANGE] {source}: expected normalized CT intensities in [0, 1], "
+            f"observed [{lo:g}, {hi:g}]. Raw HU input is unsupported; preprocess all "
+            "training, validation, and test images with the same normalization before loading."
+        )
+
+
 def _torch_float32(array: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(array, dtype=np.float32))
 
@@ -166,6 +179,8 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         spacing_dhw = np.asarray([spacing_xyz[2], spacing_xyz[1], spacing_xyz[0]], dtype=np.float32)
         if binary_mask:
             arr = (arr > 0.5).astype(np.float32)
+        else:
+            validate_normalized_ct(arr, source=str(path))
         arr = np.ascontiguousarray(arr)
         if self.cache_volumes and self.volume_cache_size > 0:
             self._volume_cache[key] = (arr, spacing_dhw)

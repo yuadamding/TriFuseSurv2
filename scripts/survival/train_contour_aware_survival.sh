@@ -244,7 +244,7 @@ echo "[train] time_bin_width_days=$TIME_BIN_WIDTH_DAYS report_metric=$REPORT_MET
 echo "[train] python_bin=$PYTHON_BIN workers=$WORKERS eval_workers=$EVAL_WORKERS prefetch_factor=$PREFETCH_FACTOR cache_volumes=$CACHE_VOLUMES volume_cache_size=$VOLUME_CACHE_SIZE roi_focus_every_batches=$ROI_FOCUS_EVERY_BATCHES nonfinite_check_every_batches=$NONFINITE_CHECK_EVERY_BATCHES shell_body_from_ct=$SHELL_BODY_FROM_CT body_ct_thr=$BODY_CT_THR sync_sanitize_checks=$SYNC_SANITIZE_CHECKS omp=$OMP_NUM_THREADS mkl=$MKL_NUM_THREADS itk=$ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS tf32_override=${NVIDIA_TF32_OVERRIDE:-<unset>}"
 
 PYTHONUNBUFFERED=1 \
-"$PYTHON_BIN" -u -m trifusesurv2.multimodal_survival.train \
+exec "$PYTHON_BIN" -u -m trifusesurv2.multimodal_survival.train \
   --meta_csv "$META_CSV" \
   --splits_dir "$SPLITS_DIR" \
   --cv_folds 4 \

@@ -10,12 +10,14 @@ resampled to a model-friendly fixed size.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
@@ -27,7 +29,7 @@ import numpy as np
 import pandas as pd
 import SimpleITK as sitk
 
-from trifusesurv2.utils.data import resolve_preprocessed_case_path
+from trifusesurv2.utils.data import resolve_preprocessed_case_path, validate_normalized_ct
 
 
 def _parse_margin(values: Sequence[int]) -> tuple[int, int, int]:
@@ -40,8 +42,49 @@ def _parse_margin(values: Sequence[int]) -> tuple[int, int, int]:
 
 
 def _safe_id(value: Any) -> str:
+    if pd.isna(value):
+        raise ValueError("Patient IDs must not be missing.")
     raw = str(value).strip()
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw) or "case"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw)
+    if safe in {"", ".", ".."}:
+        raise ValueError(f"Invalid patient ID for an output directory: {value!r}")
+    return safe
+
+
+def _validate_output_ids(values: Sequence[Any]) -> None:
+    seen: dict[str, str] = {}
+    for value in values:
+        safe = _safe_id(value)
+        if safe in seen:
+            raise ValueError(
+                f"Patient IDs {seen[safe]!r} and {str(value)!r} resolve to the same "
+                f"output directory {safe!r}; IDs must be unique after path sanitization."
+            )
+        seen[safe] = str(value)
+
+
+def _file_fingerprint(path: Path) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"size_bytes": path.stat().st_size, "sha256": digest.hexdigest()}
+
+
+def _output_fingerprint(path: Path, output_size_dhw: tuple[int, int, int]) -> dict[str, Any]:
+    reader = sitk.ImageFileReader()
+    reader.SetFileName(str(path))
+    reader.ReadImageInformation()
+    size = tuple(reversed(reader.GetSize()))
+    if size != output_size_dhw:
+        raise ValueError(f"{path}: image size {size} does not match requested {output_size_dhw}")
+    return {
+        **_file_fingerprint(path),
+        "size_dhw": list(size),
+        "spacing_xyz": list(reader.GetSpacing()),
+        "origin_xyz": list(reader.GetOrigin()),
+        "direction": list(reader.GetDirection()),
+    }
 
 
 def _relpath(path: Path, base: Path) -> str:
@@ -154,14 +197,30 @@ def _process_one(job: Mapping[str, Any]) -> dict[str, Any]:
     ln_path = _resolve_required_path(row, str(job["mask_ln_col"]), meta_dir=meta_dir, id_col=id_col)
 
     case_dir = out_root / pid_safe
-    case_dir.mkdir(parents=True, exist_ok=True)
+    if case_dir.resolve().parent != out_root.resolve():
+        raise ValueError(f"Patient output directory resolves outside out_root: {case_dir}")
     ct_out = case_dir / "ct_roi.nii.gz"
     pt_out = case_dir / "mask_primary_roi.nii.gz"
     ln_out = case_dir / "mask_nodal_roi.nii.gz"
+    provenance_path = case_dir / "roi_crop_provenance.json"
+    outputs = (ct_out, pt_out, ln_out)
+    inputs = {
+        "schema_version": 1,
+        "patient_id": pid,
+        "output_size_dhw": list(output_size_dhw),
+        "margin_dhw": list(margin_dhw),
+        "expand_to_aspect": expand_to_aspect,
+        "fail_empty_roi": fail_empty_roi,
+        "sources": {
+            name: {"path": str(path.resolve()), **_file_fingerprint(path)}
+            for name, path in (("ct", ct_path), ("pt", pt_path), ("ln", ln_path))
+        },
+    }
 
     ct_img = sitk.ReadImage(str(ct_path))
     pt_img = sitk.ReadImage(str(pt_path))
     ln_img = sitk.ReadImage(str(ln_path))
+    validate_normalized_ct(sitk.GetArrayViewFromImage(ct_img), source=str(ct_path))
     if ct_img.GetSize() != pt_img.GetSize() or ct_img.GetSize() != ln_img.GetSize():
         raise ValueError(
             f"patient_id={pid} CT/PT/LN image sizes differ: "
@@ -179,13 +238,38 @@ def _process_one(job: Mapping[str, Any]) -> dict[str, Any]:
         fail_empty_roi=fail_empty_roi,
     )
 
-    if overwrite or not (ct_out.is_file() and pt_out.is_file() and ln_out.is_file()):
-        ct_crop = _crop_image(ct_img, start, end)
-        pt_crop = _crop_image(pt_img, start, end)
-        ln_crop = _crop_image(ln_img, start, end)
-        sitk.WriteImage(_resample_to_size(ct_crop, output_size_dhw, is_mask=False), str(ct_out))
-        sitk.WriteImage(_resample_to_size(pt_crop, output_size_dhw, is_mask=True), str(pt_out))
-        sitk.WriteImage(_resample_to_size(ln_crop, output_size_dhw, is_mask=True), str(ln_out))
+    inputs["bbox_zyx"] = [[int(x) for x in start], [int(x) for x in end]]
+    existing = any(path.exists() for path in (*outputs, provenance_path))
+    if existing and not overwrite:
+        try:
+            provenance = json.loads(provenance_path.read_text())
+            if provenance.get("inputs") != inputs:
+                raise ValueError("source images or crop settings differ from the recorded inputs")
+            actual_outputs = {path.name: _output_fingerprint(path, output_size_dhw) for path in outputs}
+            if provenance.get("outputs") != actual_outputs:
+                raise ValueError("output contents differ from the recorded hashes or geometry")
+        except (OSError, RuntimeError, ValueError, AttributeError) as exc:
+            raise RuntimeError(
+                f"Cannot reuse ROI crops for patient_id={pid}: {exc}. "
+                "Use a new --out_root or pass --overwrite to explicitly regenerate this output."
+            ) from exc
+    else:
+        case_dir.mkdir(parents=True, exist_ok=True)
+        # Prepare the complete case before replacing its outputs; publish provenance last.
+        with TemporaryDirectory(prefix=".roi-crop-", dir=case_dir) as temporary:
+            stage = Path(temporary)
+            for img, output, is_mask in ((ct_img, ct_out, False), (pt_img, pt_out, True), (ln_img, ln_out, True)):
+                cropped = _crop_image(img, start, end)
+                sitk.WriteImage(_resample_to_size(cropped, output_size_dhw, is_mask=is_mask), str(stage / output.name))
+            provenance = {
+                "inputs": inputs,
+                "outputs": {path.name: _output_fingerprint(stage / path.name, output_size_dhw) for path in outputs},
+            }
+            staged_provenance = stage / provenance_path.name
+            staged_provenance.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
+            for path in outputs:
+                os.replace(stage / path.name, path)
+            os.replace(staged_provenance, provenance_path)
 
     return {
         "index": index,
@@ -234,8 +318,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     meta_csv = Path(args.meta_csv).resolve()
     out_root = Path(args.out_root).resolve()
     out_csv = Path(args.out_csv).resolve() if str(args.out_csv).strip() else out_root / "cohort_preprocessed_stage2_roi.csv"
-    out_root.mkdir(parents=True, exist_ok=True)
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
 
     output_size_dhw = tuple(int(x) for x in args.output_size)
     margin_dhw = _parse_margin(args.margin_voxels)
@@ -245,7 +327,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError(f"--margin_voxels must be nonnegative, got {margin_dhw}")
 
     df = pd.read_csv(meta_csv, dtype={args.id_col: str})
-    df[args.id_col] = df[args.id_col].astype(str)
+    if args.id_col not in df.columns:
+        raise ValueError(f"Missing patient identifier column: {args.id_col}")
     for col in (
         args.ct_col,
         args.mask_pt_col,
@@ -268,6 +351,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         runnable_indices = [int(i) for i in df.index[status_ok]]
     else:
         runnable_indices = [int(i) for i in df.index]
+
+    _validate_output_ids(df.loc[runnable_indices, args.id_col].tolist())
+    df[args.id_col] = df[args.id_col].astype(str)
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
 
     jobs = [
         {

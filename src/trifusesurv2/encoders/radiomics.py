@@ -104,7 +104,7 @@ class HabitatRadiomicsTokenEncoder:
         group_prefixes = OrderedDict(group_prefixes or DEFAULT_GROUP_PREFIXES)
         presence_columns = dict(presence_columns or DEFAULT_PRESENCE_COLUMNS)
 
-        df = pd.read_csv(radiomics_csv)
+        df = pd.read_csv(radiomics_csv, dtype={"case_id": str, "patient_id": str})
         id_col = "case_id" if "case_id" in df.columns else ("patient_id" if "patient_id" in df.columns else None)
         if id_col is None:
             raise ValueError(f"[RAD2] Missing case identifier column in {radiomics_csv}")

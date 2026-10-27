@@ -198,7 +198,7 @@ if [[ -n "$EXTRA_PIP_PACKAGES" ]]; then
   "$CONDA_BIN" run -p "$ENV_PREFIX" python -m pip install --no-deps $EXTRA_PIP_PACKAGES
 fi
 
-"$CONDA_BIN" run -p "$ENV_PREFIX" python - <<'PY'
+"$CONDA_BIN" run --no-capture-output -p "$ENV_PREFIX" python - <<'PY'
 import importlib
 import sys
 
