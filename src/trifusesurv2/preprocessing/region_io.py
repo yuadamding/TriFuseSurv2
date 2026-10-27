@@ -17,6 +17,31 @@ from trifusesurv2.schema import RADIOLOGY_HABITATS, REGION_STATUS_CODES, PHYSICA
 from trifusesurv2.preprocessing.compartments import (
     ReferenceGeometry, assert_same_geometry, mask_checksum, validate_region_manifest,
 )
+from trifusesurv2.preprocessing.identifiers import require_identifier
+
+
+def artifact_signature(path: str | Path) -> tuple:
+    """Cheap invalidation identity, including replacement and restored-mtime edits.
+
+    Payload checksums remain authoritative on a cache miss. Unchanged cache
+    entries require the same resolved path, device/inode, size, nanosecond mtime
+    and ctime; a touch also invalidates and causes revalidation.
+    This is a filesystem-metadata guard, not a cryptographic filesystem snapshot:
+    inputs must remain immutable during use, and new manifests are never promoted
+    into an existing dataset merely because their files changed.
+    """
+    path = Path(path).resolve(strict=True)
+    state = path.stat()
+    return (str(path), state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns, state.st_ctime_ns)
+
+
+def region_input_signature(manifest: Mapping[str, Any], *, ct_path: str | Path, extra_paths=()) -> tuple:
+    """Signatures of every file decoded or trusted in a verified image payload."""
+    base = Path(manifest['_manifest_path']).parent
+    paths = [manifest['_manifest_path'], ct_path, base / manifest['image']['path']]
+    paths.extend(base / manifest['regions'][name]['image_mask_path'] for name in RADIOLOGY_HABITATS)
+    paths.extend(extra_paths)
+    return tuple(artifact_signature(path) for path in paths)
 
 
 def file_sha256(path: str | Path) -> str:
@@ -78,6 +103,7 @@ def validate_deployment(manifest: Mapping[str, Any], deployment_mode: str) -> No
 
 def load_region_manifest(path: str | Path, patient_id: str | None = None, *, deployment_mode: str = 'expert') -> dict:
     path = Path(path).resolve(strict=True)
+    before = artifact_signature(path)
     manifest = json.loads(path.read_text())
     validate_region_manifest(manifest)
     if patient_id is not None and str(manifest['patient_id']) != str(patient_id):
@@ -101,6 +127,9 @@ def load_region_manifest(path: str | Path, patient_id: str | None = None, *, dep
         if completeness.get('retained_reference_voxels') != record['voxel_count'] or completeness.get('reference_voxels') != record['voxel_count']:
             raise ValueError(f'{habitat}: crop retained-support accounting is inconsistent.')
     manifest['_manifest_path'] = str(path)
+    if artifact_signature(path) != before:
+        raise ValueError('Region manifest changed while being validated.')
+    manifest['_manifest_signature'] = before
     return manifest
 
 
@@ -110,7 +139,7 @@ def load_region_manifests(meta, *, id_col: str, manifest_col: str = 'region_mani
         raise ValueError(f'Verified mode requires metadata column {manifest_col}. Regenerate shared physical regions.')
     result = {}
     for _, row in meta.iterrows():
-        pid = str(row[id_col])
+        pid = require_identifier(row[id_col], name=id_col)
         path = resolve_manifest_path(str(row[manifest_col]), data_root)
         value = load_region_manifest(path, pid, deployment_mode=deployment_mode)
         if pid in result and result[pid]['_manifest_path'] != str(path):
@@ -159,7 +188,7 @@ def load_region_arrays(manifest: Mapping[str, Any], *, ct_path: str | Path) -> t
 
 def validate_radiomics_binding(row: Mapping[str, Any], manifest: Mapping[str, Any], *, group_names=RADIOLOGY_HABITATS) -> None:
     """Reject a radiomics row unless it declares the exact persisted image supports."""
-    if str(row.get('scan_id', '')) != str(manifest['scan_id']):
+    if require_identifier(row.get('scan_id'), name='scan_id') != str(manifest['scan_id']):
         raise ValueError('Radiomics acquisition scan_id does not match the image region manifest.')
     image = manifest.get('radiomics_image')
     if not image:

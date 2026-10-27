@@ -165,16 +165,33 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         self.spatial_augment = bool(spatial_augment)
         self.cache_volumes = bool(cache_volumes)
         self.volume_cache_size = max(0, int(volume_cache_size))
-        self._volume_cache: OrderedDict[tuple[str, bool], tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        self._volume_cache = OrderedDict()
+        self._cache_process_id = os.getpid()
 
-    def _load_nii(self, path: str, *, binary_mask: bool = False, return_spacing: bool = False):
-        key = (str(path), bool(binary_mask))
-        if self.cache_volumes and self.volume_cache_size > 0 and key in self._volume_cache:
-            arr, spacing_dhw = self._volume_cache.pop(key)
-            self._volume_cache[key] = (arr, spacing_dhw)
-            return (arr, spacing_dhw.copy()) if return_spacing else arr
+    def _ensure_worker_cache(self):
+        if self._cache_process_id != os.getpid():
+            self._volume_cache.clear()
+            if hasattr(self, '_verified_region_cache'):
+                self._verified_region_cache.clear()
+            self._cache_process_id = os.getpid()
+
+    def _load_nii(self, path: str, *, binary_mask: bool = False, return_spacing: bool = False,
+                  cache: bool = True, strict_binary: bool = False):
+        from trifusesurv2.preprocessing.region_io import artifact_signature
+        self._ensure_worker_cache()
+        cache_enabled = bool(cache and self.cache_volumes and self.volume_cache_size > 0)
+        key = (str(path), bool(binary_mask), bool(strict_binary))
+        signature = artifact_signature(path)
+        if cache_enabled and key in self._volume_cache:
+            cached_signature, arr, spacing_dhw = self._volume_cache.pop(key)
+            if signature == cached_signature:
+                self._volume_cache[key] = (signature, arr, spacing_dhw)
+                return (arr.copy(), spacing_dhw.copy()) if return_spacing else arr.copy()
         img = sitk.ReadImage(str(path))
-        arr = sitk.GetArrayFromImage(img).astype(np.float32)
+        arr = sitk.GetArrayFromImage(img)
+        if binary_mask and strict_binary and (not np.isfinite(arr).all() or not np.isin(arr, (0, 1)).all()):
+            raise ValueError(f'Verified supervision mask must contain finite binary values: {path}')
+        arr = arr.astype(np.float32)
         spacing_xyz = tuple(float(x) for x in img.GetSpacing())
         spacing_dhw = np.asarray([spacing_xyz[2], spacing_xyz[1], spacing_xyz[0]], dtype=np.float32)
         if binary_mask:
@@ -182,11 +199,13 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         else:
             validate_normalized_ct(arr, source=str(path))
         arr = np.ascontiguousarray(arr)
-        if self.cache_volumes and self.volume_cache_size > 0:
-            self._volume_cache[key] = (arr, spacing_dhw)
+        if artifact_signature(path) != signature:
+            raise ValueError(f'Image changed while being decoded: {path}')
+        if cache_enabled:
+            self._volume_cache[key] = (signature, arr, spacing_dhw)
             while len(self._volume_cache) > self.volume_cache_size:
                 self._volume_cache.popitem(last=False)
-        return (arr, spacing_dhw.copy()) if return_spacing else arr
+        return (arr.copy(), spacing_dhw.copy()) if return_spacing else arr.copy()
 
     def _zeros_like_expected(self) -> np.ndarray:
         shape = self.expected_dhw if self.expected_dhw is not None else (128, 256, 256)
@@ -195,7 +214,7 @@ class _BasePreprocessedSurvivalDataset(Dataset):
     def __len__(self):
         return len(self.meta)
 
-    def _load_case(self, idx: int):
+    def _load_case(self, idx: int, *, image_payload=None):
         row = self.meta.iloc[idx]
         pid = str(row[self.id_col])
 
@@ -207,7 +226,9 @@ class _BasePreprocessedSurvivalDataset(Dataset):
         pt_path = resolve_preprocessed_case_path(pt_path_raw, data_root=self.data_root, patient_id=pid)
         ln_path = resolve_preprocessed_case_path(ln_path_raw, data_root=self.data_root, patient_id=pid)
 
-        if (not os.path.isfile(ct_path)) or (not os.path.isfile(pt_path)) or (not os.path.isfile(ln_path)):
+        if image_payload is not None:
+            ct, pt, ln, voxel_spacing_dhw = image_payload
+        elif (not os.path.isfile(ct_path)) or (not os.path.isfile(pt_path)) or (not os.path.isfile(ln_path)):
             if self.strict_files:
                 raise RuntimeError(
                     f"Missing ct/pt/ln mask for pid={pid}: "
@@ -492,6 +513,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         if self.region_mode not in {"verified", "legacy"}:
             raise ValueError(f"Unknown region_mode: {region_mode}")
         self.region_manifests = {}
+        self.deployment_mode = deployment_mode
         if self.region_mode == "verified":
             if spatial_augment:
                 raise ValueError("Verified regions cannot be spatially augmented without transforming all supports/geometry together.")
@@ -538,10 +560,57 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
         self.node_token_dim = int(node_token_dim)
         self.clinical_token_dim = int(clinical_token_dim)
         self.radiomics_token_dim = int(radiomics_token_dim)
+        # Verified mode bounds complete patient payloads (CT, labels, regions,
+        # state and geometry) rather than retaining duplicate per-file entries.
+        self._verified_region_cache = OrderedDict()
+
+    def _load_verified_case(self, idx):
+        from trifusesurv2.preprocessing.region_io import (
+            artifact_signature, load_region_arrays, load_region_manifest, region_input_signature,
+        )
+        self._ensure_worker_cache()
+        row = self.meta.iloc[idx]
+        pid = str(row[self.id_col])
+        manifest = self.region_manifests[pid]
+        paths = [resolve_preprocessed_case_path(str(row[col]), data_root=self.data_root, patient_id=pid)
+                 for col in (self.ct_col, self.mask_pt_col, self.mask_ln_col)]
+        if artifact_signature(manifest['_manifest_path']) != manifest['_manifest_signature']:
+            fresh = load_region_manifest(manifest['_manifest_path'], pid, deployment_mode=self.deployment_mode)
+            public = lambda item: {key: value for key, value in item.items() if not key.startswith('_')}
+            if public(fresh) != public(manifest):
+                self._verified_region_cache.pop(pid, None)
+                raise ValueError(f'{pid}: region manifest changed after dataset initialization.')
+            manifest = fresh
+            self.region_manifests[pid] = fresh
+        signature = region_input_signature(manifest, ct_path=paths[0], extra_paths=paths[1:])
+        if signature[0] != manifest['_manifest_signature']:
+            raise ValueError(f'{pid}: region manifest changed while checking verified inputs.')
+        cache_enabled = self.cache_volumes and self.volume_cache_size > 0
+        cached = self._verified_region_cache.pop(pid, None)
+        if cache_enabled and cached is not None and cached[0] == signature:
+            self._verified_region_cache[pid] = cached
+            return tuple(array.copy() for array in cached[1]), tuple(array.copy() for array in cached[2]), manifest
+        regions = load_region_arrays(manifest, ct_path=paths[0])
+        ct, spacing = self._load_nii(paths[0], return_spacing=True, cache=False)
+        pt = self._load_nii(paths[1], binary_mask=True, cache=False, strict_binary=True)
+        ln = self._load_nii(paths[2], binary_mask=True, cache=False, strict_binary=True)
+        if not np.array_equal(pt > 0.5, regions[0][0] > 0.5) or not np.array_equal(ln > 0.5, regions[0][2] > 0.5):
+            raise ValueError(f'{pid}: supervision contours differ from declared region interiors.')
+        if signature != region_input_signature(manifest, ct_path=paths[0], extra_paths=paths[1:]):
+            raise ValueError(f'{pid}: verified region inputs changed while being validated.')
+        images = (ct, pt, ln, spacing)
+        if cache_enabled:
+            self._verified_region_cache[pid] = (signature, images, regions)
+            while len(self._verified_region_cache) > self.volume_cache_size:
+                self._verified_region_cache.popitem(last=False)
+        return tuple(array.copy() for array in images), tuple(array.copy() for array in regions), manifest
 
     def __getitem__(self, idx):
         row = self.meta.iloc[idx]
-        ct, pt, ln, t, e, t_multi, e_multi, _clin_t, _rad_t, pid, voxel_spacing_dhw = self._load_case(idx)
+        image_payload = None
+        if self.region_mode == 'verified':
+            image_payload, region_payload, manifest = self._load_verified_case(idx)
+        ct, pt, ln, t, e, t_multi, e_multi, _clin_t, _rad_t, pid, voxel_spacing_dhw = self._load_case(idx, image_payload=image_payload)
 
         clin_mat, clin_presence = self.clinical_token_encoder.encode_row_token_matrix(row)
         clin_mat = _pad_or_trunc_matrix_dim(clin_mat, self.clinical_token_dim)
@@ -570,12 +639,7 @@ class PreprocessedHabitatOOFDataset(_BasePreprocessedSurvivalDataset):
 
         verified = {}
         if self.region_mode == "verified":
-            from trifusesurv2.preprocessing.region_io import load_region_arrays
-            manifest = self.region_manifests[pid]
-            ct_path = resolve_preprocessed_case_path(str(row[self.ct_col]), data_root=self.data_root, patient_id=pid)
-            masks, validity, states, geometry = load_region_arrays(manifest, ct_path=ct_path)
-            if not np.array_equal(pt > 0.5, masks[0] > 0.5) or not np.array_equal(ln > 0.5, masks[2] > 0.5):
-                raise ValueError(f"{pid}: supervision contours differ from declared region interiors.")
+            masks, validity, states, geometry = region_payload
             if self.use_radiomics and self.radiomics_token_encoder is not None:
                 self.radiomics_token_encoder.validate_region_binding(pid, manifest)
             verified = {

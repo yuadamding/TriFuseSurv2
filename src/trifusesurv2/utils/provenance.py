@@ -38,3 +38,13 @@ def source_identity(root: Path | None = None) -> dict:
     except (OSError, subprocess.SubprocessError):
         pass
     return identity
+
+
+def source_contract_identity(root: Path | None = None) -> dict:
+    """Bind executable source, excluding declarations and incidental run outputs.
+
+    The full identity retains the observed Git dirty flag for reporting. Creating
+    logs/results inside a checkout can change that flag without changing code.
+    """
+    observed = source_identity(root)
+    return {name: observed[name] for name in ("commit_sha", "source_tree_sha256")}

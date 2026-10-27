@@ -31,7 +31,11 @@ from torch.utils.data import DataLoader
 from torch.nn.parameter import UninitializedParameter
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from trifusesurv2.utils.provenance import source_identity
+from trifusesurv2.utils.provenance import source_identity, source_contract_identity
+from trifusesurv2.utils.experiment import (
+    canonical_experiment_spec, changed_contract_fields, experiment_spec_sha256, scheduler_t_max, execution_topology,
+)
+from trifusesurv2.preprocessing.identifiers import read_identifier_csv, resolve_identifier_column, require_identifier
 
 from trifusesurv2.models.swinunetr_backbone_utils import load_swinunetr_pretrained
 from trifusesurv2.models.swinunetr_shared_roi_token_backbone import soft_shell_around_mask
@@ -356,11 +360,16 @@ def load_precomputed_splits(cv_folds: int, *, splits_dir: str = "", splits_csv: 
             out[f] = {"train": tr, "val": va, "test": te}
         return out
 
-    df = pd.read_csv(splits_csv, dtype={"patient_id": str, "split": str})
+    df = read_identifier_csv(splits_csv, dtype={"split": str})
+    patient_column = resolve_identifier_column(df.columns, "Patient_ID")
+    if patient_column != "patient_id":
+        df = df.rename(columns={patient_column: "patient_id"})
     need = {"patient_id", "fold", "split"}
     if not need.issubset(df.columns):
         raise ValueError(f"--splits_csv must contain {sorted(need)}; got {list(df.columns)}")
     df = df.copy()
+    for value in df["patient_id"]:
+        require_identifier(value, name=patient_column)
     df["patient_id"] = df["patient_id"].astype(str)
     df["fold"] = pd.to_numeric(df["fold"], errors="raise").astype(int)
     df["split"] = df["split"].astype(str).str.lower()
@@ -2673,8 +2682,16 @@ def _archive_checkpoints_for_fresh_run(ckpt_paths: Sequence[Path], args) -> None
 def _validate_resume_model_contract(previous: Dict[str, Any], current: Dict[str, Any]) -> None:
     """Bind continuation to the same inputs and fusion experiment, even for F2/F3."""
     if previous != current:
-        changed = sorted(key for key in set(previous) | set(current) if previous.get(key) != current.get(key))
+        changed = changed_contract_fields(previous, current)
         raise RuntimeError(f"[CKPT] Model/input contract changed ({', '.join(changed)}); start a new experiment.")
+
+
+def _validate_comparison_recipe(args) -> None:
+    if args.fusion_mode != "legacy" and args.comparison_recipe == "principal":
+        if float(args.token_dropout) != 0 or float(args.v2_image_habitat_dropout_p) != 0:
+            raise ValueError("The principal F0–F4 comparison requires token_dropout=0 and "
+                             "v2_image_habitat_dropout_p=0. Select comparison_recipe=robustness "
+                             "for a separately identified image-dropout experiment.")
 
 
 def run_one_fold(
@@ -2688,6 +2705,8 @@ def run_one_fold(
     autocast_ctx,
     out_root: Path,
 ) -> Dict[str, Any]:
+    args.id_col = resolve_identifier_column(meta.columns, args.id_col)
+    _validate_comparison_recipe(args)
     set_seed(args.seed + 100 * int(fold), deterministic=bool(getattr(args, "deterministic", False)))
     _assert_split_disjoint(int(fold), split)
     data_root = str(Path(args.meta_csv).parent)
@@ -2698,6 +2717,9 @@ def run_one_fold(
     roi_focus_live_csv = fold_dir / "roi_focus_live.csv"
     ckpt_last = fold_dir / "last.pt"
     ckpt_best = fold_dir / "best.pt"
+    if args.resume and ckpt_best.is_file() and not ckpt_last.is_file():
+        raise RuntimeError("[CKPT] Cannot resume with best.pt but no last.pt continuation state. "
+                           "Restore the original last.pt or start a new experiment with --no_resume.")
     best_report_score = float("-inf")
 
     tr_df = select_df_by_ids(meta, split["train"], args.id_col, args.strict_splits, f"fold{fold:02d}/train")
@@ -3037,8 +3059,19 @@ def run_one_fold(
     trainable_parameters = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
     _log(f"[MODEL] fusion={args.fusion_mode} regions={args.region_mode} parameters={model_parameters} trainable={trainable_parameters}")
     from trifusesurv2.preprocessing.region_io import file_sha256
+    experiment_spec = canonical_experiment_spec(args, runtime={
+        **execution_topology(device, ddp_world_size=int(_DDP_WORLD_SIZE) if _DDP_INITIALIZED else None,
+                             data_parallel_devices=torch.cuda.device_count() if args.data_parallel and device.type == "cuda" else None),
+        "torch_version": str(torch.__version__),
+        "optimizer": {"class": "AdamW", "betas": [0.9, 0.999], "eps": 1e-8},
+        "scheduler": {"class": "CosineAnnealingLR", "T_max": scheduler_t_max(args), "eta_min": float(args.min_lr)},
+        "contour_warmstart_sha256": file_sha256(contour_ckpt) if contour_ckpt and Path(contour_ckpt).is_file() else None,
+    })
     model_contract = {
-        "source_identity": source_identity(),
+        "schema_version": 2,
+        "experiment_spec": experiment_spec,
+        "experiment_spec_sha256": experiment_spec_sha256(experiment_spec),
+        "source_identity": source_contract_identity(),
         "fusion_mode": args.fusion_mode, "region_mode": args.region_mode,
         "deployment_mode": args.deployment_mode, "primary_endpoint": args.endpoint,
         "time_col": args.time_col, "event_col": args.event_col, "seed": args.seed,
@@ -3090,15 +3123,7 @@ def run_one_fold(
         wd_rad=float(args.wd_rad),
     )
     optimizer = torch.optim.AdamW(groups, betas=(0.9, 0.999), weight_decay=0.0)
-    lr_scheduler_t_max = int(args.epochs)
-    if (
-        int(getattr(args, "roi_focus_warmup_epochs", 0)) > 0
-        and float(getattr(args, "roi_focus_warmup_survival_weight", 1.0)) <= 0.0
-    ):
-        lr_scheduler_t_max = max(
-            1,
-            int(args.epochs) - int(getattr(args, "roi_focus_warmup_epochs", 0)),
-        )
+    lr_scheduler_t_max = scheduler_t_max(args)
     scheduler = CosineAnnealingLR(optimizer, T_max=int(lr_scheduler_t_max), eta_min=float(args.min_lr))
 
     ema = H.EMAWeights(mm, decay=float(args.ema_decay), track_trainable_only=True) if (args.use_ema and args.resume) else None
@@ -3623,6 +3648,9 @@ def run_one_fold(
         f"{report_metric_value(candidates[export_suffix]['val'], str(args.report_metric)):.4f}"
     )
     risk_metadata_base = {
+        "comparison_recipe": args.comparison_recipe,
+        "experiment_spec_sha256": model_contract["experiment_spec_sha256"],
+        "model_contract_schema_version": model_contract["schema_version"],
         "fold": int(fold),
         "model_version": str(getattr(args, "model_version", "v2")).strip().lower(),
         "software_version": TRIFUSESURV2_VERSION,
@@ -3735,7 +3763,7 @@ def parse_args():
     p = argparse.ArgumentParser()
 
     p.add_argument("--meta_csv", required=True)
-    p.add_argument("--id_col", type=str, default="patient_id")
+    p.add_argument("--id_col", type=str, default="Patient_ID")
     p.add_argument("--ct_col", type=str, default="ct_out_path")
 
     p.add_argument("--mask_pt_col", type=str, default="mask_pt_out_path")
@@ -3976,7 +4004,7 @@ def parse_args():
     p.add_argument("--img_token_dim", type=int, default=0)
     p.add_argument("--token_mlp_dropout", type=float, default=0.40)
     p.add_argument("--token_mlp_hidden_dim", type=int, default=0)
-    p.add_argument("--token_dropout", type=float, default=0.10)
+    p.add_argument("--token_dropout", type=float, default=0.0)
 
     p.add_argument("--attn_mask_bias", type=float, default=2.0)
     p.add_argument("--attn_pool_mask_mode", type=str, default="masked", choices=["masked", "weighted", "bias"])
@@ -4088,6 +4116,8 @@ def parse_args():
     p.add_argument("--model_version", type=str, default="v2", choices=["v1", "v2"],
                    help="v2 default: habitat-aligned cross-attention; v1: SwinUNETR+MoE late-fusion")
     p.add_argument("--fusion_mode", choices=["F0", "F1", "F2", "F3", "F4", "legacy"], default="F3")
+    p.add_argument("--comparison_recipe", choices=["principal", "robustness"], default="principal",
+                   help="Principal comparisons disable both image-token dropout paths; robustness is a separate factor.")
     p.add_argument("--region_mode", choices=["verified", "legacy"], default="verified")
     p.add_argument("--region_manifest_col", default="region_manifest_path")
     p.add_argument("--deployment_mode", choices=["expert", "automated"], default="expert")
@@ -4117,7 +4147,7 @@ def parse_args():
     )
     p.add_argument("--v2_node_dropout_p", type=float, default=0.10)
     p.add_argument("--v2_topology_dropout_p", type=float, default=0.10)
-    p.add_argument("--v2_image_habitat_dropout_p", type=float, default=0.05)
+    p.add_argument("--v2_image_habitat_dropout_p", type=float, default=0.0)
     p.add_argument(
         "--v2_dropout_ramp_epochs",
         type=int,
@@ -4126,6 +4156,7 @@ def parse_args():
     )
 
     args = p.parse_args()
+    _validate_comparison_recipe(args)
     if args.fusion_mode != "legacy":
         if args.model_version != "v2" or args.region_mode != "verified":
             raise ValueError("F0–F4 comparisons require v2 and verified region manifests; use fusion_mode=legacy for historical inputs.")
@@ -4287,7 +4318,10 @@ def main():
     out_root = Path(args.out_dir) / args.exp_name
     out_root.mkdir(parents=True, exist_ok=True)
 
-    meta = pd.read_csv(args.meta_csv, dtype={args.id_col: str})
+    meta = read_identifier_csv(args.meta_csv, identifier_columns=(args.id_col,))
+    args.id_col = resolve_identifier_column(meta.columns, args.id_col)
+    for value in meta[args.id_col]:
+        require_identifier(value, name=args.id_col)
     meta[args.id_col] = meta[args.id_col].astype(str)
     data_root = str(Path(args.meta_csv).parent)
     multi_time_cols, multi_event_cols = multitask_survival_columns(args)

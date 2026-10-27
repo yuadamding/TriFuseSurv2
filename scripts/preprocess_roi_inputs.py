@@ -30,6 +30,7 @@ import pandas as pd
 import SimpleITK as sitk
 
 from trifusesurv2.utils.data import resolve_preprocessed_case_path, validate_normalized_ct
+from trifusesurv2.preprocessing.identifiers import read_identifier_csv, resolve_identifier_column
 
 
 def _parse_margin(values: Sequence[int]) -> tuple[int, int, int]:
@@ -504,7 +505,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--meta_csv", default="OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv")
     p.add_argument("--out_root", default="OPSCC_preprocessed_roi_96x128x128")
     p.add_argument("--out_csv", default="")
-    p.add_argument("--id_col", default="patient_id")
+    p.add_argument("--id_col", default="Patient_ID")
     p.add_argument("--ct_col", default="ct_out_path")
     p.add_argument("--mask_pt_col", default="mask_primary_out_path")
     p.add_argument("--mask_ln_col", default="mask_nodal_out_path")
@@ -547,7 +548,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if any(x < 0 for x in margin_dhw):
         raise ValueError(f"--margin_voxels must be nonnegative, got {margin_dhw}")
 
-    df = pd.read_csv(meta_csv, dtype={args.id_col: str})
+    df = read_identifier_csv(meta_csv, identifier_columns=(args.id_col, args.scan_id_col) if args.region_mode == "verified" else (args.id_col,))
+    args.id_col = resolve_identifier_column(df.columns, args.id_col)
+    if args.region_mode == "verified":
+        args.scan_id_col = resolve_identifier_column(df.columns, args.scan_id_col, required=False) or args.scan_id_col
     if args.id_col not in df.columns:
         raise ValueError(f"Missing patient identifier column: {args.id_col}")
     for col in (

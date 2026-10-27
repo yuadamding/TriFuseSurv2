@@ -18,11 +18,18 @@ source "$PACKAGE_DIR/scripts/lib/gpu_utils.sh"
 tf_require_python_modules numpy pandas SimpleITK torch monai sklearn scipy pydicom
 
 META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
+ID_COL="${ID_COL:-Patient_ID}"
 RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
 IMG_SIZE="${IMG_SIZE:-128 256 256}"
 ENDPOINT="${ENDPOINT:-OS}"
 SEED="${SEED:-42}"
 FUSION_MODE="${FUSION_MODE:-F3}"
+COMPARISON_RECIPE="${COMPARISON_RECIPE:-principal}"
+case "$COMPARISON_RECIPE" in
+  principal) image_dropout_default=0 ;;
+  robustness) image_dropout_default=0.05 ;;
+  *) echo "[error] COMPARISON_RECIPE must be principal or robustness." >&2; exit 1 ;;
+esac
 REGION_MODE="${REGION_MODE:-verified}"
 DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-expert}"
 REGION_MANIFEST_COL="${REGION_MANIFEST_COL:-region_manifest_path}"
@@ -144,14 +151,14 @@ RAD_PROJ_DROPOUT_P="${RAD_PROJ_DROPOUT_P:-0.15}"
 PROJ_DROPOUT_P="${PROJ_DROPOUT_P:-0.20}"
 EXPERT_DROPOUT_P="${EXPERT_DROPOUT_P:-0.15}"
 TOKEN_MLP_DROPOUT="${TOKEN_MLP_DROPOUT:-0.35}"
-TOKEN_DROPOUT="${TOKEN_DROPOUT:-0.05}"
+TOKEN_DROPOUT="${TOKEN_DROPOUT:-$image_dropout_default}"
 ATTN_DROPOUT_P="${ATTN_DROPOUT_P:-0.10}"
 V2_MODEL_DIM="${V2_MODEL_DIM:-256}"
 V2_NUM_HEADS="${V2_NUM_HEADS:-8}"
 V2_TRANSFORMER_LAYERS="${V2_TRANSFORMER_LAYERS:-2}"
 V2_RADIOMICS_PCS_PER_GROUP="${V2_RADIOMICS_PCS_PER_GROUP:-16}"
 V2_DROPOUT="${V2_DROPOUT:-0.05}"
-V2_IMAGE_HABITAT_DROPOUT_P="${V2_IMAGE_HABITAT_DROPOUT_P:-0.05}"
+V2_IMAGE_HABITAT_DROPOUT_P="${V2_IMAGE_HABITAT_DROPOUT_P:-$image_dropout_default}"
 V2_NODE_DROPOUT_P="${V2_NODE_DROPOUT_P:-0.10}"
 V2_TOPOLOGY_DROPOUT_P="${V2_TOPOLOGY_DROPOUT_P:-0.10}"
 V2_DROPOUT_RAMP_EPOCHS="${V2_DROPOUT_RAMP_EPOCHS:-12}"
@@ -226,7 +233,7 @@ if (( ${#img_size_args[@]} != 3 )); then
 fi
 
 extra_args=()
-extra_args+=(--fusion_mode "$FUSION_MODE" --region_mode "$REGION_MODE"
+extra_args+=(--fusion_mode "$FUSION_MODE" --comparison_recipe "$COMPARISON_RECIPE" --region_mode "$REGION_MODE"
              --deployment_mode "$DEPLOYMENT_MODE" --region_manifest_col "$REGION_MANIFEST_COL")
 if [[ -n "$CONTOUR_WARMSTART_CKPT" ]]; then
   extra_args+=(--contour_warmstart_ckpt "$CONTOUR_WARMSTART_CKPT")
@@ -242,6 +249,7 @@ if [[ "$SURVIVAL_USE_GT_MASKS" == "1" || "$SURVIVAL_USE_GT_MASKS" == "true" || "
 fi
 
 echo "[train] resume=$RESUME allow_partial_resume=$ALLOW_PARTIAL_RESUME epochs=$EPOCHS roi_focus_warmup_epochs=$ROI_FOCUS_WARMUP_EPOCHS survival_warmup_weight=$ROI_FOCUS_WARMUP_SURVIVAL_WEIGHT swa_start=$SWA_START_EPOCH"
+echo "[train] comparison_recipe=$COMPARISON_RECIPE token_dropout=$TOKEN_DROPOUT image_habitat_dropout=$V2_IMAGE_HABITAT_DROPOUT_P"
 echo "[train] survival_use_gt_masks=$SURVIVAL_USE_GT_MASKS mask_guidance_alpha=$MASK_GUIDANCE_ALPHA teacher_force_epochs=$TEACHER_FORCE_EPOCHS"
 echo "[train] loc_feature_from_end=$LOC_FEATURE_FROM_END loc_loss_pt=$LOC_LOSS_PT_LAMBDA loc_loss_ln=$LOC_LOSS_LN_LAMBDA mask_support=$MASK_SUPPORT_LAMBDA mask_focus=$MASK_FOCUS_LAMBDA balanced_bce=1"
 echo "[train] batch_size=$BATCH_SIZE eval_batch_size=$EVAL_BATCH_SIZE grad_accum=$GRAD_ACCUMULATION_STEPS use_checkpoint=$USE_CHECKPOINT feature_size=$FEATURE_SIZE depths=($DEPTHS) heads=($NUM_HEADS)"
@@ -253,6 +261,7 @@ echo "[train] python_bin=$PYTHON_BIN workers=$WORKERS eval_workers=$EVAL_WORKERS
 PYTHONUNBUFFERED=1 \
 exec "$PYTHON_BIN" -u -m trifusesurv2.multimodal_survival.train \
   --meta_csv "$META_CSV" \
+  --id_col "$ID_COL" \
   --splits_dir "$SPLITS_DIR" \
   --cv_folds 4 \
   --debug_fold "$DEBUG_FOLD" \

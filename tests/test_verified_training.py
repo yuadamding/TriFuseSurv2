@@ -59,10 +59,27 @@ class VerifiedTrainingTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             resumed = train.run_one_fold(**kwargs)
         self.assertEqual(set(resumed["export_risks"]), {"005", "006"})
-        args.fusion_mode = "F2"
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "fusion_mode"):
+        for pid in result["export_risks"]:
+            self.assertEqual(result["export_risks"][pid], resumed["export_risks"][pid])
+        self.assertEqual(contract["experiment_spec"]["settings"]["v2_num_heads"], 4)
+        for setting, value in (("fusion_mode", "F2"), ("v2_num_heads", 8), ("report_metric", "nll")):
+            original = getattr(args, setting)
+            setattr(args, setting, value)
+            with self.subTest(setting=setting), contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, setting):
+                train.run_one_fold(**kwargs)
+            self.assertEqual(contract_path.read_bytes(), before)
+            setattr(args, setting, original)
+        # Checkpoints carry the specification independently of the sidecar.
+        contract_path.unlink()
+        args.v2_num_heads = 8
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "v2_num_heads"):
             train.run_one_fold(**kwargs)
-        self.assertEqual(contract_path.read_bytes(), before)
+        self.assertFalse(contract_path.exists())
+        args.v2_num_heads = 4
+        (out_root / "fold_00" / "last.pt").replace(out_root / "fold_00" / "best.pt")
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "best.pt but no last.pt"):
+            train.run_one_fold(**kwargs)
+        self.assertFalse(contract_path.exists())
 
 
 if __name__ == "__main__":

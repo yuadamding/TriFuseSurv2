@@ -6,7 +6,35 @@ WORKSPACE_ROOT="$(cd "$PACKAGE_DIR/.." && pwd)"
 cd "$WORKSPACE_ROOT"
 
 ENDPOINT="${ENDPOINT:-OS}"
+FUSION_MODE="${FUSION_MODE:-F3}"
+REGION_MODE="${REGION_MODE:-verified}"
+SEED="${SEED:-42}"
+ID_COL="${ID_COL:-Patient_ID}"
+DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-expert}"
+REGION_MANIFEST_COL="${REGION_MANIFEST_COL:-region_manifest_path}"
+META_CSV="${META_CSV:-OPSCC_preprocessed_128/cohort_preprocessed_stage2.csv}"
+RADIOMICS_SOURCE="${RADIOMICS_SOURCE:-cohort_radiomics_patient_wide.csv}"
+COMPARISON_RECIPE="${COMPARISON_RECIPE:-principal}"
+# Image dropout is a separate robustness factor. The historical low/mid
+# regularization profiles must not restore it in the principal comparison.
+case "$COMPARISON_RECIPE" in
+  principal)
+    image_dropout_default=0
+    low_image_dropout_default=0
+    mid_image_dropout_default=0
+    ;;
+  robustness)
+    image_dropout_default=0.05
+    low_image_dropout_default=0.025
+    mid_image_dropout_default=0.04
+    ;;
+  *) echo "[search][FAIL] COMPARISON_RECIPE must be principal or robustness." >&2; exit 1 ;;
+esac
+TOKEN_DROPOUT="${TOKEN_DROPOUT:-$image_dropout_default}"
+low_image_dropout="${V2_IMAGE_HABITAT_DROPOUT_P:-$low_image_dropout_default}"
+mid_image_dropout="${V2_IMAGE_HABITAT_DROPOUT_P:-$mid_image_dropout_default}"
 ENDPOINT_LC="$(printf '%s' "$ENDPOINT" | tr '[:upper:]' '[:lower:]')"
+SPLITS_DIR="${SPLITS_DIR:-runs/opscc_splits_${ENDPOINT_LC}_seed1}"
 DEBUG_FOLD="${DEBUG_FOLD:-3}"
 fold_tag="$DEBUG_FOLD"
 if [[ "$fold_tag" =~ ^[0-9]+$ ]]; then
@@ -103,6 +131,17 @@ mkdir -p "$OUT_ROOT/logs"
 #   aggressively while keeping GT-mask survival and strict ROI checks pinned.
 COMMON_ENV=(
   "ENDPOINT=$ENDPOINT"
+  "FUSION_MODE=$FUSION_MODE"
+  "REGION_MODE=$REGION_MODE"
+  "SEED=$SEED"
+  "ID_COL=$ID_COL"
+  "DEPLOYMENT_MODE=$DEPLOYMENT_MODE"
+  "REGION_MANIFEST_COL=$REGION_MANIFEST_COL"
+  "META_CSV=$META_CSV"
+  "RADIOMICS_SOURCE=$RADIOMICS_SOURCE"
+  "SPLITS_DIR=$SPLITS_DIR"
+  "COMPARISON_RECIPE=$COMPARISON_RECIPE"
+  "TOKEN_DROPOUT=$TOKEN_DROPOUT"
   "DEBUG_FOLD=$DEBUG_FOLD"
   "EPOCHS=$EPOCHS"
   "IMG_SIZE=$IMG_SIZE"
@@ -157,8 +196,8 @@ if [[ -n "${NVIDIA_TF32_OVERRIDE:-}" ]]; then
   COMMON_ENV+=("NVIDIA_TF32_OVERRIDE=$NVIDIA_TF32_OVERRIDE")
 fi
 
-LOW_DROP="MODALITY_DROPOUT_CLIN_P=0.10 MODALITY_DROPOUT_RAD_P=0.10 V2_IMAGE_HABITAT_DROPOUT_P=0.025 V2_NODE_DROPOUT_P=0.05 V2_TOPOLOGY_DROPOUT_P=0.05 TOKEN_MLP_DROPOUT=0.40 PROJ_DROPOUT_P=0.25 RAD_PROJ_DROPOUT_P=0.20 EXPERT_DROPOUT_P=0.10 ATTN_DROPOUT_P=0.10 V2_DROPOUT=0.08"
-MID_DROP="MODALITY_DROPOUT_CLIN_P=0.16 MODALITY_DROPOUT_RAD_P=0.16 V2_IMAGE_HABITAT_DROPOUT_P=0.04 V2_NODE_DROPOUT_P=0.08 V2_TOPOLOGY_DROPOUT_P=0.08 TOKEN_MLP_DROPOUT=0.45 PROJ_DROPOUT_P=0.30 RAD_PROJ_DROPOUT_P=0.25 EXPERT_DROPOUT_P=0.12 ATTN_DROPOUT_P=0.12 V2_DROPOUT=0.10"
+LOW_DROP="MODALITY_DROPOUT_CLIN_P=0.10 MODALITY_DROPOUT_RAD_P=0.10 V2_IMAGE_HABITAT_DROPOUT_P=$low_image_dropout V2_NODE_DROPOUT_P=0.05 V2_TOPOLOGY_DROPOUT_P=0.05 TOKEN_MLP_DROPOUT=0.40 PROJ_DROPOUT_P=0.25 RAD_PROJ_DROPOUT_P=0.20 EXPERT_DROPOUT_P=0.10 ATTN_DROPOUT_P=0.10 V2_DROPOUT=0.08"
+MID_DROP="MODALITY_DROPOUT_CLIN_P=0.16 MODALITY_DROPOUT_RAD_P=0.16 V2_IMAGE_HABITAT_DROPOUT_P=$mid_image_dropout V2_NODE_DROPOUT_P=0.08 V2_TOPOLOGY_DROPOUT_P=0.08 TOKEN_MLP_DROPOUT=0.45 PROJ_DROPOUT_P=0.30 RAD_PROJ_DROPOUT_P=0.25 EXPERT_DROPOUT_P=0.12 ATTN_DROPOUT_P=0.12 V2_DROPOUT=0.10"
 CAP_384="FUSED_DIM=640 IMG_TOKEN_DIM=1024 TOKEN_MLP_HIDDEN_DIM=2048 IMG_PROJ_HIDDEN_DIM=1536 IMG_TOK_FFN_HIDDEN_DIM=1536 IMG_POST_HIDDEN_DIM=1536 IMG_ATTN_HEADS=8 GATE_HIDDEN_DIM=768 RAD_HIDDEN_DIM=1536 V2_MODEL_DIM=384 V2_NUM_HEADS=8 V2_TRANSFORMER_LAYERS=3 RADIOMICS_PCA_TOTAL_COMPONENTS=160 V2_RADIOMICS_PCS_PER_GROUP=24"
 CAP_512="FUSED_DIM=768 IMG_TOKEN_DIM=1280 TOKEN_MLP_HIDDEN_DIM=3072 IMG_PROJ_HIDDEN_DIM=2048 IMG_TOK_FFN_HIDDEN_DIM=2048 IMG_POST_HIDDEN_DIM=2048 IMG_ATTN_HEADS=8 GATE_HIDDEN_DIM=1024 RAD_HIDDEN_DIM=2048 V2_MODEL_DIM=512 V2_NUM_HEADS=8 V2_TRANSFORMER_LAYERS=4 RADIOMICS_PCA_TOTAL_COMPONENTS=192 V2_RADIOMICS_PCS_PER_GROUP=32"
 ROI_BASE="LOC_LOSS_PT_LAMBDA=4 LOC_LOSS_LN_LAMBDA=4 MASK_SUPPORT_LAMBDA=2 PT_SHELL_RADIUS=5 LN_SHELL_RADIUS=5"
@@ -272,10 +311,118 @@ next_attempt_number() {
   printf '%d' "$((10#$previous + 1))"
 }
 
+validate_search_recipe_contract() {
+  "$PYTHON_BIN" - "$OUT_ROOT" "$TRAIN_WRAPPER" "$PACKAGE_DIR" "${COMMON_ENV[@]}" --trials "${TRIALS[@]}" <<'PY'
+import csv
+import hashlib
+import json
+import os
+import re
+import shlex
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+package = Path(sys.argv[3]).resolve()
+sys.path.insert(0, str(package / 'src'))
+from trifusesurv2.utils.provenance import source_contract_identity
+
+separator = sys.argv.index('--trials', 4)
+common = dict(item.split('=', 1) for item in sys.argv[4:separator])
+# These affect loading, reporting or runtime resources, not the trial recipe.
+operational = {
+    'WORKERS', 'EVAL_WORKERS', 'PREFETCH_FACTOR', 'CACHE_VOLUMES',
+    'VOLUME_CACHE_SIZE', 'ROI_FOCUS_EVERY_BATCHES', 'LOG_EVERY_BATCHES',
+    'WATCH_INTERVAL_SECONDS', 'LATEST_N', 'CHECK_LATEST_N', 'PYTHON_BIN',
+    'SKIP_REQUIREMENTS_CHECK', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+    'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS', 'ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS',
+    'MALLOC_ARENA_MAX', 'PYTORCH_CUDA_ALLOC_CONF',
+    'RESUME', 'OUT_DIR', 'EXP_NAME', 'CUDA_DEVICE',
+}
+# Read only the known launcher's accepted default expressions. This is a
+# whitelist of program knobs, never a dump of the process environment.
+launcher = package / 'scripts/survival/train_contour_aware_survival.sh'
+accepted = set(re.findall(r'^(?:export )?[A-Z][A-Z0-9_]*="\$\{([A-Z][A-Z0-9_]*):-',
+                          launcher.read_text(), flags=re.MULTILINE))
+accepted.update({'NVIDIA_TF32_OVERRIDE', 'TRAIN_SCRIPT',
+                 'SHARED_SEG_PRETRAIN_CKPT', 'SHARED_SEG_PRETRAIN_DIR', 'SHARED_SEG_PRETRAIN_NAME'})
+inherited = {name: os.environ.get(name) for name in sorted(accepted - operational)}
+
+def file_identity(value):
+    path = Path(value).expanduser().resolve()
+    digest = None
+    if path.is_file():
+        sha = hashlib.sha256()
+        with path.open('rb') as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b''):
+                sha.update(block)
+        digest = sha.hexdigest()
+    return {'path': str(path), 'sha256': digest}
+
+inputs = {name: file_identity(common[name]) for name in ('META_CSV', 'RADIOMICS_SOURCE')}
+splits = Path(common['SPLITS_DIR']).expanduser()
+inputs['split_files'] = [file_identity(splits / f'fold_{fold:02d}' / f'{part}_ids.txt')
+                        for fold in range(4) for part in ('train', 'val', 'test')]
+# Manifests bind image/mask identities without rehashing the full imaging cohort.
+metadata = Path(common['META_CSV']).expanduser()
+manifests = []
+if metadata.is_file():
+    with metadata.open(newline='') as handle:
+        for row in csv.DictReader(handle):
+            declared = row.get(common['REGION_MANIFEST_COL'], '').strip()
+            if declared:
+                path = Path(declared).expanduser()
+                if not path.is_absolute():
+                    path = metadata.parent / path
+                manifests.append(file_identity(path))
+inputs['region_manifests'] = sorted(manifests, key=lambda item: item['path'])
+wrapper_identity = file_identity(sys.argv[2])
+train_script_identity = file_identity(inherited['TRAIN_SCRIPT']) if inherited.get('TRAIN_SCRIPT') else None
+trials = []
+for encoded in sys.argv[separator + 1:]:
+    name, env, args = encoded.split('|', 2)
+    # Preserve every assignment and argument, including ordered overrides.
+    trials.append({'name': name, 'env': shlex.split(env), 'args': shlex.split(args)})
+current = {
+    'schema_version': 2,
+    'source_identity': source_contract_identity(package),
+    'train_wrapper': wrapper_identity,
+    'train_script': train_script_identity,
+    'common_env': {key: value for key, value in common.items() if key not in operational},
+    'inherited_launcher_settings': inherited,
+    'input_files': inputs,
+    'trials': trials,
+}
+path = root / 'search_recipe_contract.json'
+if path.exists():
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit('[search][FAIL] Cannot read the existing search recipe contract; use a new OUT_ROOT.') from exc
+    if previous != current:
+        raise SystemExit('[search][FAIL] Search recipe contract changed; use a new OUT_ROOT. Existing receipts were not modified.')
+else:
+    existing = [entry for entry in root.iterdir()
+                if entry.name != 'logs' or not entry.is_dir() or any(entry.iterdir())]
+    if existing:
+        raise SystemExit('[search][FAIL] Existing OUT_ROOT has outputs without a search recipe contract; use a new OUT_ROOT. Existing receipts were not modified.')
+    # Exclusive creation never relabels a concurrent or historical search.
+    with path.open('x') as handle:
+        json.dump(current, handle, indent=2, sort_keys=True)
+        handle.write('\n')
+PY
+}
+
 write_search_manifest() {
   {
     echo "out_root=$OUT_ROOT"
     echo "endpoint=$ENDPOINT"
+    echo "comparison_recipe=$COMPARISON_RECIPE"
+    echo "token_dropout=$TOKEN_DROPOUT"
+    echo "fusion_mode=$FUSION_MODE"
+    echo "region_mode=$REGION_MODE"
+    echo "seed=$SEED"
+    echo "id_col=$ID_COL"
     echo "debug_fold=$DEBUG_FOLD"
     echo "gpu_ids=${GPU_ARRAY[*]}"
     echo "epochs=$EPOCHS"
@@ -385,6 +532,8 @@ run_slot() {
     {
       echo "trial_index=$idx"
       echo "trial_name=$trial_name"
+      echo "comparison_recipe=$COMPARISON_RECIPE"
+      echo "token_dropout=$TOKEN_DROPOUT"
       echo "slot=$slot"
       echo "cuda_device=$gpu"
       echo "target_peak_vram_gb=77"
@@ -640,6 +789,7 @@ for rank, r in enumerate(rows[:10], 1):
 PY
 }
 
+validate_search_recipe_contract
 write_search_manifest
 echo "[search] package_dir=$PACKAGE_DIR"
 echo "[search] out_root=$OUT_ROOT"

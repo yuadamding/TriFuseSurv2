@@ -11,6 +11,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from trifusesurv2.preprocessing.identifiers import read_identifier_csv, resolve_identifier_column, require_identifier
 
 DEFAULT_GROUP_PREFIXES: "OrderedDict[str, str]" = OrderedDict(
     [
@@ -108,10 +109,16 @@ class HabitatRadiomicsTokenEncoder:
         group_prefixes = OrderedDict(group_prefixes or DEFAULT_GROUP_PREFIXES)
         presence_columns = dict(presence_columns or DEFAULT_PRESENCE_COLUMNS)
 
-        df = pd.read_csv(radiomics_csv, dtype={"case_id": str, "patient_id": str})
-        id_col = "case_id" if "case_id" in df.columns else ("patient_id" if "patient_id" in df.columns else None)
+        df = read_identifier_csv(radiomics_csv)
+        id_col = None
+        for candidate in ("case_id", "patient_id"):
+            id_col = resolve_identifier_column(df.columns, candidate, required=False)
+            if id_col is not None:
+                break
         if id_col is None:
             raise ValueError(f"[RAD2] Missing case identifier column in {radiomics_csv}")
+        for value in df[id_col]:
+            require_identifier(value, name=id_col)
 
         if require_presence_columns:
             missing_presence = [presence_columns[g] for g in group_prefixes if presence_columns.get(g, "") not in df.columns]

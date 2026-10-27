@@ -7,6 +7,9 @@ improved prognosis or clinical validity.
 
 Start with the [anatomical correspondence workflow](docs/anatomical_correspondence.md)
 for input requirements, migration, comparison settings, and remaining study gates.
+The principal comparison recipe disables both image-token dropout paths.
+`Patient_ID` is the default patient key, with an unambiguous `patient_id` alias
+accepted. Acquisition and provenance identifiers retain their original strings.
 
 ## Contents
 
@@ -28,6 +31,7 @@ scripts/
   preprocess_roi_inputs.py
   extract_region_radiomics.py         # optional PyRadiomics adapter
   visualize_region_qc.py              # manifest-validated QC overlays
+  audit_region_sampling.py            # declared spacing/volume/validity audit
   lib/gpu_utils.sh
   survival/search_roi_constrained_h100.sh
   survival/train_contour_aware_survival.sh
@@ -127,6 +131,7 @@ one selected fusion mode against the generated metadata:
 
 ```bash
 FUSION_MODE=F3 REGION_MODE=verified DEPLOYMENT_MODE=expert \
+COMPARISON_RECIPE=principal ID_COL=Patient_ID \
 ENDPOINT=OS DEBUG_FOLD=3 \
 META_CSV=OPSCC_preprocessed_roi_96x128x128/cohort_preprocessed_stage2_roi.csv \
 RADIOMICS_SOURCE=regions_radiomics.csv \
@@ -207,13 +212,16 @@ SEARCH_FORCE_RERUN=1        # fresh-rerun every trial instead of skipping/resumi
 SEARCH_RERUN_FAILED=0       # leave failed trials untouched
 SEARCH_RESUME_INTERRUPTED=0 # restart incomplete trials from scratch
 SEARCH_ACCEPT_COMPLETE_OUTPUTS=0 # require status.txt/status.rc instead
-SEARCH_ALLOW_PARTIAL_RESUME=1 # allow partial checkpoint restores if needed
+SEARCH_ALLOW_PARTIAL_RESUME=1 # must be prespecified in the original experiment contract
 ```
 
 Strict recovery checks all model keys and required optimizer, scheduler,
 scaler, EMA and SWA state. EMA may be absent during localization-only warmup;
 SWA may have no averages before its first update. Other missing state requires
-an explicit partial resume or a fresh run.
+a prespecified partial-resume policy or a fresh run. Partial-resume permission
+cannot be changed within an existing experiment. A resume directory containing
+only `best.pt` requires restoration of the original `last.pt` continuation
+state or an explicit fresh run.
 
 The summary includes `peak_vram_mib` and `peak_vram_gb`, sampled with
 `nvidia-smi`, plus mean/peak GPU utilization, so trials can be ranked by both
@@ -236,9 +244,12 @@ compartments determine survival pooling during train/eval/export independently
 of the localizer or teacher-forcing settings. Localization remains an auxiliary
 task, with missing/invalid annotations excluded from supervision.
 
-Each fold records parameter counts and an input/model contract. Resume rejects
-changed fusion modes, deployment modes, data identities or split membership,
-including the shape-compatible F2/F3 switch.
+Each fold records parameter counts, an input/model contract and a canonical
+experiment specification. Resume rejects changed attention-head counts,
+objectives, dropout, checkpoint-selection metrics, horizons, optimizer/scheduler
+settings and data identities, even when parameter shapes are compatible.
+Only explicitly listed reporting/loader settings may change. Older contracts
+cannot establish the expanded continuation requirements.
 
 The Python entrypoint accepts `--time_col` and `--event_col` overrides for the
 selected primary endpoint. These columns are used consistently for filtering,

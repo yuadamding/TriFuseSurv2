@@ -161,6 +161,24 @@ class SurvivalColumnTests(unittest.TestCase):
             auc_times_days=[100.0],
         )
 
+    def test_split_csv_preserves_patient_id_alias_and_literal_identifiers(self):
+        csv = self.root / "splits.csv"
+        pd.DataFrame({"Patient_ID": ["001", "NA", "003"], "fold": [0, 0, 0],
+                      "split": ["train", "val", "test"]}).to_csv(csv, index=False)
+        split = train.load_precomputed_splits(1, splits_csv=str(csv))[0]
+        self.assertEqual(split, {"train": ["001"], "val": ["NA"], "test": ["003"]})
+        pd.DataFrame({"Patient_ID": [None], "fold": [0], "split": ["train"]}).to_csv(csv, index=False)
+        with self.assertRaisesRegex(ValueError, "nonmissing"):
+            train.load_precomputed_splits(1, splits_csv=str(csv))
+
+    def test_main_rejects_blank_patient_id_before_string_conversion(self):
+        csv = self.root / "meta.csv"
+        pd.DataFrame({"Patient_ID": [None], "custom_days": [350], "custom_event": [1]}).to_csv(csv, index=False)
+        argv = ["train", "--meta_csv", str(csv), "--time_col", "custom_days", "--event_col", "custom_event",
+                "--device", "cpu", "--out_dir", str(self.root / "out"), "--no_resume"]
+        with patch("sys.argv", argv), contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "nonmissing"):
+            train.main()
+
     def test_custom_columns_override_only_primary_head(self):
         for endpoint in train.SURVIVAL_ENDPOINTS:
             with self.subTest(endpoint=endpoint):

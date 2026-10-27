@@ -2,10 +2,13 @@
 import copy
 import contextlib
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -19,6 +22,8 @@ from trifusesurv2.preprocessing.region_io import (
 from trifusesurv2.utils.data import PreprocessedHabitatSurvivalDataset
 from trifusesurv2.schema import RADIOLOGY_HABITATS, REGION_STATUS_CODES, PHYSICAL_GEOMETRY_FEATURES
 from trifusesurv2.data.batch import HabitatBatch, TokenBlock
+from trifusesurv2.preprocessing import region_io
+from trifusesurv2.preprocessing.identifiers import read_identifier_csv
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -56,7 +61,7 @@ class RegionDataTests(unittest.TestCase):
         self.output = self.root / 'output'
         self.config = {'setting': {'binWidth': 25}, 'featureClass': {'firstorder': ['Mean']}}
 
-    def case(self, pid='001', *, ln_available=True, value=0.5):
+    def case(self, pid='001', *, ln_available=True, value=0.5, scan_id=None):
         source = self.root / 'sources' / pid
         source.mkdir(parents=True)
         shape = (40, 40, 40)
@@ -64,9 +69,10 @@ class RegionDataTests(unittest.TestCase):
         ln = np.zeros(shape, dtype=np.uint8); ln[22:25, 22:25, 22:25] = 1
         arrays = {'ct': np.full(shape, value, dtype=np.float32), 'pt': pt, 'ln': ln,
                   'hu': np.indices(shape).sum(axis=0).astype(np.float32) - 800 + 10 * value}
-        row = {'patient_id': pid, 'scan_id': f'scan-{pid}', 'contour_source': 'expert',
+        scan_id = f'scan-{pid}' if scan_id is None else scan_id
+        row = {'patient_id': pid, 'scan_id': scan_id, 'contour_source': 'expert',
                'contour_version': 'reader1-v1', 'ct_intensity_transform': 'synthetic normalized [0,1]',
-               'radiomics_scan_id': f'scan-{pid}', 'radiomics_intensity_transform': 'synthetic HU; no intensity normalization',
+               'radiomics_scan_id': scan_id, 'radiomics_intensity_transform': 'synthetic HU; no intensity normalization',
                'ln_annotation_available': ln_available, 'time': 350.0, 'event': 1.0}
         for name, array in arrays.items():
             image = sitk.GetImageFromArray(array); image.SetSpacing((1.0, 1.5, 2.0))
@@ -85,7 +91,7 @@ class RegionDataTests(unittest.TestCase):
 
     def dataset(self, row, *, rad=None, mode='eval', **kwargs):
         return PreprocessedHabitatSurvivalDataset(
-            pd.DataFrame([row]), id_col='patient_id', time_col='time', event_col='event',
+            pd.DataFrame(row if isinstance(row, list) else [row]), id_col='patient_id', time_col='time', event_col='event',
             ct_col='ct', mask_pt_col='pt', mask_ln_col='ln', clinical_token_encoder=Clinical(),
             clinical_token_dim=2, radiomics_token_encoder=rad, radiomics_token_dim=rad.output_dim if rad else 0,
             use_radiomics=rad is not None, expected_dhw=(32, 32, 32), data_root=str(self.output),
@@ -136,6 +142,126 @@ class RegionDataTests(unittest.TestCase):
         encoder.region_bindings['001']['support_sha256__ln_intra'] = 'bad'
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
             self.dataset(cases[0][0], rad=encoder)[0]
+
+    def test_numeric_acquisition_ids_survive_extraction_csv_encoder_roundtrip(self):
+        cases = [self.case('001', scan_id='00001'), self.case('002', scan_id='00002', value=0.7)]
+        rows = [self.features(manifest) for _, manifest, _ in cases]
+        # Exercise the user-specified patient header without renaming acquisition IDs.
+        for row in rows:
+            row['Patient_ID'] = row.pop('patient_id')
+        path = self.root / 'numeric_identifiers.csv'
+        pd.DataFrame(rows).to_csv(path, index=False)
+        encoder = HabitatRadiomicsTokenEncoder.fit_from_wide_csv(
+            radiomics_csv=path, train_ids=['001', '002'], all_ids=['001', '002'], total_pcs_per_group=1,
+            require_region_provenance=True,
+            region_manifests={row['patient_id']: manifest for row, manifest, _ in cases})
+        self.assertEqual(encoder.region_bindings['001']['scan_id'], '00001')
+        self.assertEqual(encoder.region_bindings['001']['Patient_ID'], '001')
+        self.assertTrue(bool(self.dataset(cases[0][0], rad=encoder)[0]['radiomics_presence'].all()))
+
+    def test_preprocessing_cli_preserves_patient_and_acquisition_id_columns(self):
+        _, _, job = self.case(scan_id='00001')
+        source = self.root / 'input.csv'
+        pd.DataFrame([job['row']]).rename(columns={'patient_id': 'Patient_ID'}).to_csv(source, index=False)
+        output = self.root / 'cli_output'
+        with contextlib.redirect_stdout(io.StringIO()):
+            crop.main(['--meta_csv', str(source), '--out_root', str(output), '--ct_col', 'ct',
+                       '--mask_pt_col', 'pt', '--mask_ln_col', 'ln', '--valid_tissue_policy', 'full_fov',
+                       '--output_size', '32', '32', '32'])
+        meta = read_identifier_csv(output / 'cohort_preprocessed_stage2_roi.csv')
+        self.assertIn('Patient_ID', meta)
+        self.assertNotIn('patient_id', meta)
+        self.assertEqual(meta.loc[0, 'Patient_ID'], '001')
+        self.assertEqual(meta.loc[0, 'scan_id'], '00001')
+        self.assertEqual(meta.loc[0, 'radiomics_scan_id'], '00001')
+        manifest = load_region_manifest(output / meta.loc[0, 'region_manifest_path'], '001')
+        self.assertEqual(manifest['scan_id'], '00001')
+
+    def test_verified_warm_cache_avoids_hashes_and_decodes_and_returns_copies(self):
+        row, _, _ = self.case()
+        dataset = self.dataset(row, cache_volumes=True, volume_cache_size=1)
+        with patch.object(sitk, 'ReadImage', wraps=sitk.ReadImage) as reads, patch.object(
+                region_io, 'file_sha256', wraps=region_io.file_sha256) as hashes:
+            first = dataset[0]
+            self.assertGreater(reads.call_count, 0)
+            self.assertEqual(hashes.call_count, 1)
+            expected = {name: first[name].clone() for name in ('x', 'mask_pt', 'region_masks', 'region_states', 'physical_geometry')}
+            for name in expected:
+                first[name].fill_(0)
+            reads.reset_mock(); hashes.reset_mock()
+            second = dataset[0]
+            self.assertEqual(reads.call_count, 0)
+            self.assertEqual(hashes.call_count, 0)
+            for name, value in expected.items():
+                torch.testing.assert_close(second[name], value)
+
+    def test_verified_cache_revalidates_touch_and_rejects_changed_ct(self):
+        row, _, _ = self.case()
+        dataset = self.dataset(row, cache_volumes=True, volume_cache_size=1)
+        dataset[0]
+        path = self.output / row['ct']
+        previous = path.stat()
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns + 1))
+        with patch.object(region_io, 'file_sha256', wraps=region_io.file_sha256) as hashes:
+            dataset[0]
+            self.assertEqual(hashes.call_count, 1)
+        with path.open('ab') as handle:
+            handle.write(b'changed')
+        with self.assertRaisesRegex(ValueError, 'CT input does not match'):
+            dataset[0]
+
+    def test_verified_cache_detects_mask_edit_with_restored_mtime(self):
+        row, manifest, _ = self.case()
+        dataset = self.dataset(row, cache_volumes=True, volume_cache_size=1)
+        dataset[0]
+        path = Path(manifest['_manifest_path']).parent / manifest['regions']['pt_intra']['image_mask_path']
+        previous = path.stat()
+        image = sitk.ReadImage(str(path))
+        array = sitk.GetArrayFromImage(image)
+        array[0, 0, 0] = 1
+        changed = sitk.GetImageFromArray(array); changed.CopyInformation(image)
+        sitk.WriteImage(changed, str(path))
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, 'mask checksum differs'):
+            dataset[0]
+
+    def test_verified_cache_rejects_nonbinary_changed_supervision(self):
+        row, _, _ = self.case()
+        dataset = self.dataset(row, cache_volumes=True, volume_cache_size=1)
+        dataset[0]
+        path = self.output / row['pt']
+        image = sitk.ReadImage(str(path))
+        array = sitk.GetArrayFromImage(image).astype(np.float32)
+        array[0, 0, 0] = 0.25
+        changed = sitk.GetImageFromArray(array); changed.CopyInformation(image)
+        sitk.WriteImage(changed, str(path))
+        with self.assertRaisesRegex(ValueError, 'supervision mask must contain finite binary'):
+            dataset[0]
+
+    def test_verified_cache_rejects_manifest_change_after_initialization(self):
+        row, manifest, _ = self.case()
+        dataset = self.dataset(row, cache_volumes=True, volume_cache_size=1)
+        dataset[0]
+        path = Path(manifest['_manifest_path'])
+        changed = json.loads(path.read_text()); changed['new_note'] = 'changed'
+        path.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(ValueError, 'manifest changed after dataset initialization'):
+            dataset[0]
+
+    def test_verified_cache_is_bounded_and_reset_for_new_worker(self):
+        first, _, _ = self.case('001')
+        second, _, _ = self.case('002')
+        dataset = self.dataset([first, second], cache_volumes=True, volume_cache_size=1)
+        dataset[0]; dataset[1]
+        self.assertEqual(list(dataset._verified_region_cache), ['002'])
+        with patch.object(region_io, 'file_sha256', wraps=region_io.file_sha256) as hashes:
+            dataset[0]
+            self.assertEqual(hashes.call_count, 1)
+            hashes.reset_mock()
+            with patch('trifusesurv2.utils.data.os.getpid', return_value=os.getpid() + 1):
+                dataset[0]
+            self.assertEqual(hashes.call_count, 1)
+        self.assertEqual(len(dataset._verified_region_cache), 1)
 
     def test_dataset_batches_reach_actual_verified_model_with_optional_modalities(self):
         from trifusesurv2.models.contour_habitat_survival import ContourAwareHabitatSurvivalModel

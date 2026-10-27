@@ -20,6 +20,7 @@ import pandas as pd
 import SimpleITK as sitk
 
 from trifusesurv2.encoders.radiomics import DEFAULT_GROUP_PREFIXES, DEFAULT_PRESENCE_COLUMNS
+from trifusesurv2.preprocessing.identifiers import read_identifier_csv, resolve_identifier_column
 from trifusesurv2.preprocessing.compartments import ReferenceGeometry, assert_same_geometry
 from trifusesurv2.preprocessing.region_io import (
     canonical_json_sha256, file_sha256, load_region_arrays, load_region_manifests,
@@ -84,7 +85,7 @@ def main(argv=None):
     parser.add_argument('--meta_csv', required=True)
     parser.add_argument('--config_json', required=True)
     parser.add_argument('--out_csv', required=True)
-    parser.add_argument('--id_col', default='patient_id')
+    parser.add_argument('--id_col', default='Patient_ID')
     parser.add_argument('--region_manifest_col', default='region_manifest_path')
     parser.add_argument('--deployment_mode', choices=('expert', 'automated', 'contour_variation'), default='expert')
     args = parser.parse_args(argv)
@@ -97,7 +98,8 @@ def main(argv=None):
         raise RuntimeError('This optional extraction command requires PyRadiomics in the selected environment.') from exc
     extractor = RadiomicsFeatureExtractor(config)
     meta_path = Path(args.meta_csv).resolve()
-    meta = pd.read_csv(meta_path, dtype={args.id_col: str})
+    meta = read_identifier_csv(meta_path, identifier_columns=(args.id_col,))
+    args.id_col = resolve_identifier_column(meta.columns, args.id_col)
     manifests = load_region_manifests(meta, id_col=args.id_col, manifest_col=args.region_manifest_col,
                                      data_root=meta_path.parent, deployment_mode=args.deployment_mode)
     rows = [extract_case(manifest, extractor, config, software_version=radiomics.__version__) for manifest in manifests.values()]

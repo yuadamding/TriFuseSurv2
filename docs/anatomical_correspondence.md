@@ -12,6 +12,12 @@ models, F5, learning curves, paired evaluation and external validation remain
 separate study stages. No cohort has been regenerated or study fits run by this
 revision.
 
+The subsequent targeted corrections lock semantic settings on resume, preserve
+literal acquisition IDs, disable image-token dropout for principal comparisons,
+and cache validated region payloads. Physical sampling qualification is still a
+separate requirement; exact shared masks do not establish crop-independent
+radiomics measurements.
+
 ## Physical definition
 
 The reference grid is a SimpleITK image with positive spacing, finite origin,
@@ -47,6 +53,14 @@ mask reduction, and shared CNN/transformer receptive fields retain context.
 
 The preprocessing metadata CSV uses these fields (paths may be relative to
 the CSV). Identifiers must be unique, nonempty strings; keep leading zeros.
+The user-selected patient key is `Patient_ID` (`--id_col Patient_ID`, launcher
+`ID_COL=Patient_ID`). An unambiguous case/punctuation spelling such as
+`patient_id` resolves to the original column; multiple aliases are rejected.
+The manifest's canonical field remains `patient_id`. Patient and acquisition
+identifiers are separate: a patient ID never silently supplies `scan_id`.
+Shared CSV readers preserve numeric-looking patient/case/scan/radiomics-scan
+IDs and provenance IDs, including leading zeros. Blank identifier cells are
+explicitly missing; literal strings such as `NA` remain literal identifiers.
 
 | Field | Meaning |
 |---|---|
@@ -89,6 +103,7 @@ From the repository, with dependencies available:
 ```bash
 PYTHONPATH=src python scripts/preprocess_roi_inputs.py \
   --meta_csv /path/to/qualified_reference_metadata.csv \
+  --id_col Patient_ID \
   --out_root /path/to/new_verified_crops \
   --output_size 96 128 128 --margin_mm 10 --region_mode verified
 ```
@@ -121,6 +136,49 @@ accounting. Its axes describe grid directions, not patient laterality. The
 of available reference support alongside a source-field-of-view truncation
 flag; it is an engineering phantom, not clinical qualification.
 
+## Qualify and freeze physical sampling
+
+The current cropper resizes each patient-specific PT/LN union crop to a fixed
+tensor shape. Its model spacing therefore depends on crop extent. Adding a
+distant node can change the sampling, measured volume and intensity statistics
+of an otherwise unchanged primary region. This mechanism is covered by a
+synthetic regression; it is not an estimate of the effect in this cohort.
+The existing cropper remains available, but its variable sampling is not a
+qualified principal-study policy.
+
+Before complete-cohort extraction, inspect declared spacing distributions,
+model/reference volume ratios, small-support disappearance and crop/FOV flags:
+
+```bash
+PYTHONPATH=src python scripts/audit_region_sampling.py \
+  --metadata-csv /path/to/verified_metadata.csv --id_col Patient_ID \
+  --institution-col SITE --protocol-col PROTOCOL \
+  --nodal-burden-col BURDEN --out-dir /path/to/new_sampling_audit
+```
+
+The optional institution/protocol/burden flags refer to actual supplied
+metadata columns. The audit writes patient and region CSVs, failures and a
+JSON summary with distributions, strata and descriptive burden associations.
+It reads manifests only: it does not verify image bytes, inspect outcomes,
+extract features, select a resolution, or grant a qualification pass. Use the
+QC renderer and the chosen PyRadiomics environment for the image/feature checks.
+
+Select representative cases with no nodes, separated nodal lesions, small
+regions, source-boundary lesions, varied acquisition spacing/protocols, and
+empty/invalid shells. Compare representative features under crop changes while
+holding source CT and the compartment fixed. Include source-grid history:
+resampling already performed before this cropper also affects measurement.
+
+The recommended next policy is a common physical lattice: choose spacing and
+orientation from acquisition quality and compute constraints, bind the lattice
+origin/phase independently of tumor extent, then crop by integer grid offsets.
+Padding or size buckets should accommodate extent without resizing. Fixed
+spacing alone is insufficient if crop-dependent origin changes subvoxel phase.
+Validate invariance under a distant node and integer-offset padding/crop changes,
+plus small-region and rotated/anisotropic cases. This common-grid implementation,
+the numeric spacing and actual extraction configuration remain to be qualified
+and frozen before the expensive F2/F3 study. No setting is selected from outcomes.
+
 ## Extract and bind radiomics
 
 `scripts/extract_region_radiomics.py` is an optional PyRadiomics adapter. Install
@@ -135,6 +193,7 @@ For example, this tiny configuration is useful for engineering checks only:
 ```bash
 PYTHONPATH=src python scripts/extract_region_radiomics.py \
   --meta_csv /path/to/new_verified_crops/cohort_preprocessed_stage2_roi.csv \
+  --id_col Patient_ID \
   --config_json /path/to/reviewed_radiomics_config.json \
   --out_csv /path/to/regions_radiomics.csv
 ```
@@ -189,6 +248,17 @@ laterality cannot be silently transformed with the image. Intensity augmentation
 can still be applied to the image branch; keep that recipe identical across
 comparisons.
 
+With `--cache_volumes --volume_cache_size N`, verified datasets retain at most
+N complete patient payloads per worker: CT, supervision masks, shared regions,
+states and geometry. Warm hits avoid image decoding and full CT hashing while
+checking every bound file's resolved path, device, inode, size and nanosecond
+mtime/ctime. Any change invalidates the entry and triggers full validation;
+changed manifest content is rejected against the dataset's original contract.
+Outputs are copies, and forked workers start their own caches. The cache uses
+filesystem metadata to detect change; inputs must remain immutable during use.
+It is not a cryptographic filesystem snapshot. No training-speed factor is
+claimed from the I/O call-count tests.
+
 ## Controlled fusion alternatives
 
 | Mode | Fusion | Clinical routing |
@@ -206,14 +276,49 @@ local clinical routing, not patient-level access to clinical information.
 All modes share anatomical/source identifiers, region-state and availability
 conditioning. Node/topology inputs are disabled and rejected for F0–F4.
 
+`COMPARISON_RECIPE=principal` (CLI `--comparison_recipe principal`) is the default.
+It requires `TOKEN_DROPOUT=0` and `V2_IMAGE_HABITAT_DROPOUT_P=0`, including
+historical search-profile overrides. A dropped image token otherwise removes
+its local radiomics route in F3/F4 while F2 can retain other routes, confounding
+the principal interpretation. Nonzero rates require the explicitly separate
+`robustness` recipe. The launcher supplies its historical nonzero defaults for
+that recipe; direct Python invocations set desired rates explicitly. No change
+to the fusion architecture or claim of improved accuracy follows from this
+regularization choice.
+
 Use the existing launcher with `FUSION_MODE=F0` through `F4`; keep `META_CSV`,
 `RADIOMICS_SOURCE`, `SPLITS_DIR`, `SEED`, backbone weights, optimizer/objective,
 dropout, batch size and training budget fixed. Give each mode/fold/seed a
 different `OUT_DIR`. The trainer records counts and an input/model contract
 per fold and in checkpoints, including the observed Git revision, dirty-checkout
 flag and Python/script source digest. An environment-provided revision is
-recorded separately as a declaration. Resuming under changed source, fusion mode, split,
-metadata, manifest or radiomics file is rejected. F0/F1 capacities differ;
+recorded separately as a declaration. Only the observed commit and executable
+source digest bind continuation: a new log/output file can change the dirty
+diagnostic without changing executable source. Resuming under changed source, fusion mode, split,
+metadata, manifest or radiomics file is rejected. The canonical experiment
+specification records every resolved CLI setting except the explicit operational
+allowlist, so newly introduced semantic options are locked by default. This
+includes backbone/fusion attention-head counts, dropout, augmentation-related
+settings, loss weights, selection/export metrics, evaluation horizons, optimizer
+settings, epoch budget and scheduler continuation. Runtime records include
+world size, precision-related arguments, PyTorch version and warm-start hash.
+
+Only `resume`, `workers`, `eval_workers`, `prefetch_factor`, `cache_volumes`,
+`volume_cache_size`, `log_every_batches`, `roi_focus_every_batches`, and
+`print_trainable_backbone_params` may change without a new experiment. This
+permits operational changes; it does not promise bitwise RNG replay across
+worker changes. Checkpoint-embedded contracts are checked even if their JSON
+sidecar is absent. Older incomplete contracts require a new experiment rather
+than reconstruction of unspecified settings. Changing the epoch budget is an
+experiment change, not an implicit scheduler extension.
+`best.pt` alone is not continuation state: resume refuses that case without
+`last.pt`. A partial-resume policy must also have been chosen in the original
+experiment; it cannot be enabled later to reinterpret an existing run.
+
+Search output roots also bind their recipe before skipping completed trials or
+rewriting search manifests. Use separate `OUT_ROOT` values across recipes/modes;
+historical roots lacking the recipe contract cannot be silently reused.
+F0/F1 capacities differ;
 report counts and use comparable tuning opportunities instead of claiming
 identical capacity for all modes.
 
