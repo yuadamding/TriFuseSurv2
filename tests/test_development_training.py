@@ -165,6 +165,7 @@ class DevelopmentFoldTests(unittest.TestCase):
         self.assertEqual(contract['clinical_type_policy']['columns'], expected_types)
         self.assertEqual(contract['experiment_spec']['settings']['clinical_type_policy'], 'approved_categorical_v1')
         self.assertEqual(contract['experiment_spec']['runtime']['clinical_type_policy'], contract['clinical_type_policy'])
+        self.assertNotIn('amp_init_scale', contract['experiment_spec']['settings'])
         self.assertEqual(selection['test_exports'], [])
         self.assertEqual(selection['selection_metric'], 'nll')
         self.assertEqual(result['export_risks'], {})
@@ -182,6 +183,7 @@ class DevelopmentFoldTests(unittest.TestCase):
         self.assertIn('optimizer_lr_group_0', metrics.index)
         checkpoint = torch.load(fold / 'last.pt', weights_only=False)
         self.assertIsNotNone(checkpoint['optimizer_state'])
+        self.assertNotIn('amp_init_scale', checkpoint['args'])
         self.assertEqual(checkpoint['encoders']['clinical'].type_policy, contract['clinical_type_policy'])
         self.assertNotIn('T_RAW', checkpoint['encoders']['clinical'].available_columns())
 

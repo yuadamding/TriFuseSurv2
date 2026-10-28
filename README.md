@@ -92,6 +92,11 @@ The [production-path handoff](docs/production_path_20261028.md) records the next
 completed gate: both full Swin survival-NLL checks passed, and at October 28,
 2026, 1:44:29 PM CDT, fresh F2 training was active on one H100 in budget attempt B.
 Its paired adequacy assessment remains pending.
+The [budget-B assessment](docs/budget_b_assessment_20261028.md) records the later
+interruption: F2 completed twelve epochs with one AMP skip, F3 was terminated,
+and exact cleanup remained unresolved at October 28, 2026, 3:24:06 PM CDT.
+The cap remains unassessed; a prospective scale-32,768 correction requires fresh
+H100 qualification and a new paired run after resource reconciliation.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

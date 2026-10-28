@@ -174,16 +174,35 @@ def _cleanup_ddp() -> None:
         _DDP_INITIALIZED = False
 
 
-def make_amp(device: torch.device, enabled: bool):
+def _validated_amp_init_scale(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("amp_init_scale must be a finite positive number")
+    try:
+        scale = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("amp_init_scale must be a finite positive number") from exc
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("amp_init_scale must be a finite positive number")
+    return scale
+
+
+def make_amp(device: torch.device, enabled: bool = True, init_scale: Optional[float] = None):
+    init_scale = _validated_amp_init_scale(init_scale)
     amp_enabled = bool(enabled and device.type == "cuda")
+    if init_scale is not None and not amp_enabled:
+        raise ValueError("amp_init_scale requires enabled CUDA AMP")
     if not amp_enabled:
         return None, (lambda: contextlib.nullcontext())
+    # Omitting this keyword preserves the existing PyTorch default exactly.
+    scaler_options = {} if init_scale is None else {"init_scale": init_scale}
     try:
-        scaler = torch.amp.GradScaler("cuda", enabled=True)
+        scaler = torch.amp.GradScaler("cuda", enabled=True, **scaler_options)
         autocast_ctx = lambda: torch.amp.autocast("cuda", enabled=True)
         return scaler, autocast_ctx
     except Exception:
-        scaler = torch.cuda.amp.GradScaler(enabled=True)
+        scaler = torch.cuda.amp.GradScaler(enabled=True, **scaler_options)
         autocast_ctx = lambda: torch.cuda.amp.autocast(enabled=True)
         return scaler, autocast_ctx
 
@@ -213,7 +232,9 @@ def configure_cuda_performance(args, device: torch.device) -> None:
     _log(
         f"[perf] cudnn_benchmark={torch.backends.cudnn.benchmark} "
         f"cudnn_deterministic={torch.backends.cudnn.deterministic} "
-        f"allow_tf32={allow_tf32} matmul_precision={precision}"
+        f"cuda_matmul_allow_tf32={torch.backends.cuda.matmul.allow_tf32} "
+        f"cudnn_allow_tf32={torch.backends.cudnn.allow_tf32} "
+        f"float32_matmul_precision={torch.get_float32_matmul_precision()}"
     )
 
 
@@ -2466,6 +2487,8 @@ def save_checkpoint(
     encoders: Optional[Dict[str, Any]] = None,
 ):
     ck_args = dict(vars(args))
+    if ck_args.get("amp_init_scale") is None:
+        ck_args.pop("amp_init_scale", None)
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
     ck_args.update(source_identity())
     state = {
@@ -4135,6 +4158,8 @@ def parse_args():
     )
     p.add_argument("--log_every_batches", type=int, default=50)
     p.add_argument("--amp", action="store_true")
+    p.add_argument("--amp_init_scale", type=float, default=None,
+                   help="Optional finite positive CUDA GradScaler initial scale; omitted preserves the PyTorch default.")
     p.add_argument("--allow_tf32", dest="allow_tf32", action="store_true")
     p.add_argument("--no_allow_tf32", dest="allow_tf32", action="store_false")
     p.set_defaults(allow_tf32=True)
@@ -4450,6 +4475,9 @@ def parse_args():
     )
 
     args = p.parse_args()
+    args.amp_init_scale = _validated_amp_init_scale(args.amp_init_scale)
+    if args.amp_init_scale is not None and (not args.amp or str(args.device).strip().lower() == "cpu"):
+        raise ValueError("amp_init_scale requires enabled CUDA AMP")
     _validate_comparison_recipe(args)
     if args.fusion_mode != "legacy":
         if args.model_version != "v2" or args.region_mode != "verified":
@@ -4591,7 +4619,8 @@ def main():
     bind_cuda_device(device)
     configure_cuda_performance(args, device)
 
-    scaler, autocast_ctx = make_amp(device, enabled=bool(args.amp))
+    scaler, autocast_ctx = make_amp(device, enabled=bool(args.amp),
+                                  init_scale=getattr(args, "amp_init_scale", None))
     print(f"[info] device={device} amp={bool(args.amp and device.type=='cuda')} use_lora={bool(args.use_lora)}")
     if not bool(args.strict_files):
         print("[warn] strict_files is disabled; missing CT/PT/LN files will be replaced with zero arrays.")

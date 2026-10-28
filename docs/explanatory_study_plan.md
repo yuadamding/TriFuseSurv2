@@ -60,26 +60,27 @@ There is no multiplicity-controlled confirmatory claim for this three-contrast
 ladder, its secondary metrics or horizons. The primary F3-minus-F2 analysis and
 its threshold remain unchanged.
 
-Equally sparse mismatched routing and contour robustness are **planned, but not
-yet prespecified tests**. Before either can run, a separate versioned design must
-freeze the following decisions before principal held-out review:
+The [availability-matched mismatch design](mismatched_routing_study.md) now
+specifies one deterministic incorrect-routing rule in a separate
+[versioned specification](../configs/mismatched_routing_spec.json). It adds
+**three fits beyond the nine-fit ladder**, using seeds 42, 142 and 242 and the
+corresponding substantive F3 comparators. The rule cycles edges within joint
+image/radiomics availability classes, retains singleton identity fallbacks and
+preserves token identities, values and availability. Its runtime implementation,
+actual-mask equivalence checks and numerical qualification remain pending;
+the design does not authorize execution or displace the core study. Equal
+sparsity and available access do not imply equal biological information.
 
-- **Mismatched routing:** the exact allowed incorrect edge assignments; per-query
-  sparsity and per-patient effective access constraints under unavailable tokens;
-  fixed versus resampled routing; permutation seeds and replication count;
-  handling of patients with no valid mismatch; training versus inference
-  intervention; comparison modes, fit count, endpoint contrasts and reporting
-  rules. Preserve real token identities, values and availability, and change
-  only the declared routing edges. Sparse routing alone does not establish an
-  equal-information control.
-- **Contour robustness:** perturbation operators, physical magnitudes and
-  distributions; targeted compartments and anatomical constraints; handling of
-  empty/invalid contours and unavailable measurements; synchronized regeneration
-  of image masks, radiomics and geometry; clean-training, augmentation and
-  consistency comparisons; any new loss weights; paired perturbation seeds,
-  training seeds and fit counts; evaluation contrasts and uncertainty rules.
-  Freeze the exact recipe without using held-out performance to choose it.
+**Contour robustness remains planned, but not yet prespecified.** Before it can
+run, a separate versioned design must freeze perturbation operators, physical
+magnitudes and distributions; targeted compartments and anatomical constraints;
+empty/invalid-contour and unavailable-measurement handling; synchronized image
+mask, radiomics and geometry regeneration; clean-training, augmentation and
+consistency comparisons; any new loss weights; paired perturbation seeds,
+training seeds and fit counts; and evaluation contrasts and uncertainty rules.
+Choose none of these from held-out performance.
 
-Until those decisions are frozen, neither heading defines an executable test.
-Any design chosen after principal held-out review must be labeled exploratory,
-even if it is documented before its own subsequent execution.
+Until those contour decisions are frozen, the heading does not define an
+executable test. Any design chosen or revised after principal held-out review
+must be labeled exploratory, even if documented before its own subsequent
+execution; retain the earlier version and its prespecified scope.

@@ -1,0 +1,116 @@
+{
+  "F2": {
+    "actual_clinical_token_dimension": 29,
+    "actual_model_parameters": 307566600,
+    "all_audited_checkpoint_tensors_finite": true,
+    "best_named_OS_shared_backbone_steps": 275,
+    "boundary_extension_trigger": false,
+    "budget_numerical_disposition": "requires_numerical_review",
+    "checkpoint_integrity_audit": "passed",
+    "completed_epochs": 12,
+    "earliest_global_minimum_epoch": 6,
+    "epoch_train_and_evaluation_seconds": {
+      "maximum": 199.06757321299938,
+      "median": 176.39436468450003,
+      "minimum": 172.00262908700097,
+      "sum": 2136.8674560370027
+    },
+    "improvement": -0.16649951963600795,
+    "improvement_extension_trigger": false,
+    "initial_scale": 65536.0,
+    "last_named_OS_shared_backbone_steps": 551,
+    "minimum_validation_nll": 2.521219389488945,
+    "nonfinite_gradient_updates": 1,
+    "numerical_audit_sha256": "3c928d9bf832cb719b8f44aaa4f0baa41881af36f29d46c9cc6c272456c01670",
+    "optimizer_step_attempts": 552,
+    "optimizer_steps_skipped": 1,
+    "optimizer_steps_succeeded": 551,
+    "overflow_epoch": 1,
+    "overhead_scope": "Unattributed combined setup/checkpoint I/O/finalization and other work outside the scoped epoch timer; not all initialization.",
+    "planned_optimizer_opportunities": 552,
+    "previous_median": 2.5669056739319456,
+    "previous_window": [
+      3,
+      7
+    ],
+    "recent_median": 2.7334051935679535,
+    "recent_window": [
+      8,
+      12
+    ],
+    "saved_final_scale": 32768.0,
+    "selected_epoch": 6,
+    "selected_weights": "best",
+    "subsequent_epochs_with_no_additional_skips": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "threshold": 0.002566905673931946,
+    "trainer_stage_minus_sum_scoped_epochs_seconds": 108.13289209699815,
+    "trainer_stage_seconds": 2245.000348134001
+  },
+  "F3": {
+    "checkpoint_numerical_audit": "not_run",
+    "completed_epoch_rows": 1,
+    "completed_epoch_trace_reported_attempts": 46,
+    "completed_epoch_trace_reported_skips": 0,
+    "completed_epoch_trace_reported_successes": 46,
+    "earliest_global_minimum_epoch": null,
+    "fit_status": "interrupted_incomplete",
+    "improvement": null,
+    "previous_median": null,
+    "recent_median": null,
+    "second_epoch_end_to_end_completion_checkpoint_and_successful_update_total": "unproven",
+    "second_epoch_training_log_last_batch": 365,
+    "threshold": null,
+    "training_returncode": -15
+  },
+  "common_cap_accepted": null,
+  "disposition": [
+    "Preserve both histories; F2 is completed and checkpoint-finite but is not accepted budget evidence because of one skipped update.",
+    "Do not accept 12 or extend to24 from the interrupted pair. No post-hoc acceptable-skip threshold is introduced.",
+    "Resolve owned resource termination and cleanup before any replacement allocation.",
+    "Prospective lower-initial-scale correction needs actual trainer support, source-bound H100 qualification and a fresh complete paired budget run before acceptance."
+  ],
+  "extension_to_24_authorized_by_this_result": false,
+  "job": "trifusesurv2-budget-development-20261028b",
+  "job_uid": "8cc49447-6372-4d6b-8edf-199db3904cfd",
+  "lifecycle": {
+    "conservative_retained_h100_allowance": 1,
+    "delete_repeated": false,
+    "foreground_job_delete_accepted_at_utc": "2026-10-28T19:34:06Z",
+    "new_jobs_or_gpus_started": 0,
+    "pod_delete_timestamp_utc": "2026-10-28T19:35:02Z",
+    "pod_disruption": "DeletionByTaintManager; NoExecute taint",
+    "ready_gpu_occupancy": 0,
+    "signal15_sender_or_root_cause": "not_established_by_available_evidence",
+    "state": "Job foregroundDeletion finalizer and terminating Pod remain; worker termination or fencing and absence not established."
+  },
+  "paired_decision": "unresolved_execution_and_numerical_exposure",
+  "schema_version": 1,
+  "source_commit": "3298bf017c667ea44ae8ad621dc8cfaa95961aa6",
+  "source_tree_sha256": "c40782445575be0e3338971c03f31764080d3ad77db60e5b9b6ec60ed7603806",
+  "status": "unassessed",
+  "test_evaluation": "not_run",
+  "trace_payloads": {
+    "F2": {
+      "bytes": 19122,
+      "path": "docs/results/budget_b_F2_metrics.csv",
+      "sha256": "c808fc2a6a492a0e6f45bd8b42d3a5a7171016d6f00b7ee9019697315a3003f4"
+    },
+    "F3": {
+      "bytes": 4299,
+      "path": "docs/results/budget_b_F3_partial_metrics.csv",
+      "sha256": "1bcde221abb4e22c1771491f60bba054d516310b6506de6af4f305e870f7a17c"
+    }
+  }
+}

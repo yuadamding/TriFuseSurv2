@@ -43,11 +43,17 @@ def canonical_sha256(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
+def validate_initial_scale(value):
+    require(value is None or type(value) in (int, float) and math.isfinite(value) and value > 0,
+            'Initial scaler scale must be finite and positive')
+
+
 def validate_settings(settings_by_mode, profile):
     require(set(settings_by_mode) == {'F2', 'F3'}, 'Exactly paired F2/F3 settings are required')
     shared = []
     for mode in ('F2', 'F3'):
         settings = settings_by_mode[mode]
+        validate_initial_scale(settings.get('amp_init_scale'))
         require(settings['fusion_mode'] == mode and settings['model_version'] == 'v2'
                 and settings['region_mode'] == 'verified', 'Only verified F2/F3 v2 is qualified')
         require(settings['clinical_cols'] == CLINICAL_COLUMNS
@@ -87,15 +93,21 @@ def validate_settings(settings_by_mode, profile):
     return canonical_sha256(shared[0])
 
 
-def make_precision(trainer, device, precision, init_scale, amp_enabled):
+def make_precision(trainer, device, precision, init_scale, amp_enabled, *, training_init_scale=None):
     import torch
-    require(init_scale is None or math.isfinite(init_scale) and init_scale > 0, 'Initial scaler scale must be finite and positive')
+    validate_initial_scale(init_scale)
+    validate_initial_scale(training_init_scale)
     if device.type != 'cuda':
         require(precision == 'fp32' and init_scale is None, 'CPU fixtures only support explicit FP32 without a scaler')
         return None, lambda: contextlib.nullcontext(), {'autocast_enabled': False, 'dtype': 'float32', 'scaler': None}
     if precision == 'trainer-default':
-        require(init_scale is None, 'Use explicit fp16 when overriding the default initial scale')
-        scaler, autocast = trainer.make_amp(device, enabled=amp_enabled)
+        require(init_scale is None, 'Trainer-default scale must come from bound training settings; use explicit fp16 for a diagnostic override')
+        if training_init_scale is None:
+            # Preserve the historical call and Torch default construction.
+            scaler, autocast = trainer.make_amp(device, enabled=amp_enabled)
+        else:
+            require(amp_enabled, 'A bound initial scale requires enabled training AMP')
+            scaler, autocast = trainer.make_amp(device, enabled=amp_enabled, init_scale=training_init_scale)
         dtype = str(torch.get_autocast_dtype('cuda')) if amp_enabled else 'torch.float32'
     elif precision == 'fp32':
         require(init_scale is None, 'FP32 does not use a scaler')
@@ -107,8 +119,12 @@ def make_precision(trainer, device, precision, init_scale, amp_enabled):
         require(precision != 'bf16' or init_scale is None, 'BF16 diagnostic uses no scaler; this is not a policy adoption')
         scaler = torch.amp.GradScaler('cuda', **({'init_scale': init_scale} if init_scale is not None else {})) if precision == 'fp16' else None
         autocast = lambda: torch.amp.autocast('cuda', dtype=dtype_obj)
+    state = scaler.state_dict() if scaler is not None else None
+    if precision == 'trainer-default' and training_init_scale is not None:
+        require(isinstance(state, dict) and state.get('scale') == training_init_scale,
+                'Observed scaler initial scale differs from bound training settings')
     return scaler, autocast, {'autocast_enabled': precision != 'fp32' and (precision != 'trainer-default' or amp_enabled),
-        'dtype': dtype, 'scaler': scaler.state_dict() if scaler is not None else None,
+        'dtype': dtype, 'scaler': state,
         'selection': precision, 'production_policy_adopted_by_this_script': False}
 
 
@@ -354,7 +370,8 @@ def qualify_mode(trainer, settings, options, record):
     batches, encoder, inputs = fabricated_batches(settings, options.batches)
     record.update(input_identity=inputs, clinical_policy=encoder.column_policy,
                   clinical_type_policy=encoder.type_policy, updates=[], batch_survival_losses=[])
-    scaler, autocast, precision = make_precision(trainer, device, options.precision, options.amp_init_scale, settings['amp'])
+    scaler, autocast, precision = make_precision(trainer, device, options.precision, options.amp_init_scale,
+                                               settings['amp'], training_init_scale=settings.get('amp_init_scale'))
     record['precision'] = precision
     model, construction = build_model(trainer, settings, encoder.output_dim, device)
     record['construction'] = construction
@@ -455,7 +472,8 @@ def main(argv=None):
     parser.add_argument('--profile', choices=('production', 'tiny'), default='production')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--precision', choices=('trainer-default', 'fp32', 'fp16', 'bf16'), default='trainer-default')
-    parser.add_argument('--amp-init-scale', type=float)
+    parser.add_argument('--amp-init-scale', type=float,
+                        help='Diagnostic explicit-FP16 override only; trainer-default uses bound training amp_init_scale')
     parser.add_argument('--batches', type=int, default=9)
     parser.add_argument('--container-image', default='unrecorded')
     args = parser.parse_args(argv)

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 from trifusesurv2.multimodal_survival import train
@@ -126,6 +126,78 @@ class QualificationTests(unittest.TestCase):
             qualification.make_precision(train, torch.device('cpu'), 'trainer-default', None, True)
         with self.assertRaisesRegex(ValueError, 'finite and positive'):
             qualification.make_precision(train, torch.device('cpu'), 'fp32', float('nan'), False)
+
+    def test_trainer_precision_propagates_bound_scale_and_preserves_legacy_default(self):
+        device = torch.device('cuda:0')  # An identity only; no CUDA allocation or call.
+        for setting in (None, 32768.0):
+            scale = 65536.0 if setting is None else setting
+            state = {'scale': scale, 'growth_factor': 2., 'backoff_factor': .5,
+                     'growth_interval': 2000, '_growth_tracker': 0}
+            scaler = SimpleNamespace(state_dict=lambda: state)
+            autocast = lambda: contextlib.nullcontext()
+            trainer = SimpleNamespace(make_amp=Mock(return_value=(scaler, autocast)))
+            with self.subTest(setting=setting), patch.object(torch, 'get_autocast_dtype', return_value=torch.float16):
+                observed, context, report = qualification.make_precision(
+                    trainer, device, 'trainer-default', None, True, training_init_scale=setting)
+            expected = {'enabled': True}
+            if setting is not None: expected['init_scale'] = setting
+            trainer.make_amp.assert_called_once_with(device, **expected)
+            self.assertIs(observed, scaler); self.assertIs(context, autocast)
+            self.assertEqual(report, {'autocast_enabled': True, 'dtype': 'torch.float16',
+                'scaler': state, 'selection': 'trainer-default', 'production_policy_adopted_by_this_script': False})
+
+    def test_trainer_precision_rejects_cli_or_observed_source_scale_mismatch(self):
+        device = torch.device('cuda:0')
+        for initial, observed, enabled in ((1., 32768., True), (None, 65536., True), (None, 32768., False)):
+            scaler = SimpleNamespace(state_dict=lambda: {'scale': observed})
+            trainer = SimpleNamespace(make_amp=Mock(return_value=(scaler, contextlib.nullcontext)))
+            with self.subTest(initial=initial, observed=observed, enabled=enabled), \
+                    patch.object(torch, 'get_autocast_dtype', return_value=torch.float16), self.assertRaises(ValueError):
+                qualification.make_precision(trainer, device, 'trainer-default', initial, enabled,
+                                             training_init_scale=32768.)
+            if initial is not None or not enabled: trainer.make_amp.assert_not_called()
+
+    def test_invalid_bound_scale_rejected_before_hardware_or_model_work(self):
+        for invalid in (0, -1, float('nan'), float('inf'), -float('inf'), True, '32768'):
+            values = tiny_settings()
+            for setting in values.values(): setting['amp_init_scale'] = invalid
+            with self.subTest(scale=invalid), self.assertRaisesRegex(ValueError, 'finite and positive'):
+                qualification.validate_settings(values, 'tiny')
+            trainer = SimpleNamespace(make_amp=Mock())
+            with self.subTest(direct_scale=invalid), self.assertRaisesRegex(ValueError, 'finite and positive'):
+                qualification.make_precision(trainer, torch.device('cuda:0'), 'trainer-default', None, True,
+                                             training_init_scale=invalid)
+            trainer.make_amp.assert_not_called()
+        values = tiny_settings()
+        values['F2']['amp_init_scale'] = 32768.
+        values['F3']['amp_init_scale'] = 65536.
+        with self.assertRaisesRegex(ValueError, 'differ beyond'):
+            qualification.validate_settings(values, 'tiny')
+
+    def test_mode_uses_training_setting_for_precision_before_model_construction(self):
+        settings = tiny_settings()['F2']; settings.update(amp=True, amp_init_scale=32768.)
+        trainer = SimpleNamespace(set_seed=Mock(), configure_cuda_performance=Mock())
+        encoder = SimpleNamespace(column_policy={}, type_policy={}, output_dim=5)
+        options = SimpleNamespace(device='cpu', batches=3, precision='trainer-default', amp_init_scale=None)
+        with patch.object(qualification, 'fabricated_batches', return_value=([], encoder, {})), \
+                patch.object(qualification, 'make_precision', return_value=(None, contextlib.nullcontext, {})) as precision, \
+                patch.object(qualification, 'build_model', side_effect=RuntimeError('stop before model')):
+            with self.assertRaisesRegex(RuntimeError, 'stop before model'):
+                qualification.qualify_mode(trainer, settings, options, {})
+        precision.assert_called_once_with(trainer, torch.device('cpu'), 'trainer-default', None, True,
+                                          training_init_scale=32768.)
+
+    def test_explicit_fp16_scale_remains_separate_diagnostic(self):
+        trainer = SimpleNamespace(make_amp=Mock())
+        scaler = SimpleNamespace(state_dict=lambda: {'scale': 1.})
+        with patch.object(torch.amp, 'GradScaler', return_value=scaler) as constructor:
+            _, _, report = qualification.make_precision(trainer, torch.device('cuda:0'), 'fp16', 1., True,
+                                                        training_init_scale=32768.)
+        constructor.assert_called_once_with('cuda', init_scale=1.)
+        trainer.make_amp.assert_not_called()
+        self.assertEqual(report['selection'], 'fp16')
+        self.assertEqual(report['scaler']['scale'], 1.)
+        self.assertFalse(report['production_policy_adopted_by_this_script'])
 
     def test_failure_record_survives_before_any_model_construction(self):
         options = SimpleNamespace(profile='tiny', device='cpu', precision='fp32', amp_init_scale=None,

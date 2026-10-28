@@ -1,0 +1,115 @@
+{
+  "accumulation_and_update": {
+    "actual_optimizer_call_observation": "register_step_post_hook",
+    "batches_per_effective_batch": 8,
+    "clipping": "unchanged trainer.perform_optimizer_update on unscaled gradients",
+    "gradient_observation": "after accumulation, before clipping",
+    "scale_constant_within_accumulation": true,
+    "skipped_update_accounting": "separate attempted, successful and skipped; no skipped/lost exposure silently accepted for budget adequacy",
+    "unscale_calls_per_opportunity": 1
+  },
+  "applies_equally_to": [
+    "F2",
+    "F3"
+  ],
+  "autocast": {
+    "device_type": "cuda",
+    "dtype": "torch.float16",
+    "enabled": true,
+    "selection": "trainer.make_amp with enabled=True"
+  },
+  "backend_effective_policy": "Call the unchanged trainer.set_seed and configure_cuda_performance with bound settings. Retain effective backend observations for both modes; compare with the same configured training path, not diagnostic defaults.",
+  "backend_requested_settings": {
+    "allow_tf32": true,
+    "deterministic": true,
+    "matmul_precision": "high"
+  },
+  "decision": "prospective_lower_initial_scale_candidate",
+  "decision_at_utc": "2026-10-28T20:25:16.424312+00:00",
+  "decision_rationale": "Real-cohort F2 had one nonfinite-gradient AMP skip at initial scale65536, then saved scale32768 and no additional skips in epochs2\u201312. Starting at32768 is a minimally changed candidate; it has not yet passed new-policy H100 or real-pair qualification. Preserve failed B and require a new matched fresh pair; do not accept a post-hoc skip tolerance.",
+  "failure_handling": "If intended-policy qualification fails, preserve it with zero real-data training invocations, diagnose the specific failure and bind any revised policy to a fresh attempt. No automatic retry or quiet precision/scale change.",
+  "gradient_scaler": {
+    "backoff_factor": 0.5,
+    "class": "torch.amp.GradScaler",
+    "device": "cuda",
+    "enabled": true,
+    "growth_factor": 2.0,
+    "growth_interval": 2000,
+    "init_scale": 32768.0,
+    "initial_scale_override": 32768.0
+  },
+  "paired_budget_requalification": {
+    "automatic_retries": 0,
+    "both_fresh": true,
+    "cosine_T_max": 12,
+    "epochs": 12,
+    "historical_F2_reused_as_candidate_fit": false,
+    "modes": [
+      "F2",
+      "F3"
+    ],
+    "planned_opportunities_per_mode": 552,
+    "require_all_planned_updates_successful": true,
+    "same_previous_budget_rule": true,
+    "seed": 42
+  },
+  "policy_id": "production_fp16_init32768_v2",
+  "predecessor_policy": {
+    "historical_qualification_remains_valid_for_its_fixture": true,
+    "path": "configs/production_numerical_policy.json",
+    "sha256": "e0d01361ddcaa14b4176dae9ab07be8c67d6d2c446e1e5220dd01887802b9033"
+  },
+  "production_numerical_behavior_changed": true,
+  "qualification": {
+    "amp_init_scale_override": null,
+    "clinical_type_policy": "approved_categorical_v1",
+    "fabricated_batches_each": 9,
+    "gradient_accumulation": 8,
+    "modes": [
+      "F2",
+      "F3"
+    ],
+    "precision": "trainer-default",
+    "profile": "production",
+    "release_real_data_training_only_after_both_pass": true,
+    "required_actual_updates_each": 2,
+    "required_finite_gradients_state_and_post_update_survival_nll": true,
+    "required_full_partial_boundaries": true,
+    "required_skips_each": 0,
+    "script": "scripts/qualify_swin_survival.py",
+    "training_amp_init_scale": 32768.0
+  },
+  "real_cohort_evidence": {
+    "accepted_budget": false,
+    "completed_F2_attempted": 552,
+    "completed_F2_skipped": 1,
+    "completed_F2_successful": 551,
+    "path": "docs/budget_b_assessment_20261028.json",
+    "sha256": "fdf3679cbd32ee11d0ac4bc7bd10f5d4927bc10f40c759b37e2161193d0026d5"
+  },
+  "release_requirements": [
+    "Administrator-confirmed old worker termination/fencing plus exact oldJob/ownedPod absence reconciliation and oldowner absence proof",
+    "New source/policy/inputs/manifest/controller bindings; sameoneH100cap includingPending",
+    "32k-aware metadata/audit/assessment helpers; oldhardcoded65536validatorscannotbeused",
+    "BothproductionSwinsurvivalNLLmodes passactualH100 undertrainer-defaultwithboundamp_init_scale32768 beforeanypatientfit"
+  ],
+  "required_training_argument": {
+    "amp": true,
+    "amp_init_scale": 32768.0,
+    "unconfigured_default": "None retains historical default65536 and does not adopt this candidate"
+  },
+  "schema_version": 1,
+  "source_bindings": {
+    "ast_hash_interpreter": "CPython 3.12.3 ast.dump(include_attributes=False)",
+    "experiment_contract_file_sha256": "be3ade4d7e2c219bf77bd6a91d336ef1d098fd0e2df41ec4980575d55a77cb77",
+    "qualifier_file_sha256": "3413864edae0cd8765034cd37104cdcff7f5c1ec93cc0736a252ee994cad3ad1",
+    "trainer_file_sha256": "b5e16de30904add069cb2413bbe7c978f1adc86bf2a4f4463ba50780a7200102",
+    "training_function_ast_sha256": {
+      "configure_cuda_performance": "e87ce2693bb2f536504f2c384ca8dab7ed183c697d027d2140a6fbcd08dfa961",
+      "make_amp": "7969c16709a1de8bfbb6ad951ba4b0184062cd6bce467af295b2752ad96ab896",
+      "perform_optimizer_update": "3fdf185f6c3114e0e61593daa5330a398f153fa351d496e1c37c5953ec005e89",
+      "train_one_epoch": "9b95fb8530aa06a54d15284ee3c61e37c0a0470460fdd795c8cfd8285a9b53cf"
+    }
+  },
+  "status": "candidate_pending_new_source_H100_and_paired_budget_qualification"
+}
