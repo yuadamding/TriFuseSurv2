@@ -1,0 +1,233 @@
+{
+  "distribution_versions": {
+    "SimpleITK": "2.5.2",
+    "monai": "1.5.2",
+    "numpy": "1.26.4",
+    "pyradiomics": "3.0.1",
+    "scipy": "1.15.3",
+    "torch": "2.9.1"
+  },
+  "evidence_files": {
+    "collection_reconciliation": {
+      "run_relative_path": "qualification-collection-reconciliation.json",
+      "sha256": "3faa10b6763bf97c4dc7f3d640057585910f529c237b25b970574a71b588feb7"
+    },
+    "fresh_source_identity_check": {
+      "run_relative_path": "qualification-source-identity-check.json",
+      "sha256": "f4ae5b9af960a4228ef99a5e4963dd7aedaad135e7653910bb115bac2c6c69ee"
+    },
+    "manifest_audit": {
+      "run_relative_path": "gpu-qualification-a-results/gpu-qualification-a-output/representatives/audit/summary.json",
+      "sha256": "b51dc67a484b54a9f1300ab14425c0251e8c49dac114e606921193e2d2ae61a5"
+    },
+    "outcome_availability": {
+      "run_relative_path": "outcome-availability-audit.json",
+      "sha256": "2a0d6974ad541abe64c05f64b4ddeba18e3ba03d4a862a281137915e92f32e85"
+    },
+    "paired_status": {
+      "run_relative_path": "paired-status-20261028T020314Z.json",
+      "sha256": "e87cc294fd994e655ff25a85c5d9b022cef8019da6b1e4310045e098e38eaca9"
+    },
+    "qualification_cleanup": {
+      "run_relative_path": "gpu-qualification-a-results/gpu-qualification-a-recovery-1-receipts/cleanup.json",
+      "sha256": "1f17bc508330d9a93a603c4f20431f415811a60c55fa20dd04cb624feec3fa64"
+    },
+    "qualification_final": {
+      "run_relative_path": "gpu-qualification-a-results/gpu-qualification-a-output/runtime/FINAL.json",
+      "sha256": "899fe329bcb3bba9484e61d6307fb3fc3705f9383062c691eb47d257930110e2"
+    },
+    "representative_preparation": {
+      "run_relative_path": "gpu-qualification-a-results/gpu-qualification-a-output/representatives/development_receipt.json",
+      "sha256": "5bf6d30a8183a06d5e010773fcd134ce4a0279b186aeee437555436fae9215b6"
+    },
+    "synthetic_qualification": {
+      "run_relative_path": "gpu-qualification-a-results/gpu-qualification-a-output/synthetic/qualification.json",
+      "sha256": "6a065ac75f64bc9ebd54a6f07b4a5d9135a027b5a602372e7f83028d5bb51e84"
+    },
+    "visual_review": {
+      "run_relative_path": "representative-visual-review.json",
+      "sha256": "0ed31cfba1f080406004c04e6e8a360ceaa804779bcd4107b4f9894fafc280d6"
+    }
+  },
+  "evidence_run": "common-grid-h100-20261027",
+  "hardware": {
+    "compute_capability": [
+      9,
+      0
+    ],
+    "cuda_build": "12.8",
+    "name": "NVIDIA H100 80GB HBM3",
+    "torch_version": "2.9.1+cu128",
+    "total_memory_bytes": 84929478656,
+    "visible_device_count": 1
+  },
+  "limitations": [
+    "Original CT and RTSTRUCT sources are unavailable in this input delivery.",
+    "Stored CT was already normalized/cropped; original preprocessing history is unresolved.",
+    "Derived contours are unreviewed; aligned QC does not establish anatomical or clinical accuracy.",
+    "Empty or failed legacy contour QC means unavailable annotation, not known disease absence.",
+    "The intensity threshold is a development tissue candidate and makes no HU interpretation.",
+    "These inputs are development-only and do not establish clinical performance or an untouched evaluation cohort.",
+    "The original archive-envelope collection check failed; all retained payloads and a separate fresh source-hash check passed. The envelope discrepancy is unresolved.",
+    "A documentation-only successor commit does not change or inherit the active run source identity.",
+    "No completed cohort F2/F3 results, clinical/geometry baseline results, paired uncertainty or calibration comparison were available at this snapshot."
+  ],
+  "live_status": false,
+  "paired_pilot_snapshot": {
+    "epochs_per_mode": 2,
+    "materialization_completed": false,
+    "materialization_started": true,
+    "planned_modes": [
+      "F2",
+      "F3"
+    ],
+    "ready_workers": 1,
+    "scope": "development and capacity pilot; no convergence or prognostic-effect claim",
+    "training_started": false,
+    "visible_h100s": 1
+  },
+  "qualification_finished_at_utc": "2026-10-28T00:33:39.872214+00:00",
+  "raw_evidence_location": "Project-local run archive; source receipts and images are deliberately not bundled into this portable documentation summary.",
+  "record_kind": "dated_development_evidence_summary",
+  "representative_development": {
+    "assessable_feature_comparisons": 2140,
+    "audit_failed_patient_scans": 0,
+    "expert_contour_accuracy_certified": false,
+    "feature_comparisons_per_case_sorted": [
+      107,
+      321,
+      428,
+      428,
+      428,
+      428
+    ],
+    "larger_canvas_comparisons_passed": 6,
+    "largest_primary_model_reference_volume_ratio": 1.219672131147541,
+    "ln_interior_disappearance_count": 1,
+    "ln_shell_source_fov_flag_count": 5,
+    "prepared_cases": 6,
+    "preprocessing_errors": 0,
+    "pt_shell_source_fov_flag_count": 5,
+    "selection_uses_outcomes": false,
+    "visual_review_status": "passed_development_geometry_review"
+  },
+  "schema_version": 1,
+  "scientific_policy": {
+    "atol": 1e-07,
+    "canvas_shape_dhw": [
+      96,
+      160,
+      96
+    ],
+    "grid": {
+      "coordinate_system": "LPS",
+      "direction": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "schema_version": 1,
+      "spacing_xyz": [
+        1.0,
+        1.0,
+        3.0
+      ],
+      "units": "mm"
+    },
+    "policy_id": "40477d46fc753d18d3eae9858203a806af13e1c2c442764b4d0b4c316b617613",
+    "radiomics_config_file_sha256": "ee0fbb371e44ba7cef19fa3cbfd097e33a515e6011188953ff4deaa3a1dc779d",
+    "radiomics_config_sha256": "d5c7b075b394dca62244360d289b5eb9cd1e745fbb1878c169d7874956e88099",
+    "radiomics_software": "PyRadiomics v3.0.1",
+    "rtol": 1e-05
+  },
+  "snapshot_at_utc": "2026-10-28T02:03:24.726431+00:00",
+  "snapshot_display": "October 27, 2026, 9:03 PM CDT",
+  "source_identity": {
+    "commit_sha": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+    "declared_commit_sha": null,
+    "source_dirty": false,
+    "source_tree_sha256": "2df5644243d02a1bbd1013f2ef570f12ef48f60e2f14eaeddace8fc818c1c474"
+  },
+  "source_metadata_outcome_audit": {
+    "endpoints": {
+      "DFS": {
+        "both_missing": 94,
+        "valid_censored": 211,
+        "valid_events": 308
+      },
+      "DSS": {
+        "both_missing": 94,
+        "valid_censored": 394,
+        "valid_events": 125
+      },
+      "OS": {
+        "both_missing": 94,
+        "valid_censored": 231,
+        "valid_events": 288
+      }
+    },
+    "invalid_or_incomplete_pairs": 0,
+    "rows": 613,
+    "scope": "metadata availability audit, not completed cohort preparation or final training eligibility"
+  },
+  "synthetic_qualification": {
+    "actual_pyradiomics_used": true,
+    "common_grid_regression_count": 7,
+    "common_grid_regression_scope": "synthetic common-grid CPU/SimpleITK tests inside the H100 worker",
+    "cuda_model_checks": {
+      "F2": {
+        "device": "cuda:0",
+        "endpoint_shapes": {
+          "DFS": [
+            2,
+            3
+          ],
+          "DSS": [
+            2,
+            3
+          ],
+          "OS": [
+            2,
+            3
+          ]
+        },
+        "finite_backward": true,
+        "initialized_state_sha256": "3383883ddfea2633d2863cee687f2d789d99177ab3fd9ad8e2fc712688df57a5",
+        "parameters": 3907163
+      },
+      "F3": {
+        "device": "cuda:0",
+        "endpoint_shapes": {
+          "DFS": [
+            2,
+            3
+          ],
+          "DSS": [
+            2,
+            3
+          ],
+          "OS": [
+            2,
+            3
+          ]
+        },
+        "finite_backward": true,
+        "initialized_state_sha256": "3383883ddfea2633d2863cee687f2d789d99177ab3fd9ad8e2fc712688df57a5",
+        "parameters": 3907163
+      }
+    },
+    "cuda_model_scope": "tiny synthetic engineering fixture; not the full-backbone cohort pilot",
+    "status": "passed"
+  }
+}

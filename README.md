@@ -5,8 +5,10 @@ controlled F0–F4 fusion alternatives. The default is **F3, verified regions,
 expert contours**. These are implementation capabilities, not evidence of
 improved prognosis or clinical validity.
 
-Start with the [anatomical correspondence workflow](docs/anatomical_correspondence.md)
-for input requirements, migration, comparison settings, and remaining study gates.
+Start with the [implementation and validation guide](docs/implementation_and_validation.md)
+for design decisions, lessons from revisions, evidence levels, and remaining work.
+The [anatomical correspondence workflow](docs/anatomical_correspondence.md)
+provides input requirements, migration, and comparison settings.
 The principal comparison recipe disables both image-token dropout paths.
 It also requires every patient to use the same explicit common-grid policy.
 The preprocessor maps the full available source onto that physical lattice,
@@ -18,8 +20,20 @@ The [development sampling proposal](docs/common_grid_qualification.md) records
 the local input audit, candidate grid and extraction configuration. The local
 613-case inventory contains previously prepared inputs with missing original
 CT/RTSTRUCT paths and no qualified HU provenance. It is not a ready verified
-cohort. Actual PyRadiomics and training qualification on the authorized single
-Kubernetes H100 remain pending; no clinical results are claimed.
+cohort. On October 27, 2026, executable source `614d7fb` passed synthetic
+common-grid checks, actual PyRadiomics invariance checks, tiny F2/F3 CUDA
+forward/backward checks, and six representative-case larger-canvas comparisons
+inside a worker with one verified H100. Sampling and PyRadiomics ran on CPU;
+the tiny model checks ran on CUDA. Overlay review accepted only development geometry, retaining
+source-FOV truncation and small-region sampling limitations.
+
+The [dated evidence summary](docs/development_qualification_summary.json) binds
+those observations to source and receipt hashes. At its latest snapshot,
+**October 27, 2026, 9:03 PM CDT**, the separate single-H100 cohort worker was
+Running/Ready in input preparation; F2/F3 pilot training had not started.
+This is a historical snapshot, not a live status display. No completed cohort
+comparison or clinical result is claimed. Documentation-only updates do not
+change the frozen source used by that run.
 
 ## Contents
 
@@ -74,6 +88,9 @@ The default conda solve pins `pytorch=2.5.1=*cuda12.4*` plus
 `pytorch-cuda=12.4` from the `pytorch` and `nvidia` channels. This avoids
 CPU-only PyTorch builds that can satisfy looser version pins.
 The installer checks dependency imports and the CUDA build after installation.
+This generic installation recipe is separate from the recorded October 27 H100
+environment, which used a qualified container overlay with PyTorch 2.9.1+cu128;
+see the [validation guide](docs/implementation_and_validation.md).
 The monitored training launcher requires `setsid` from Linux `util-linux` so
 it can terminate the trainer and its workers together on failure or interruption.
 

@@ -218,8 +218,11 @@ configuration and software must still be qualified and frozen from acquisition
 quality, representative cases and compute constraints. Crop-dependent filtering
 or intensity normalization can introduce additional changes even on a common
 lattice and must be tested in the actual extraction environment. No setting is
-selected from outcomes. The current development candidate and pending single
-H100 checks are documented in [common-grid qualification](common_grid_qualification.md).
+selected from outcomes. The development candidate, completed source-bound H100
+checks, and remaining cohort/clinical gates are documented in
+[common-grid qualification](common_grid_qualification.md). The
+[implementation and validation guide](implementation_and_validation.md) separates
+those evidence levels and records the lessons from the revisions.
 
 ## Extract and bind radiomics
 

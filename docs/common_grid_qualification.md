@@ -2,11 +2,20 @@
 
 The common-grid implementation fixes the crop-dependent sampling mechanism.
 The numeric configuration below is a development candidate for the available
-local inputs, not a frozen clinical measurement policy. The authorized next
-execution is scientific validation and development training on **one Kubernetes
-H100** using the approved transferred repository and inputs. Actual extraction,
-training, GPU and cohort qualification results remain pending and must be
-reported from execution receipts.
+local inputs, not a frozen clinical measurement policy. The execution contract
+uses **one Kubernetes H100** with the approved transferred repository and inputs.
+
+As recorded on **October 27, 2026, at 9:03 PM CDT**, executable source `614d7fb`
+had completed seven synthetic sampling regressions inside an H100 worker,
+actual PyRadiomics measurement checks, tiny F2/F3 CUDA forward/backward checks,
+and six real representative larger-canvas comparisons. Development geometry
+review retained five cases with shell/source-FOV flags and one disappearing tiny
+nodal interior marked invalid. The subsequent cohort worker was Running/Ready
+in input preparation; paired training had not started. These dated observations
+are bound in the [evidence summary](development_qualification_summary.json).
+The [implementation and validation guide](implementation_and_validation.md)
+explains what each result establishes. Full-cohort qualification and clinical
+performance remain unestablished.
 
 ## Available input evidence
 
@@ -135,20 +144,25 @@ explicit diagnostic for the historical mechanism and cannot pass that gate.
 The gate establishes a software contract; it does not establish that the
 candidate policy is clinically adequate.
 
-## Qualification still required
+## Remaining cohort and clinical qualification
 
-Select representative cases without consulting outcomes: no nodal involvement
-with qualified negative annotation, spatially separated lesions, small regions,
-boundary lesions, varied acquisition spacing/protocols, and empty/invalid shells.
+For a principal clinical study, qualify representative coverage without consulting
+outcomes: no nodal involvement with qualified negative annotation, spatially
+separated lesions, small regions, boundary lesions, varied acquisition
+spacing/protocols, and empty/invalid shells.
 For each case, resolve annotation and intensity provenance, inspect overlays,
 audit volume/retention/disappearance/FOV facts and retain extraction failures.
-Known failed contours must remain distinguishable from known absence.
+Known failed contours must remain distinguishable from known absence. The six
+development representatives do not supply qualified negative nodal annotation,
+expert contour review, or protocol/institution coverage that the source delivery
+does not contain.
 
-On the approved single H100 execution, record the actual software and hardware,
-run the common-grid acceptance checks and the intended PyRadiomics extraction,
-and compare regional features under distant-lesion and integer crop/padding
-changes. Common lattice sampling does not by itself guarantee invariance under
-arbitrary crop-dependent filtering or intensity normalization. Model prediction
+The completed source-bound H100 checks record the actual software/hardware and
+measurement invariance evidence for this candidate configuration. Reuse them
+only while their source, configuration and environment bindings remain valid;
+changed keys need corresponding qualification. Common lattice sampling does not
+by itself guarantee invariance under arbitrary crop-dependent filtering or
+intensity normalization. Model prediction
 invariance is not required: additional nodal disease can legitimately change a
 patient-level prediction.
 
