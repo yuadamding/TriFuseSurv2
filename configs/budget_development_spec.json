@@ -198,6 +198,12 @@
       242
     ]
   },
+  "numerical_policy": {
+    "path": "configs/production_numerical_policy.json",
+    "policy_id": "production_fp16_dynamic_default_v1",
+    "sha256": "e0d01361ddcaa14b4176dae9ab07be8c67d6d2c446e1e5220dd01887802b9033",
+    "status": "selected_pending_full_path_qualification"
+  },
   "numerical_qualification": {
     "failed_numerical_run": "Engineering/numerical failure, not a plateau and not automatic evidence for a longer budget.",
     "required": [

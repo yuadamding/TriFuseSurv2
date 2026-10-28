@@ -81,6 +81,13 @@ source `21d5e03` submitted for the six-cell diagnostic. At October 28, 2026,
 12:35 PM CDT it was Running/Ready with one GPU request and a matched supervisor;
 the separate 12:36 PM CDT startup receipt verified one H100 80GB. Matrix results
 and the intended CT/Swin qualification remain pending at that snapshot.
+The [completed diagnostic report](docs/cuda_diagnostic_20261028.md) supersedes
+that snapshot: all six cells completed, cleanup was verified, and the unchanged
+production AMP policy was selected. Full CT/Swin survival-NLL qualification
+remains required before the fresh 12-epoch budget pair.
+The [explanatory study plan](docs/explanatory_study_plan.md) records the later
+fusion ladder and distinguishes it from routing and contour designs that still
+need a complete specification before held-out review.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

@@ -1,0 +1,204 @@
+{
+  "cell_counts": {
+    "numerical_failure": 2,
+    "numerically_passed": 4,
+    "unexpected_error": 0
+  },
+  "cells": [
+    {
+      "actual_updates": {
+        "attempted": 0,
+        "not_attempted": 1,
+        "skipped": 0,
+        "successful": 0
+      },
+      "cell": "original_fp16",
+      "cell_sha256": "2d1430fa3463d4951d9bce51d521af710637429eebfa6ae13011a674b18991af",
+      "forward_loss": 2.5332164764404297,
+      "gradient_tensor_count": 144,
+      "initial_identity": {
+        "inputs_sha256": "804031abcf3e2bc602138e4fa05666a1ff5755557e4d1211f15a51a7f74787e8",
+        "model_state_sha256": "35f8f9bd55e5160c2e1094ebe0fa0ac24151a9a3435515560e74e1f45e390b48",
+        "rng_state_sha256": "0e1289f0d2a1b766efe8461de07e48fa12055038c9f4fe366b7654339c2c89fb"
+      },
+      "initial_match": "matched",
+      "initial_scale": 65536.0,
+      "missing_gradient_count": 0,
+      "mode": "F2",
+      "nonfinite_gradient_tensors": 131,
+      "numerical_failures": [
+        "nonfinite_gradients"
+      ],
+      "post_update_loss_finite": null,
+      "status": "numerical_failure",
+      "updated_model_finite": null,
+      "updated_optimizer_finite": null
+    },
+    {
+      "actual_updates": {
+        "attempted": 1,
+        "not_attempted": 0,
+        "skipped": 0,
+        "successful": 1
+      },
+      "cell": "fp32",
+      "cell_sha256": "344d9813cb77219eaf6392369e5dc43465cf08460058c3ab864c54efd8e84cd2",
+      "forward_loss": 2.532146453857422,
+      "gradient_tensor_count": 144,
+      "initial_identity": {
+        "inputs_sha256": "804031abcf3e2bc602138e4fa05666a1ff5755557e4d1211f15a51a7f74787e8",
+        "model_state_sha256": "35f8f9bd55e5160c2e1094ebe0fa0ac24151a9a3435515560e74e1f45e390b48",
+        "rng_state_sha256": "0e1289f0d2a1b766efe8461de07e48fa12055038c9f4fe366b7654339c2c89fb"
+      },
+      "initial_match": "matched",
+      "initial_scale": null,
+      "missing_gradient_count": 0,
+      "mode": "F2",
+      "nonfinite_gradient_tensors": 0,
+      "numerical_failures": [],
+      "post_update_loss_finite": true,
+      "status": "numerically_passed",
+      "updated_model_finite": true,
+      "updated_optimizer_finite": true
+    },
+    {
+      "actual_updates": {
+        "attempted": 1,
+        "not_attempted": 0,
+        "skipped": 0,
+        "successful": 1
+      },
+      "cell": "fp16_scale1",
+      "cell_sha256": "04f81a705da75084da599b7c6b3d5e8d281082bf68534bc4b536b7da0d957349",
+      "forward_loss": 2.5332164764404297,
+      "gradient_tensor_count": 144,
+      "initial_identity": {
+        "inputs_sha256": "804031abcf3e2bc602138e4fa05666a1ff5755557e4d1211f15a51a7f74787e8",
+        "model_state_sha256": "35f8f9bd55e5160c2e1094ebe0fa0ac24151a9a3435515560e74e1f45e390b48",
+        "rng_state_sha256": "0e1289f0d2a1b766efe8461de07e48fa12055038c9f4fe366b7654339c2c89fb"
+      },
+      "initial_match": "matched",
+      "initial_scale": 1.0,
+      "missing_gradient_count": 0,
+      "mode": "F2",
+      "nonfinite_gradient_tensors": 0,
+      "numerical_failures": [],
+      "post_update_loss_finite": true,
+      "status": "numerically_passed",
+      "updated_model_finite": true,
+      "updated_optimizer_finite": true
+    },
+    {
+      "actual_updates": {
+        "attempted": 0,
+        "not_attempted": 1,
+        "skipped": 0,
+        "successful": 0
+      },
+      "cell": "original_fp16",
+      "cell_sha256": "bf8cae36863eedff43f14ddf2c6249b9d59df8f6fc9d8de89637b551f647875c",
+      "forward_loss": 3.014970302581787,
+      "gradient_tensor_count": 144,
+      "initial_identity": {
+        "inputs_sha256": "804031abcf3e2bc602138e4fa05666a1ff5755557e4d1211f15a51a7f74787e8",
+        "model_state_sha256": "35f8f9bd55e5160c2e1094ebe0fa0ac24151a9a3435515560e74e1f45e390b48",
+        "rng_state_sha256": "0e1289f0d2a1b766efe8461de07e48fa12055038c9f4fe366b7654339c2c89fb"
+      },
+      "initial_match": "matched",
+      "initial_scale": 65536.0,
+      "missing_gradient_count": 0,
+      "mode": "F3",
+      "nonfinite_gradient_tensors": 129,
+      "numerical_failures": [
+        "nonfinite_gradients"
+      ],
+      "post_update_loss_finite": null,
+      "status": "numerical_failure",
+      "updated_model_finite": null,
+      "updated_optimizer_finite": null
+    },
+    {
+      "actual_updates": {
+        "attempted": 1,
+        "not_attempted": 0,
+        "skipped": 0,
+        "successful": 1
+      },
+      "cell": "fp32",
+      "cell_sha256": "5c68f28e7cb7fb6d8261b3125ceb13c9ce3ca51e4047d6737254c1254278d289",
+      "forward_loss": 3.018923759460449,
+      "gradient_tensor_count": 144,
+      "initial_identity": {
+        "inputs_sha256": "804031abcf3e2bc602138e4fa05666a1ff5755557e4d1211f15a51a7f74787e8",
+        "model_state_sha256": "35f8f9bd55e5160c2e1094ebe0fa0ac24151a9a3435515560e74e1f45e390b48",
+        "rng_state_sha256": "0e1289f0d2a1b766efe8461de07e48fa12055038c9f4fe366b7654339c2c89fb"
+      },
+      "initial_match": "matched",
+      "initial_scale": null,
+      "missing_gradient_count": 0,
+      "mode": "F3",
+      "nonfinite_gradient_tensors": 0,
+      "numerical_failures": [],
+      "post_update_loss_finite": true,
+      "status": "numerically_passed",
+      "updated_model_finite": true,
+      "updated_optimizer_finite": true
+    },
+    {
+      "actual_updates": {
+        "attempted": 1,
+        "not_attempted": 0,
+        "skipped": 0,
+        "successful": 1
+      },
+      "cell": "fp16_scale1",
+      "cell_sha256": "066371f1ad49186fba1609552eefb4ef7bec59a3288995429a41c198492c38f4",
+      "forward_loss": 3.014970302581787,
+      "gradient_tensor_count": 144,
+      "initial_identity": {
+        "inputs_sha256": "804031abcf3e2bc602138e4fa05666a1ff5755557e4d1211f15a51a7f74787e8",
+        "model_state_sha256": "35f8f9bd55e5160c2e1094ebe0fa0ac24151a9a3435515560e74e1f45e390b48",
+        "rng_state_sha256": "0e1289f0d2a1b766efe8461de07e48fa12055038c9f4fe366b7654339c2c89fb"
+      },
+      "initial_match": "matched",
+      "initial_scale": 1.0,
+      "missing_gradient_count": 0,
+      "mode": "F3",
+      "nonfinite_gradient_tensors": 0,
+      "numerical_failures": [],
+      "post_update_loss_finite": true,
+      "status": "numerically_passed",
+      "updated_model_finite": true,
+      "updated_optimizer_finite": true
+    }
+  ],
+  "cleanup": {
+    "absence_reads": 2,
+    "sha256": "2b17f0c9ab067213c73d399b90edce34e15e081ffdd1d1b6e6a87a39b569e05b",
+    "status": "complete"
+  },
+  "controller_finished_at_utc": "2026-10-28T17:36:58.774485+00:00",
+  "controller_terminal_status": "complete",
+  "diagnostic_sha256": "9181159f05e3d78952b67d319d0889e796f19eb23359f60a0930c2389f06166d",
+  "diagnostic_software_source": "21d5e037aa305cefe4c6f1767c61478330df169d",
+  "diagnostic_status": "completed_diagnostic",
+  "evidence_collection": {
+    "run_relative_path": "study-20261028/amp-diagnostic-a-terminal-evidence/COLLECTION.json",
+    "sha256": "eb587680d029d1e872e530a2738af04ff5ea8f9e8e3b9559497e5fc8695240a1"
+  },
+  "historical_model_source": "30dfdec6c285ec5d813f0e6dc1ebc47cbf4ebf1d",
+  "interpretation": {
+    "F2": "pattern_consistent_with_scale_dependent_failure_not_root_cause_proof",
+    "F3": "pattern_consistent_with_scale_dependent_failure_not_root_cause_proof"
+  },
+  "mechanistic_disposition": "Genuine scale-dependent nonfinite backward gradients in the fixed token squared-logit fixture; zero missing gradients. Same FP16 forward loss at both scales; unit scale and FP32 each perform an actual update. First-observed nonfinite autograd nodes do not identify a faulty production operation.",
+  "no_optimizer_skip_or_backoff_in_failed_cells": true,
+  "original_fixture_sha256": "61cc6794a50ccb330427746d4c751b8535abe82772168d73a578f0c757b57e8a",
+  "production_inference": "Production CT/Swin survival-NLL behavior at its existing default scale remains to be qualified; no production numerical change is inferred.",
+  "qualification_passed": false,
+  "real_data_neural_training_invocations": 0,
+  "record_kind": "retained_cuda_diagnostic_result",
+  "schema_version": 1,
+  "scientific_acceptance": false,
+  "tensor_payloads": "Initial snapshots retained remotely and their byte hashes reverified; metadata/inventories collected without deserializing tensors."
+}

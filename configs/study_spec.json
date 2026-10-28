@@ -281,7 +281,7 @@
       "source": "UserconfirmedNSTAGEderivedfromT/N/M; appliesconsistentlytobaselinesandfutureF2/F3",
       "requires_semantic_encoder_whitelist": true
     },
-    "development_budget_spec_sha256": "226dc98dcef247e908d26fbba22652c28f0df292b1d2166f167980c4cc697597",
+    "development_budget_spec_sha256": "05540501623ee0df695138a01fde9573fa23953c98f5583ab67e943715c60a28",
     "clinical_type_policy": {
       "name": "approved_categorical_v1",
       "numeric": [
@@ -304,6 +304,12 @@
       "missing": "Separate reserved missing slot; categorical group presence false when all permitted inputs are missing.",
       "unseen": "Separate reserved unseen slot; nonempty unseen category remains present; no vocabulary refit.",
       "fit_scope": "training_patients_only"
+    },
+    "numerical_policy": {
+      "path": "configs/production_numerical_policy.json",
+      "sha256": "e0d01361ddcaa14b4176dae9ab07be8c67d6d2c446e1e5220dd01887802b9033",
+      "policy_id": "production_fp16_dynamic_default_v1",
+      "status": "selected_pending_full_path_qualification"
     }
   },
   "baselines": {

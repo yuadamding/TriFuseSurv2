@@ -64,6 +64,9 @@ def run(args) -> dict:
     specification_path = Path(args.study_spec)
     spec = json.loads(specification_path.read_text())
     evaluation, baseline = validate_protocol(spec, args.modes)
+    # Resolve confirmed types before CSV inference can merge literal codes or
+    # turn nonblank categories/invalid numeric literals such as "NA" into missing.
+    numeric, categorical = clinical_columns(baseline["clinical"], baseline["fusion_clinical_columns"])
     from trifusesurv2.evaluation.curves import write_survival_curves
     from trifusesurv2.evaluation.paired import outcome_inventory_sha256
     metadata_path = Path(args.metadata_csv)
@@ -72,7 +75,10 @@ def run(args) -> dict:
     splits, split_hashes = load_splits(Path(args.split_dir))
     if split_hashes != baseline["split_files_sha256"]:
         raise ValueError("Split checksums differ from the frozen baseline/neural cohort.")
-    frame = read_identifier_csv(metadata_path, identifier_columns=(args.id_column,), float_precision="round_trip")
+    frame = read_identifier_csv(
+        metadata_path, identifier_columns=(args.id_column,), float_precision="round_trip",
+        converters={name: lambda value: value for name in numeric + categorical},
+    )
     identifier = resolve_identifier_column(frame.columns, args.id_column)
     if frame[identifier].isna().any() or frame[identifier].duplicated().any():
         raise ValueError("Baseline metadata contains missing or duplicate patient IDs.")
@@ -90,7 +96,6 @@ def run(args) -> dict:
     outcome_inventory["endpoint"] = evaluation["endpoint"]
     if outcome_inventory_sha256(outcome_inventory, evaluation["endpoint"]) != evaluation["outcome_inventory_sha256"]:
         raise ValueError("Baseline outcome inventory differs from the frozen evaluator cohort and censoring reference.")
-    numeric, categorical = clinical_columns(baseline["clinical"], baseline["fusion_clinical_columns"])
     geometry_identity = None
     if "C1" in args.modes:
         if not args.manifest_inventory:
@@ -129,6 +134,14 @@ def run(args) -> dict:
             "dependencies": dependencies, "metadata_sha256": sha256_file(metadata_path),
             "split_files_sha256": split_hashes, "manifest_inventory_sha256": geometry_identity,
             "selection": selection, "clinical_policy": baseline["clinical"],
+            "clinical_csv_ingestion": {
+                "categorical_columns": categorical,
+                "categorical_conversion": "verbatim strings before pandas numeric/NA inference",
+                "categorical_value_policy": preprocessor.to_dict()["categorical_value_policy"],
+                "numeric_columns": numeric,
+                "numeric_conversion": "verbatim strings before existing finite numeric validation",
+                "float_precision": "round_trip",
+            },
             "geometry_features": list(GEOMETRY_COLUMNS) if mode == "C1" else [],
             "volume_transform": "log1p(volume_mm3)" if mode == "C1" else None,
             "node_instances": "excluded; node_count and largest_node_volume are unqualified",

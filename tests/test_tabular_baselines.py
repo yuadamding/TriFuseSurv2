@@ -1,5 +1,6 @@
 """Fabricated engineering cases; these do not qualify any clinical cohort."""
 from copy import deepcopy
+import csv
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -58,6 +59,107 @@ def confirmed_spec():
 
 
 class TabularBaselineTests(unittest.TestCase):
+    def test_raw_csv_runner_preserves_categories_and_fits_only_training_vocabulary(self):
+        train, val, test = synthetic_frames()
+        categorical = ["PATHOLOGY", "SEX", "RACE", "T", "N", "M", "KFCF", "SMOKE", "ALCOHOL", "HPV"]
+        literals = ["NA", "nd", "ND", "01", "1", "1.0", "", "   ", " nd ", "__missing__", "__unseen__"]
+        rows = []
+        for split, frame in (("train", train), ("val", val), ("test", test)):
+            for index, (pid, row) in enumerate(frame.iterrows()):
+                cells = {"Patient_ID": pid, "AGE": row["AGE"], "OS.TIME": row["OS.TIME"],
+                         "OS.EVENT": row["OS.EVENT"], "NSTAGE": "excluded-stage", "TX": "excluded-treatment"}
+                for offset, name in enumerate(categorical):
+                    cells[name] = literals[(index + offset) % len(literals)]
+                if split != "train":
+                    cells.update({name: split + "-only-category" for name in categorical})
+                    cells["AGE"] += 20
+                # Keep this entire source column numeric-looking, including
+                # held-out rows, so pandas would otherwise merge 01/1/1.0.
+                cells["KFCF"] = (["01", "1", "1.0", "2", ""][index % 5] if split == "train"
+                                  else "3" if split == "val" else "4")
+                rows.append(cells)
+        rows[0]["AGE"], rows[1]["AGE"] = "", " \t"
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary); splitdir = root / "splits"; splitdir.mkdir()
+            for split, frame in (("train", train), ("val", val), ("test", test)):
+                (splitdir / f"{split}_ids.txt").write_text("\n".join(frame.index) + "\n")
+            metadata = root / "literal.csv"; spec_path = root / "spec.json"
+            def write_csv():
+                with metadata.open("w", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                    writer.writeheader(); writer.writerows(rows)
+            write_csv()
+            spec = confirmed_spec()
+            spec["baselines"]["clinical"]["categorical"] = categorical
+            spec["baselines"]["fusion_clinical_columns"] = ["AGE", *categorical, "NSTAGE"]
+            spec["baselines"]["split_files_sha256"] = load_splits(splitdir)[1]
+            spec["baselines"]["metadata_sha256"] = sha256_file(metadata)
+            outcomes = pd.DataFrame(rows)[["Patient_ID", "OS.TIME", "OS.EVENT"]].rename(
+                columns={"OS.TIME": "observed_time", "OS.EVENT": "event"})
+            outcomes["endpoint"] = "OS"
+            outcomes["split"] = ["train"] * len(train) + ["val"] * len(val) + ["test"] * len(test)
+            spec["evaluation"]["outcome_inventory_sha256"] = outcome_inventory_sha256(outcomes, "OS")
+            spec_path.write_text(json.dumps(spec))
+            fitted, read_frames = [], []
+            def capture(training, validation, **kwargs):
+                read_frames.extend([training.copy(), validation.copy()])
+                result = fit_cox_baseline(training, validation, **kwargs)
+                fitted.append(result[1])
+                return result
+            argv = ["--study-spec", str(spec_path), "--metadata-csv", str(metadata),
+                    "--split-dir", str(splitdir), "--modes", "C0", "--out-dir", str(root / "out")]
+            with patch("trifusesurv2.baselines.runner.fit_cox_baseline", side_effect=capture):
+                main(argv)
+            encoder = fitted[0]
+            for name in categorical:
+                with self.subTest(column=name):
+                    expected = sorted({row[name] for row in rows[:len(train)] if row[name].strip()})
+                    self.assertEqual(encoder.categories[name], expected)
+                    self.assertEqual(read_frames[0][name].tolist(), [row[name] for row in rows[:len(train)]])
+            self.assertEqual(encoder.categories["KFCF"], ["01", "1", "1.0", "2"])
+            self.assertEqual(encoder.numeric, ["AGE"])
+            self.assertEqual(encoder.categorical, categorical)
+            self.assertFalse(set(encoder.categories) & {"NSTAGE", "TX", "T_RAW", "N_RAW", "M_RAW"})
+            expected_age = train.AGE.copy(); expected_age.iloc[:2] = np.nan
+            self.assertAlmostEqual(encoder.parameters["AGE"]["median"], expected_age.median())
+            self.assertAlmostEqual(encoder.parameters["AGE"]["mean"], expected_age.fillna(expected_age.median()).mean())
+            self.assertEqual(encoder.parameters["AGE"]["observed_training_count"], len(train) - 2)
+            self.assertEqual(read_frames[0]["AGE"].tolist(), [str(row["AGE"]) for row in rows[:len(train)]])
+            for name in ("OS.TIME", "OS.EVENT"):
+                self.assertTrue(pd.api.types.is_numeric_dtype(read_frames[0][name]))
+            before = deepcopy(encoder.to_dict())
+            encoder.transform(read_frames[1])
+            raw, names = encoder._raw_transform(read_frames[1])
+            self.assertTrue((raw[:, names.index("HPV::unseen")] == 1).all())
+            self.assertTrue((raw[:, names.index("HPV::missing")] == 0).all())
+            self.assertTrue((raw[:, names.index("KFCF::unseen")] == 1).all())
+            self.assertEqual(encoder.to_dict(), before)
+            checkpoint = json.loads((root / "out/C0/selected_model.json").read_text())
+            contract = json.loads((root / "out/C0/model_contract.json").read_text())
+            self.assertEqual(checkpoint["preprocessor"], before)
+            self.assertEqual(contract["clinical_csv_ingestion"]["categorical_columns"], categorical)
+            self.assertEqual(contract["clinical_csv_ingestion"]["categorical_value_policy"],
+                             before["categorical_value_policy"])
+            # Preserve invalid numeric literals until the existing strict guard,
+            # rather than allowing pandas' NA inference to hide them as blanks.
+            for index, value in enumerate(("not-a-number", "NA", "NaN")):
+                with self.subTest(invalid_raw_age=value):
+                    rows[0]["AGE"] = value
+                    write_csv(); spec["baselines"]["metadata_sha256"] = sha256_file(metadata)
+                    spec_path.write_text(json.dumps(spec)); argv[-1] = str(root / f"bad-age-{index}")
+                    with self.assertRaisesRegex(ValueError, "numeric coding in AGE"):
+                        main(argv)
+
+    def test_actual_missing_values_and_marker_like_categories_remain_distinct(self):
+        frame = pd.DataFrame({"HPV": [None, np.nan, pd.NA, "", " \t", "NA", "__missing__", "__unseen__", " NA "]})
+        encoder = TabularPreprocessor([], ["HPV"]).fit(frame)
+        raw, names = encoder._raw_transform(frame)
+        self.assertEqual(encoder.categories["HPV"], [" NA ", "NA", "__missing__", "__unseen__"])
+        np.testing.assert_array_equal(raw[:, names.index("HPV::missing")], [1, 1, 1, 1, 1, 0, 0, 0, 0])
+        self.assertEqual(raw[7, names.index('HPV::level="__unseen__"')], 1)
+        self.assertEqual(raw[7, names.index("HPV::unseen")], 0)
+        self.assertEqual(len(names), len(set(names)))
+
     def test_train_only_preprocessing_and_literal_categories(self):
         train = pd.DataFrame({"AGE": [10., 30., np.nan], "SEX": ["M", "F", None]})
         encoder = TabularPreprocessor(["AGE"], ["SEX"]).fit(train)

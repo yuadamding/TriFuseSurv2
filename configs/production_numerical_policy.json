@@ -1,0 +1,78 @@
+{
+  "accumulation_and_update": {
+    "actual_optimizer_call_observation": "register_step_post_hook",
+    "batches_per_effective_batch": 8,
+    "clipping": "unchanged trainer.perform_optimizer_update on unscaled gradients",
+    "gradient_observation": "after accumulation, before clipping",
+    "scale_constant_within_accumulation": true,
+    "skipped_update_accounting": "separate attempted, successful and skipped; no skipped/lost exposure silently accepted for budget adequacy",
+    "unscale_calls_per_opportunity": 1
+  },
+  "applies_equally_to": [
+    "F2",
+    "F3"
+  ],
+  "autocast": {
+    "device_type": "cuda",
+    "dtype": "torch.float16",
+    "enabled": true,
+    "selection": "trainer.make_amp with enabled=True"
+  },
+  "backend_effective_policy": "Call the unchanged trainer.set_seed and configure_cuda_performance with bound settings. Retain effective backend observations for both modes; compare with the same configured training path, not diagnostic defaults.",
+  "backend_requested_settings": {
+    "allow_tf32": true,
+    "deterministic": true,
+    "matmul_precision": "high"
+  },
+  "decision": "retain_existing_production_make_amp_behavior",
+  "decision_at_utc": "2026-10-28T18:17:32.983738+00:00",
+  "decision_rationale": "The retained squared-logit fixture has a scale-dependent backward failure under matched conditions. This does not establish that production survival NLL fails. Qualify the existing full trainer policy first; preserve historical numerical failures and do not substitute scale1 or BF16 without production-path evidence.",
+  "diagnostic_evidence": {
+    "raw_report_sha256": "9181159f05e3d78952b67d319d0889e796f19eb23359f60a0930c2389f06166d",
+    "report": "docs/retained_cuda_diagnostic_result.json",
+    "sha256": "556b08324f3f95e555dacde1caf52c6492cd300e29841044f6038aa9bbbb82d2"
+  },
+  "failure_handling": "If intended-policy qualification fails, preserve it with zero real-data training invocations, diagnose the specific failure and bind any revised policy to a fresh attempt. No automatic retry or quiet precision/scale change.",
+  "gradient_scaler": {
+    "backoff_factor": 0.5,
+    "class": "torch.amp.GradScaler",
+    "device": "cuda",
+    "enabled": true,
+    "growth_factor": 2.0,
+    "growth_interval": 2000,
+    "init_scale": 65536.0,
+    "initial_scale_override": null
+  },
+  "policy_id": "production_fp16_dynamic_default_v1",
+  "production_numerical_behavior_changed": false,
+  "qualification": {
+    "amp_init_scale_override": null,
+    "clinical_type_policy": "approved_categorical_v1",
+    "fabricated_batches_each": 9,
+    "gradient_accumulation": 8,
+    "modes": [
+      "F2",
+      "F3"
+    ],
+    "precision": "trainer-default",
+    "profile": "production",
+    "release_real_data_training_only_after_both_pass": true,
+    "required_actual_updates_each": 2,
+    "required_finite_gradients_state_and_post_update_survival_nll": true,
+    "required_full_partial_boundaries": true,
+    "required_skips_each": 0,
+    "script": "scripts/qualify_swin_survival.py"
+  },
+  "schema_version": 1,
+  "source_bindings": {
+    "qualifier_file_sha256": "0d1648e16b6c25a46ea1486258b9505ba7670492e48a67f163d4bfb9bbbd6445",
+    "trainer_file_sha256": "d6e9d4caaf959f33942c0c4856e7ff2769e0536c72be468a8de2c0384d3570c2",
+    "training_function_ast_sha256": {
+      "configure_cuda_performance": "07ee50de830819d97138be563b57a1b275c9f075270ace8f011a62f16c9d3458",
+      "make_amp": "56150984fc1cef0818db7e9ae766701f57006ae6cddc7cd79aedf2606e2eb0a7",
+      "perform_optimizer_update": "3fdf185f6c3114e0e61593daa5330a398f153fa351d496e1c37c5953ec005e89",
+      "train_one_epoch": "9b95fb8530aa06a54d15284ee3c61e37c0a0470460fdd795c8cfd8285a9b53cf"
+    }
+  },
+  "status": "selected_pending_full_path_qualification"
+}

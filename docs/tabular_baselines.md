@@ -28,6 +28,12 @@ The same-image dependency/reference fixtures must pass before any cohort fitting
 The approved institutional Job reserves one H100; penalized Cox fits and their
 reference evaluation run on CPU. The existing radiomics environment is preserved.
 
+That published package remains immutable. Its `aeb93bc` reader predates the
+literal-category ingestion correction described below and must not be used for
+C0/C1 fitting. A new package must bind the corrected source and verify its actual
+CSV-to-feature path before fitting; this software correction does not retroactively
+qualify the old package or change the frozen statistical recipe.
+
 Local fabricated producer checks exercise both a completed 2,000-resample
 evaluation and the predefined unsupported-metric path. These are software checks;
 the real-data worker run remains deferred under the updated study ordering.
@@ -48,6 +54,19 @@ categorical, and TX excluded. Raw categories are preserved; category labels
 and a staging edition are not inferred. The user subsequently confirmed NSTAGE
 is derived from T/N/M. The prospective baseline keeps categorical T, N and M and omits only the derived NSTAGE field.
 This resolves the nonredundant staging policy without recoding stage values.
+
+The runner resolves this confirmed type policy **before reading metadata**.
+Declared categorical columns bypass pandas numeric and missing-value inference:
+`NA`, `nd`, `ND`, `01`, `1`, and `1.0` remain distinct literal strings. Empty or
+whitespace-only cells are missing; surrounding whitespace on nonblank strings is
+preserved, matching the neural `approved_categorical_v1` policy. No category text
+is reserved as a missing/unseen marker. AGE is also read verbatim before the
+existing strict numeric validator: blanks remain missing, while nonblank `NA`
+or `NaN` literals are rejected instead of being silently imputed. Endpoint
+ingestion and numeric validation are unchanged. The model contract records the CSV
+handling, and the serialized preprocessor records the literal-category policy.
+Prepared CSV views must preserve the source cells too: this reader cannot recover
+distinctions that an earlier conversion already erased.
 
 Every column in `baselines.fusion_clinical_columns` must be selected or accounted
 for by confirmed staging redundancy. Establish that relationship before freezing
@@ -211,5 +230,8 @@ baselines three times and label those copies as training-seed variation.
 The synthetic tests cover held-out preprocessing leakage, test-outcome changes
 leaving selection unchanged, literal IDs/split overlap, confirmed clinical
 policies, absent versus unavailable geometry, reference-library scoring,
-checkpoint prediction reconstruction and unsupported horizons. These are
+checkpoint prediction reconstruction and unsupported horizons. A raw-CSV runner
+regression fits a fabricated Cox baseline and verifies all ten categorical
+columns, literal spellings, blanks, marker-like strings, validation-only unseen
+values, numeric AGE validation and the saved training-only vocabulary. These are
 engineering checks, not clinical model performance or scientific acceptance.

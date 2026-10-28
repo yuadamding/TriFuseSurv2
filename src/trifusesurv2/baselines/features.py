@@ -22,6 +22,13 @@ GEOMETRY_COLUMNS = (
     "ln_left_flag", "ln_right_flag", "ln_bilateral_flag",
 )
 GEOMETRY_STATES = ("pt_annotation_state", "ln_annotation_state")
+CATEGORICAL_VALUE_POLICY = {
+    "normalization": "preserve_nonblank_strings_verbatim",
+    "missing_values": "None, pandas/NumPy missing values, empty or whitespace-only strings",
+    "missing_and_unseen": "separate indicators; no reserved category strings",
+    "vocabulary_fit_scope": "training_only",
+    "constant_training_columns": "drop, including constant missing/unseen indicators",
+}
 
 
 def sha256_file(path: str | Path) -> str:
@@ -136,7 +143,9 @@ def _numeric(series: pd.Series, name: str) -> np.ndarray:
 
 
 def _category(value) -> str | None:
-    return None if pd.isna(value) or not str(value).strip() else str(value).strip()
+    # Match the approved neural literal-category policy. Strip only to detect
+    # blank cells, never to normalize a nonblank category.
+    return None if pd.isna(value) or not str(value).strip() else str(value)
 
 
 class TabularPreprocessor:
@@ -210,4 +219,5 @@ class TabularPreprocessor:
         return {"numeric": self.numeric, "categorical": self.categorical,
                 "parameters": self.parameters, "categories": self.categories,
                 "keep": self.keep, "feature_names": self.feature_names,
-                "fit_scope": "training_only", "numeric_imputation": "training_median"}
+                "fit_scope": "training_only", "numeric_imputation": "training_median",
+                "categorical_value_policy": dict(CATEGORICAL_VALUE_POLICY)}
