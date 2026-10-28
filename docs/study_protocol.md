@@ -9,12 +9,15 @@ The endpoint CSV supplied by the user contains 519 records. Every literal
 patient ID and numerical OS time/event pair matches the retained eligible
 delivery. The original 365/77/77 training/validation/test assignment is unchanged.
 The user confirmed **diagnosis** as the time origin, **days** as the unit,
-**1 = death**, and censoring described as **"till now"**. For event 0, use the
+**1 = death from any cause**, and censoring described as **"till now"**. For event 0, use the
 supplied OS.TIME as the right-censored duration from diagnosis. Preserve the
 hash-bound durations unchanged. No explicit calendar cutoff was supplied;
 "now" is not converted to the conversation date and does not cause follow-up
 to increase with the system clock. The definition is user-confirmed; the CSV
 contains no individual diagnosis/follow-up dates for independent date validation.
+The user directed proceeding without further source ascertainment, codebook or
+staging-edition details; these remain documented limitations rather than
+additional execution gates.
 Source and split hashes are in the specification and outcome reconciliation
 receipt. The separate full-cohort accounting includes 613 prepared patients,
 of whom 94 have both OS fields missing.
@@ -83,6 +86,24 @@ and observed events in both training and validation. If 730 days becomes
 unsupported because a justified cohort correction changes development support,
 propose 365 in a new specification **before** fitting/scoring. The software never
 silently shortens horizons or extrapolates follow-up/censoring support.
+
+## Primary conclusion and worthwhile effect
+
+The primary estimand is the mean paired F3-minus-F2 difference in **IBS over
+210–730 days**, across all three prespecified seeds. Negative values favor F3.
+The user selected **0.005 absolute IBS reduction** as the minimum scientifically
+worthwhile effect: the point-estimate threshold is **deltaIBS <= -0.005**. This
+supersedes the earlier 0.01 proposal before new comparison fits or predictions.
+
+Report the point estimate and conditional paired patient-bootstrap 95% interval
+separately. An upper interval bound below zero supports improvement; an upper
+bound at or below -0.005 supports an effect at least as large as the declared
+worthwhile threshold. A worthwhile point estimate with an interval crossing
+zero remains uncertain. Report every seed and its spread regardless of sign.
+IPCW concordance at the fixed 730-day truncation is key secondary; supported
+horizon-specific Brier scores and descriptive calibration are supporting.
+This IBS effect threshold is distinct from the validation-NLL adequacy rule
+used to determine the training budget.
 
 ## Estimation, exports and uncertainty
 
@@ -161,8 +182,9 @@ early consistency objective is included in this implementation.
 The remaining gate for the substantive neural comparison is a justified
 common training budget. Computational development cohort review is complete
 for the unchanged 519-case inventory; anatomical/clinical qualification remains
-unestablished. The C0/C1 baseline protocol can freeze independently of that
-neural budget.
+unestablished. The C0/C1 recipe is frozen separately. Under the updated execution order, its
+Job remains deferred until budget determination and final main-protocol gates
+close. The prepared package and dependency layer are retained for reuse.
 The two-epoch pilot passed its 18 required engineering criteria, and its
 controller receipt mismatch was reconciled separately. Endpoint semantics, raw clinical encoding and
 the nonredundant staging representation have been confirmed. No baseline

@@ -37,17 +37,28 @@ metadata reconciliation completed on October 28, 2026, 8:54 AM CDT.
 
 The next [OS study protocol](docs/study_protocol.md) and
 [specification](configs/study_spec.json) preserve the architecture and split.
-The user confirmed OS from diagnosis, days, death=1, and fixed delivered
-censoring durations. Clinical encoding is approved; NSTAGE is omitted from
-the baseline because the user confirmed it is derived from retained T/N/M.
+The user confirmed OS from diagnosis in days, event 1 as death from any cause,
+and fixed delivered censoring durations. Clinical encoding is approved;
+prospective neural models and baselines omit NSTAGE because the user confirmed
+it is derived from retained T/N/M.
 Computational cohort review is complete for development use. The principal
 specification remains draft until the common neural training budget is justified;
-C0/C1 baseline preparation proceeds under a separate frozen protocol. New
+C0/C1 has a separate frozen recipe, with execution deferred behind training-
+budget determination and final study gates. New
 [pilot/cohort auditors](docs/acceptance_reports.md),
 [paired evaluator and survival exports](docs/paired_evaluation.md), and
 [C0/C1 baselines](docs/tabular_baselines.md) provide the prospective checks.
+Their [separate frozen protocol](configs/baseline_study_spec.json) is prepared
+for execution after the development-budget experiment and final study freeze.
 Synthetic software tests and metadata accounting are separate from completed
 H100 training and scientific results.
+The [development-budget protocol](docs/budget_development.md) starts with a
+separate 12-epoch pair on training/validation data only. The new
+`--development-only` trainer path preserves reserved test IDs while excluding
+their records, datasets, evaluations and exports. The primary scientific metric
+is mean paired deltaIBS over 210–730 days, with the user-defined worthwhile
+reduction of 0.005. The full synthetic suite passes 260 tests and 176 subtests.
+
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued
 cases, while preserving their original pending anatomical-review fields. The unchanged pilot

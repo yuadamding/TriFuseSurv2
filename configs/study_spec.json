@@ -12,15 +12,17 @@
     "time_column": "OS.TIME",
     "event_column": "OS.EVENT",
     "time_unit": "days",
-    "event_definition": "1 = death; 0 = right-censored",
+    "event_definition": "1 = death from any cause; 0 = right-censored",
     "time_origin": "diagnosis",
     "censoring_rule": "For OS.EVENT=0, right-censor at the supplied OS.TIME from diagnosis. The user describes follow-up as \"censoring till now\"; the hash-bound supplied durations remain unchanged.",
-    "confirmation_source": "User responses: \"Unit in days, 1 as decease\" and \"diagnosis, censoring till now\".",
+    "confirmation_source": "User responses: \"Unit in days, 1 as decease\" and \"diagnosis, censoring till now\". User subsequently confirmed \"OS death from any cause\" and directed proceeding without the remaining source details.",
     "source_csv_sha256": "0ad9f578d63cb8e1968f9b6360a26c6f86f5a6fdc1c17b715cfdff2fffd6cc5e",
     "confirmation_date_local": "2026-10-28",
     "administrative_cutoff_date": null,
     "administrative_cutoff_note": "No explicit calendar cutoff was supplied. Do not substitute the conversation date or extend observed durations using the system clock.",
-    "duration_policy": "Use OS.TIME as supplied in the frozen source CSV; no recalculation or follow-up extension."
+    "duration_policy": "Use OS.TIME as supplied in the frozen source CSV; no recalculation or follow-up extension.",
+    "all_cause_mortality": true,
+    "ascertainment_source_detail": "Not supplied; user directed proceeding without further clarification."
   },
   "cohort": {
     "status": "qualified_for_development",
@@ -166,7 +168,7 @@
       "ties": "best.pt retains first strict minimum; final export uses fixed candidate priority last, ema, swa, best (only enabled candidates), matching pilot"
     },
     "common_epochs": null,
-    "budget_status": "await pilot runtime and development learning-curve evidence; no arbitrary epoch count",
+    "budget_status": "Initial12-epoch paired development assessment is designed; common substantive cap awaits full-precision learning curves, scoped runtime and numerical qualification.",
     "pilot_is_substantive_training": false,
     "paired_shared_settings": {
       "amp": true,
@@ -176,7 +178,6 @@
       "batch_size": 1,
       "clinical_cols": [
         "PATHOLOGY",
-        "NSTAGE",
         "AGE",
         "SEX",
         "RACE",
@@ -265,7 +266,20 @@
       "pilot_report_sha256": "ea7fea33961ec8f871e6c58cd5345fc09c4e920e0c927bf6eb9eed9320893309",
       "metadata_reconciliation_sha256": "5427b7a2dd71b5240fea7af71e3de2d9d831e2e117d6806f59678934df060a11",
       "does_not_establish_convergence": true
-    }
+    },
+    "clinical_column_policy": {
+      "excluded_redundant": [
+        "NSTAGE"
+      ],
+      "represented_by": [
+        "T",
+        "N",
+        "M"
+      ],
+      "source": "UserconfirmedNSTAGEderivedfromT/N/M; appliesconsistentlytobaselinesandfutureF2/F3",
+      "requires_semantic_encoder_whitelist": true
+    },
+    "development_budget_spec_sha256": "89306388b7fb5d4d594c7e4202a60ff0258ca282627ad92dded6a528542dd7d5"
   },
   "baselines": {
     "status": "ready_for_separate_baseline_freeze",
@@ -324,7 +338,8 @@
       "encoding_status": "approved",
       "staging_relationship_status": "confirmed",
       "staging_edition": null,
-      "nstage_meaning": "derived from T/N/M (user confirmed)"
+      "nstage_meaning": "derived from T/N/M (user confirmed)",
+      "unspecified_source_details_policy": "Retain approved raw categories/prediction-time policy without semantic recoding; user directed proceeding without further source-detail questions. Unspecified staging edition, code-label meanings and source ascertainment remain documented limitations, not additional execution gates."
     },
     "geometry": {
       "accepted_limitations": [
@@ -356,12 +371,43 @@
     "ties": "efron",
     "n_iter": 100,
     "tol": 1e-09,
-    "outcome_inventory_sha256": "838c79f9687a442b3dbfd8e66ba4e11e076171a0baebdf0877695be45a42d15c"
+    "outcome_inventory_sha256": "838c79f9687a442b3dbfd8e66ba4e11e076171a0baebdf0877695be45a42d15c",
+    "execution_status": "deferred_until_training_budget_and_final_main_protocol_gates_close"
   },
   "later_stages": {
     "F0_F1_F4": "after interpretable adequately trained F2/F3 core",
     "F5": "only if required by the final attention claim",
     "outer_folds": "separate resource-bound proposal; no automatic 30-fit expansion",
-    "contour_robustness": "after core; synchronized CT masks, radiomics and geometry for clean/perturbed pairs; augmentation and consistency isolated"
-  }
+    "contour_robustness": "after core; synchronized CT masks, radiomics and geometry for clean/perturbed pairs; augmentation and consistency isolated",
+    "mismatched_sparse_routing": "After an interpretable core: preserve real token identities, features, availability and effective per-patient information access while changing only prespecified routing edges; record cases lacking a valid permutation."
+  },
+  "analysis": {
+    "primary_comparison": "F3 minus F2, averaged across paired seeds 42,142,242",
+    "primary_metric": "IBS over 210-730 days",
+    "primary_metric_key": "ibs",
+    "favorable_direction": "negative",
+    "minimum_scientifically_worthwhile_absolute_reduction": 0.005,
+    "worthwhile_delta_threshold": -0.005,
+    "threshold_confirmation": "User: use 0.005 as the minimum scientifically worthwhile effect",
+    "threshold_supersedes_previous_absolute_reduction": 0.01,
+    "key_secondary_metric": "training-reference IPCW concordance at tau=730 days using risk=1-S(730)",
+    "supporting_metrics": [
+      "Brier score at365,730,1095 days where supported",
+      "Descriptive censoring-aware calibration"
+    ],
+    "interpretation": {
+      "worthwhile_point_estimate": "Mean paired deltaIBS <= -0.005",
+      "evidence_for_improvement": "Upper bound of conditional patient-bootstrap95%CI <0",
+      "evidence_for_at_least_worthwhile_effect": "Upper bound of conditional patient-bootstrap95%CI <= -0.005",
+      "otherwise": "Report the estimate, interval, seedspread and uncertainty; no best-seed or significance-only conclusion"
+    },
+    "uncertainty_scope": "Patient resampling conditional on fixed fitted models and training censoring reference; training seed variation separate"
+  },
+  "execution_sequence": [
+    "close_checkpoint_and_study_qualification",
+    "matched_F2_F3_development_budget_experiment",
+    "freeze_common_training_cap_and_complete_analysis_specification",
+    "two_deterministic_baselines_and_all_six_substantive_neural_fits",
+    "mechanism_controls_then_synchronized_contour_robustness"
+  ]
 }

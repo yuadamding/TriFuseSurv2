@@ -351,6 +351,32 @@ def _read_id_list(path: str) -> List[str]:
     return [x for x in ids if x]
 
 
+def read_development_metadata(path: str, id_col: str, split: Dict[str, List[str]]) -> pd.DataFrame:
+    """Keep train/validation records before interpreting any endpoint or feature.
+
+    CSV bytes and literal identifiers can establish input identity. Held-out
+    records are never passed to pandas type inference, outcome validation,
+    image inspection, encoders, datasets, or metric calculations.
+    """
+    _assert_split_disjoint(0, split)
+    selected = set(split['train']) | set(split['val'])
+    records, seen = [], set()
+    with open(path, newline='') as handle:
+        reader = csv.DictReader(handle)
+        identifier = resolve_identifier_column(reader.fieldnames or [], id_col)
+        for row in reader:
+            pid = require_identifier(row.get(identifier), name=identifier)
+            if pid in seen:
+                raise ValueError(f'Duplicate metadata patient identifier: {pid}')
+            seen.add(pid)
+            if pid in selected:
+                records.append(row)
+        columns = reader.fieldnames
+    if not records:
+        raise ValueError('Development metadata has no training/validation records')
+    return pd.DataFrame.from_records(records, columns=columns)
+
+
 def load_precomputed_splits(cv_folds: int, *, splits_dir: str = "", splits_csv: str = "") -> Dict[int, Dict[str, List[str]]]:
     if bool(splits_dir) == bool(splits_csv):
         raise ValueError("Provide exactly one of --splits_dir or --splits_csv.")
@@ -1324,6 +1350,8 @@ def export_survival_curves(
     contract_path, weights, autocast_ctx, teacher_force_alpha, output_path,
 ):
     """Export selected weights after training; never alter selection or fitting."""
+    if bool(getattr(args, 'development_only', False)) and split == 'test':
+        raise ValueError('Development-only execution forbids held-out test curve export.')
     from trifusesurv2.evaluation.curves import file_sha256, hazards_to_survival, write_survival_curves
 
     model.eval()
@@ -1425,6 +1453,67 @@ def select_export_candidate(candidates: Dict[str, Dict[str, Any]], metric_name: 
     ]
     finite_scored = [(score, suffix) for score, suffix in scored if np.isfinite(score)]
     return max(finite_scored, key=lambda item: item[0])[1] if finite_scored else "last"
+
+
+def finalize_development_fold(model, unwrapped, val_loader, val_frame, device, *, args, fold, fold_dir,
+                              ckpt_last, ckpt_best, contract_path, ema, swa, autocast_ctx,
+                              num_time_bins, train_max_time_days, reserved_test_ids):
+    """Select weights using validation only; this interface has no test data."""
+    teacher_force = _survival_teacher_force_alpha(_teacher_force_alpha_for_epoch(int(args.epochs), args), args)
+
+    def validation():
+        return evaluate_model(model, val_loader, device, endpoint=str(args.endpoint),
+            risk_horizon_days=float(args.risk_horizon_days), time_bin_width_days=float(args.time_bin_width_days),
+            eval_times_days=args.auc_times_days, dca_thresholds=args.dca_thresholds,
+            autocast_ctx=autocast_ctx, teacher_force_alpha=float(teacher_force))
+
+    candidates = {'last': {'val': validation(), 'checkpoint': 'last'}}
+    if ema is not None:
+        with ema.apply_to(unwrapped):
+            candidates['ema'] = {'val': validation(), 'checkpoint': 'last'}
+    if swa is not None and swa.n_averaged > 0:
+        with swa.apply_to(unwrapped):
+            candidates['swa'] = {'val': validation(), 'checkpoint': 'last'}
+    if load_model_state_only(ckpt_best, model):
+        candidates['best'] = {'val': validation(), 'checkpoint': 'best'}
+    selected = select_export_candidate(candidates, str(args.report_metric), str(args.export_policy))
+    selected_metric = report_metric_value(candidates[selected]['val'], str(args.report_metric))
+    if not np.isfinite(selected_metric):
+        raise RuntimeError('Development checkpoint selection has no finite validation metric.')
+    if (not _DDP_INITIALIZED) or _is_main_process():
+        checkpoint = ckpt_best if candidates[selected]['checkpoint'] == 'best' else ckpt_last
+        if bool(getattr(args, 'export_survival_curves', False)):
+            restore_selected_curve_checkpoint(model, checkpoint)
+            context = (ema.apply_to(unwrapped) if selected == 'ema' else
+                       swa.apply_to(unwrapped) if selected == 'swa' else contextlib.nullcontext())
+            with context:
+                if selected in ('ema', 'swa'):
+                    checkpoint = persist_selected_inference_weights(model, fold_dir / f'selected_{selected}_inference.pt',
+                        source_checkpoint=checkpoint, contract_path=contract_path, weights=selected)
+                export_survival_curves(model, val_loader, device, outcome_frame=val_frame, args=args,
+                    fold=fold, split='val', checkpoint_path=checkpoint, contract_path=contract_path, weights=selected,
+                    autocast_ctx=autocast_ctx, teacher_force_alpha=teacher_force,
+                    output_path=fold_dir / 'val_survival_curves_export.csv')
+        record = {'schema_version': 1, 'evaluation_scope': 'development_only', 'test_evaluation': 'not_run',
+            'test_exports': [], 'fold': int(fold), 'seed': int(args.seed), 'fusion_mode': args.fusion_mode,
+            'selected_weights': selected, 'selected_checkpoint': str(checkpoint),
+            'selection_metric': str(args.report_metric), 'validation_report_metric_value': float(selected_metric),
+            'selection_policy': str(args.export_policy), 'reserved_test_ids': list(reserved_test_ids),
+            'validation_candidates': {name: {'checkpoint': item['checkpoint'],
+                'validation_nll': float(item['val'].get('nll', float('nan'))),
+                'validation_report_metric_value': report_metric_value(item['val'], str(args.report_metric))}
+                for name, item in candidates.items()}}
+        from trifusesurv2.evaluation.curves import file_sha256
+        record['selected_checkpoint_sha256'] = file_sha256(checkpoint)
+        record['model_contract_sha256'] = file_sha256(contract_path)
+        with (fold_dir / 'development_selection.json').open('x') as handle:
+            json.dump(record, handle, indent=2, allow_nan=False)
+    if _DDP_INITIALIZED and torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    return {'fold': int(fold), 'export_suffix': selected, 'export_risks': {}, 'test_metrics_export': {},
+        'test_metrics_last': None, 'test_metrics_ema': None, 'test_metrics_swa': None, 'test_metrics_best': None,
+        'n_test': 0, 'reserved_test_count': len(reserved_test_ids), 'evaluation_scope': 'development_only',
+        'num_time_bins': int(num_time_bins), 'train_max_time_days': float(train_max_time_days)}
 
 
 def generate_epoch_gradcam_probe(
@@ -1698,6 +1787,42 @@ def save_endpoint_risk_dict_csv(
 # =============================================================================
 # Training
 # =============================================================================
+def perform_optimizer_update(model, optimizer, scaler=None):
+    """Preserve the update path while counting actual (unfused) optimizer calls.
+
+    GradScaler may skip optimizer.step on overflow. Its return value is not a
+    success indicator; a temporary post-step hook observes the actual call.
+    """
+    succeeded = 0
+    def observed_step(*_):
+        nonlocal succeeded
+        succeeded += 1
+    handle = optimizer.register_step_post_hook(observed_step)
+    scale_before = float(scaler.get_scale()) if scaler is not None else None
+    try:
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        norm = clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+            # AMP-aware fused optimizers may enter step but skip internally.
+            if getattr(optimizer, '_step_supports_amp_scaling', False) and float(scaler.get_scale()) < scale_before:
+                succeeded = 0
+        else:
+            optimizer.step()
+    finally:
+        handle.remove()
+    norm_value = float(norm.detach().cpu().item()) if torch.is_tensor(norm) else float(norm)
+    return {'optimizer_step_attempts': 1, 'optimizer_steps_succeeded': succeeded,
+            'optimizer_steps_skipped': 1 - succeeded, 'gradient_norm': norm_value}
+
+
+def synchronize_timing(device):
+    if device.type == 'cuda':
+        torch.cuda.synchronize(device)
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -1812,6 +1937,18 @@ def train_one_epoch(
             roi_focus_count_tensors[key] = count if old_count is None else (old_count + count)
 
     n_batches = 0
+    update_health = {'optimizer_step_attempts': 0, 'optimizer_steps_succeeded': 0,
+                     'optimizer_steps_skipped': 0, 'nonfinite_gradient_updates': 0,
+                     'loss_finite_checks': 0, 'gradient_norm_max': 0.0}
+
+    def update_optimizer():
+        observed = perform_optimizer_update(model, optimizer, scaler if device.type == 'cuda' else None)
+        for key in ('optimizer_step_attempts', 'optimizer_steps_succeeded', 'optimizer_steps_skipped'):
+            update_health[key] += observed[key]
+        if np.isfinite(observed['gradient_norm']):
+            update_health['gradient_norm_max'] = max(update_health['gradient_norm_max'], observed['gradient_norm'])
+        else:
+            update_health['nonfinite_gradient_updates'] += 1
     try:
         planned_batches = int(len(loader))
     except Exception:
@@ -2153,6 +2290,8 @@ def train_one_epoch(
                 or last_planned_batch
             )
         )
+        if check_nonfinite_loss:
+            update_health['loss_finite_checks'] += 1
         if check_nonfinite_loss and (not torch.isfinite(loss).item()):
             pid_preview = [str(x) for x in list(payload["pid"])[:8]]
             raise RuntimeError(
@@ -2182,20 +2321,12 @@ def train_one_epoch(
             should_step = True
         if device.type == "cuda" and scaler is not None:
             scaler.scale(scaled_loss).backward()
-            if should_step:
-                scaler.unscale_(optimizer)
-                clip_grad_norm_(model.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-                batches_since_step = 0
         else:
             scaled_loss.backward()
-            if should_step:
-                clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                batches_since_step = 0
+        if should_step:
+            update_optimizer()
+            optimizer.zero_grad(set_to_none=True)
+            batches_since_step = 0
 
         if should_step and ema is not None:
             ema.update(mm)
@@ -2267,20 +2398,13 @@ def train_one_epoch(
                 )
 
     if batches_since_step > 0:
-        if device.type == "cuda" and scaler is not None:
-            scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+        update_optimizer()
         optimizer.zero_grad(set_to_none=True)
         if ema is not None:
             ema.update(mm)
 
     if n_batches == 0:
-        return {k: float("nan") for k in stats_sum}
+        return {**{k: float("nan") for k in stats_sum}, **update_health, 'training_batches': 0}
 
     stats_mean: Dict[str, float] = {}
     for key, value in stats_sum.items():
@@ -2303,6 +2427,7 @@ def train_one_epoch(
                 stats_mean[key] = float((roi_focus_sum_tensors[key] / count_tensor.clamp_min(1.0)).detach().cpu().item())
             else:
                 stats_mean[key] = float("nan")
+    stats_mean.update(update_health, training_batches=n_batches)
     return stats_mean
 
 
@@ -2774,6 +2899,9 @@ def run_one_fold(
     set_seed(args.seed + 100 * int(fold), deterministic=bool(getattr(args, "deterministic", False)))
     _assert_split_disjoint(int(fold), split)
     data_root = str(Path(args.meta_csv).parent)
+    development_only = bool(getattr(args, 'development_only', False))
+    if development_only and bool(getattr(args, 'epoch_gradcam', False)) and args.epoch_gradcam_split == 'test':
+        raise ValueError('Development-only execution forbids held-out test GradCAM.')
 
     fold_dir = out_root / f"fold_{fold:02d}"
     fold_dir.mkdir(parents=True, exist_ok=True)
@@ -2788,7 +2916,8 @@ def run_one_fold(
 
     tr_df = select_df_by_ids(meta, split["train"], args.id_col, args.strict_splits, f"fold{fold:02d}/train")
     va_df = select_df_by_ids(meta, split["val"],   args.id_col, args.strict_splits, f"fold{fold:02d}/val")
-    te_df = select_df_by_ids(meta, split["test"],  args.id_col, args.strict_splits, f"fold{fold:02d}/test")
+    te_df = (meta.iloc[:0].copy() if development_only else
+             select_df_by_ids(meta, split["test"], args.id_col, args.strict_splits, f"fold{fold:02d}/test"))
 
     if args.debug_max_train > 0:
         tr_df = tr_df.iloc[: int(args.debug_max_train)].reset_index(drop=True)
@@ -2797,7 +2926,8 @@ def run_one_fold(
     if args.debug_max_test > 0:
         te_df = te_df.iloc[: int(args.debug_max_test)].reset_index(drop=True)
 
-    print(f"[fold {fold:02d}] train={len(tr_df)} val={len(va_df)} test={len(te_df)}")
+    print(f"[fold {fold:02d}] train={len(tr_df)} val={len(va_df)} test={len(te_df)}"
+          + (f" reserved_test_ids={len(split['test'])} development_only=True" if development_only else ''))
 
     v2_requested = str(getattr(args, "model_version", "v2")).strip().lower() == "v2"
     train_ids = tr_df[args.id_col].astype(str).tolist()
@@ -2812,7 +2942,7 @@ def run_one_fold(
     _validate_principal_sampling(args, region_manifests)
 
     if v2_requested:
-        clin_enc = SemanticClinicalTokenEncoder.fit(tr_df)
+        clin_enc = SemanticClinicalTokenEncoder.fit(tr_df, columns=args.clinical_cols)
     else:
         clin_enc = ClinicalEncoder.fit(tr_df, args.clinical_cols)
     clin_dim = clin_enc.output_dim
@@ -2911,7 +3041,7 @@ def run_one_fold(
     tr_ds = _make_dataset(tr_df, "train")
     tr_eval_ds = _make_dataset(tr_eval_df, "eval")
     va_ds = _make_dataset(va_df, "eval")
-    te_ds = _make_dataset(te_df, "eval")
+    te_ds = None if development_only else _make_dataset(te_df, "eval")
 
     g = torch.Generator()
     g.manual_seed(int(args.seed + 777 + fold))
@@ -2966,15 +3096,15 @@ def run_one_fold(
         shuffle=False,
         **_loader_kwargs(eval_workers),
     )
-    te_loader = DataLoader(
+    te_loader = None if development_only else DataLoader(
         te_ds,
         batch_size=eval_batch_size,
         shuffle=False,
         **_loader_kwargs(eval_workers),
     )
 
-    loader_count = 4
-    total_loader_workers = train_workers + 3 * eval_workers
+    loader_count = 3 if development_only else 4
+    total_loader_workers = train_workers + (loader_count - 1) * eval_workers
     omp_threads = os.environ.get("OMP_NUM_THREADS", "unset")
     mkl_threads = os.environ.get("MKL_NUM_THREADS", "unset")
     openblas_threads = os.environ.get("OPENBLAS_NUM_THREADS", "unset")
@@ -3149,7 +3279,9 @@ def run_one_fold(
         "parameters": model_parameters, "trainable_parameters": trainable_parameters,
         "time_bin_width_days": args.time_bin_width_days, "num_time_bins": fold_num_time_bins,
         "train_ids": train_ids, "val_ids": va_df[args.id_col].astype(str).tolist(),
-        "test_ids": te_df[args.id_col].astype(str).tolist(),
+        "test_ids": list(split['test']) if development_only else te_df[args.id_col].astype(str).tolist(),
+        "evaluation_scope": 'development_only' if development_only else 'train_validation_test',
+        "clinical_column_policy": clin_enc.column_policy if v2_requested else {"columns": list(args.clinical_cols)},
         "metadata_sha256": file_sha256(args.meta_csv),
         "region_manifest_sha256": {pid: file_sha256(m["_manifest_path"]) for pid, m in (region_manifests or {}).items()},
         "radiomics_csv_sha256": file_sha256(_v2_radiomics_csv_path(args)) if v2_requested and args.use_radiomics else None,
@@ -3275,6 +3407,7 @@ def run_one_fold(
     scheduler_warmup_pause_reported = False
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
+        synchronize_timing(device)
         epoch_started_at = time.perf_counter()
         if tr_sampler is not None:
             tr_sampler.set_epoch(epoch)
@@ -3292,6 +3425,7 @@ def run_one_fold(
                     f"[fold {fold:02d}] EMA started at epoch {int(epoch):03d}; "
                     "localization-only warmup excluded from EMA weights"
                 )
+        train_started_at = time.perf_counter()
         train_stats = train_one_epoch(
             model, tr_loader, optimizer, scaler, device,
             fold=int(fold),
@@ -3345,11 +3479,14 @@ def run_one_fold(
             roi_focus_live_csv=roi_focus_live_csv,
             roi_focus_every_batches=int(getattr(args, "roi_focus_every_batches", 1)),
         )
+        synchronize_timing(device)
+        epoch_train_seconds = time.perf_counter() - train_started_at
 
         # In DDP, every rank runs the same no-collective eval path before the next
         # train epoch, so non-main ranks cannot race ahead into DDP collectives.
         _eval_model = mm if _DDP_INITIALIZED else model
         epoch_eval_teacher_force_alpha = _survival_teacher_force_alpha(teacher_force_alpha, args)
+        train_evaluation_started_at = time.perf_counter()
         train_met = evaluate_model(
             _eval_model, tr_eval_loader, device,
             endpoint=str(args.endpoint),
@@ -3360,6 +3497,9 @@ def run_one_fold(
             autocast_ctx=autocast_ctx,
             teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
         )
+        synchronize_timing(device)
+        epoch_train_evaluation_seconds = time.perf_counter() - train_evaluation_started_at
+        validation_started_at = time.perf_counter()
         val_met = evaluate_model(
             _eval_model, va_loader, device,
             endpoint=str(args.endpoint),
@@ -3370,6 +3510,8 @@ def run_one_fold(
             autocast_ctx=autocast_ctx,
             teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
         )
+        synchronize_timing(device)
+        epoch_validation_seconds = time.perf_counter() - validation_started_at
         epoch_train_and_evaluation_seconds = time.perf_counter() - epoch_started_at
 
         if swa is not None and epoch >= int(args.swa_start_epoch):
@@ -3411,6 +3553,10 @@ def run_one_fold(
         row = {
             "epoch": int(epoch),
             "val_nll": float(val_met.get("nll", float("nan"))),
+            "train_eval_nll": float(train_met.get("nll", float("nan"))),
+            "epoch_train_seconds": float(epoch_train_seconds),
+            "epoch_train_evaluation_seconds": float(epoch_train_evaluation_seconds),
+            "epoch_validation_seconds": float(epoch_validation_seconds),
             "epoch_train_and_evaluation_seconds": float(epoch_train_and_evaluation_seconds),
             "teacher_force_alpha": float(teacher_force_alpha),
             "survival_teacher_force_alpha": float(_survival_teacher_force_alpha(teacher_force_alpha, args)),
@@ -3445,6 +3591,15 @@ def run_one_fold(
             "train_composite_score": validation_composite_score(train_met),
             "val_composite_score": validation_composite_score(val_met),
         }
+        # Counts are per rank, not batch-averaged losses. The prospective study
+        # uses one rank; the timing excludes checkpoint I/O and GradCAM.
+        for key in ('optimizer_step_attempts', 'optimizer_steps_succeeded', 'optimizer_steps_skipped',
+                    'nonfinite_gradient_updates', 'loss_finite_checks', 'training_batches'):
+            row[key] = int(train_stats[key])
+        row['gradient_norm_max'] = float(train_stats['gradient_norm_max'])
+        row['telemetry_rank'] = int(_DDP_RANK)
+        for group_index, group in enumerate(optimizer.param_groups):
+            row[f'optimizer_lr_group_{group_index}'] = float(group['lr'])
         for roi_name in ROI_FOCUS_ROI_NAMES:
             for suffix in ROI_FOCUS_METRIC_NAMES:
                 key = f"roi_focus_{roi_name}_{suffix}"
@@ -3543,6 +3698,14 @@ def run_one_fold(
     # In DDP, all ranks still run eval so non-main ranks cannot start the next
     # fold while rank 0 is still evaluating/exporting this one.
     _eval_model = mm if _DDP_INITIALIZED else model
+
+    if development_only:
+        return finalize_development_fold(
+            _eval_model, mm, va_loader, va_df, device, args=args, fold=fold, fold_dir=fold_dir,
+            ckpt_last=ckpt_last, ckpt_best=ckpt_best, contract_path=contract_path,
+            ema=ema, swa=swa, autocast_ctx=autocast_ctx, num_time_bins=fold_num_time_bins,
+            train_max_time_days=fold_max_time, reserved_test_ids=split['test'],
+        )
 
     final_eval_teacher_force_alpha = _survival_teacher_force_alpha(
         _teacher_force_alpha_for_epoch(int(args.epochs), args),
@@ -3856,6 +4019,8 @@ def run_one_fold(
 # =============================================================================
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument('--development-only', '--development_only', dest='development_only', action='store_true',
+                   help='Use one selected fold train/validation only; reserve test IDs without loading their records, evaluating or exporting them.')
 
     p.add_argument("--meta_csv", required=True)
     p.add_argument("--id_col", type=str, default="Patient_ID")
@@ -4313,6 +4478,11 @@ def parse_args():
         raise ValueError("--roi_focus_every_batches must be >= 1.")
     if int(args.nonfinite_check_every_batches) < 0:
         raise ValueError("--nonfinite_check_every_batches must be >= 0.")
+    if args.development_only:
+        if int(args.cv_folds) != 1 and int(args.debug_fold) < 0:
+            raise ValueError('--development-only requires one selected fold (--cv_folds 1 or --debug_fold).')
+        if args.epoch_gradcam and args.epoch_gradcam_split == 'test':
+            raise ValueError('--development-only forbids held-out test Grad-CAM.')
     if int(args.loc_feature_from_end) < 1:
         raise ValueError("--loc_feature_from_end must be >= 1.")
     if float(args.epoch_gradcam_teacher_force_alpha) > 1.0:
@@ -4417,7 +4587,13 @@ def main():
     out_root = Path(args.out_dir) / args.exp_name
     out_root.mkdir(parents=True, exist_ok=True)
 
-    meta = read_identifier_csv(args.meta_csv, identifier_columns=(args.id_col,))
+    folds = [int(args.debug_fold)] if int(args.debug_fold) >= 0 else list(range(int(args.cv_folds)))
+    splits = None
+    if args.development_only:
+        splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
+        meta = read_development_metadata(args.meta_csv, args.id_col, splits[folds[0]])
+    else:
+        meta = read_identifier_csv(args.meta_csv, identifier_columns=(args.id_col,))
     args.id_col = resolve_identifier_column(meta.columns, args.id_col)
     for value in meta[args.id_col]:
         require_identifier(value, name=args.id_col)
@@ -4474,8 +4650,8 @@ def main():
     args.img_size = list(resolved_img_size)
     print(f"[IMGCFG] data_shape(D,H,W)={data_shape} | using img_size(D,H,W)={tuple(args.img_size)}")
 
-    splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
-    folds = [int(args.debug_fold)] if int(args.debug_fold) >= 0 else list(range(int(args.cv_folds)))
+    if splits is None:
+        splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
 
     fold_results: List[Dict[str, Any]] = []
     all_test_risks: Dict[str, float] = {}
@@ -4500,6 +4676,8 @@ def main():
     if _DDP_INITIALIZED and not _is_main_process():
         return
 
+    if args.development_only and all_test_risks:
+        raise RuntimeError('Development-only execution unexpectedly produced held-out test predictions.')
     if all_test_risks:
         save_endpoint_risk_dict_csv(
             all_test_risks,
@@ -4526,7 +4704,7 @@ def main():
         "folds_run": folds,
         "fold_num_time_bins": [int(r.get("num_time_bins", 0)) for r in fold_results],
         "fold_train_max_time_days": [float(r.get("train_max_time_days", float("nan"))) for r in fold_results],
-        "mean_fold_test_c_index": float(np.nanmean(np.array(test_c, dtype=float))) if test_c else float("nan"),
+        "mean_fold_test_c_index": float(np.nanmean(np.array(test_c, dtype=float))) if test_c and not args.development_only else float("nan"),
         "risk_horizon_days": float(args.risk_horizon_days),
         "primary_endpoint": str(args.endpoint),
         "survival_heads": list(SURVIVAL_ENDPOINTS),
@@ -4592,12 +4770,19 @@ def main():
         "epoch_gradcam_teacher_force_alpha": float(args.epoch_gradcam_teacher_force_alpha),
         "nan_guard": bool(args.nan_guard),
     }
+    if args.development_only:
+        summary.pop('mean_fold_test_c_index')
+        summary.update(evaluation_scope='development_only', test_evaluation='not_run',
+                       reserved_test_ids_by_fold={str(f): list(splits[f]['test']) for f in folds})
     with open(out_root / "cv_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
     print("\n=== CV Summary ===")
     print(f"folds_run: {folds}")
-    print(f"mean fold test c-index: {summary['mean_fold_test_c_index']:.4f}")
+    if args.development_only:
+        print('Held-out test evaluation and exports were not run (development-only).')
+    else:
+        print(f"mean fold test c-index: {summary['mean_fold_test_c_index']:.4f}")
     print(f"[done] wrote {out_root/'cv_summary.json'}")
 
 

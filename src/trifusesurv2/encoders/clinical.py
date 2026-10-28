@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 import re
 from typing import Any
@@ -129,12 +130,49 @@ class GroupEncodingSpec:
 class SemanticClinicalTokenEncoder:
     """Encode clinical data as semantic tokens instead of one flat vector."""
 
-    def __init__(self, group_specs: "OrderedDict[str, GroupEncodingSpec]"):
+    def __init__(
+        self,
+        group_specs: "OrderedDict[str, GroupEncodingSpec]",
+        *,
+        columns: Sequence[str] | None = None,
+    ):
         self.group_specs = OrderedDict(group_specs)
         self.group_names = tuple(group_specs.keys())
         self.token_dims = {name: spec.dim for name, spec in group_specs.items()}
         self.max_token_dim = max(self.token_dims.values(), default=0)
         self.output_dim = self.max_token_dim
+        # Keep legacy/default state unchanged; old pickled encoders have no
+        # column restriction. Explicit policies travel with the saved encoder.
+        if columns is not None:
+            self._allowed_columns = self._validate_columns(columns)
+
+    @staticmethod
+    def _validate_columns(columns: Sequence[str]) -> tuple[str, ...]:
+        if isinstance(columns, (str, bytes)) or not isinstance(columns, Sequence):
+            raise ValueError("[CLIN2] columns must be a sequence of source-column names")
+        values = tuple(columns)
+        if any(not isinstance(col, str) or not col or col != col.strip() for col in values):
+            raise ValueError("[CLIN2] columns must contain nonempty, unpadded names")
+        if len(set(values)) != len(values):
+            raise ValueError("[CLIN2] columns must not contain duplicate names")
+        return values
+
+    @property
+    def allowed_columns(self) -> tuple[str, ...] | None:
+        """Requested source columns, or unrestricted legacy group behavior."""
+        return getattr(self, "_allowed_columns", None)
+
+    @property
+    def column_policy(self) -> dict[str, Any]:
+        """JSON-compatible input policy, also retained in checkpoint state."""
+        if self.allowed_columns is None:
+            return {"mode": "all_token_group_sources"}
+        return {"mode": "explicit_source_columns", "columns": list(self.allowed_columns)}
+
+    def _allowed_row(self, row: pd.Series) -> pd.Series:
+        if self.allowed_columns is None:
+            return row
+        return row.loc[row.index.isin(self.allowed_columns)]
 
     @staticmethod
     def _is_numeric_column(series: pd.Series, threshold: float = 0.8) -> bool:
@@ -171,8 +209,21 @@ class SemanticClinicalTokenEncoder:
         cls,
         df: pd.DataFrame,
         token_groups: OrderedDict[str, tuple[str, ...]] | None = None,
+        *,
+        columns: Sequence[str] | None = None,
     ) -> "SemanticClinicalTokenEncoder":
+        """Fit train-only statistics using the permitted source columns.
+
+        A selected TNM source (for example ``T``) still produces its ordinal
+        and derived ``T_RAW`` features. Excluding ``NSTAGE`` and
+        ``NSTAGE_RAW`` excludes both representations. Group identities remain
+        fixed, including groups with no available permitted measurements.
+        ``None`` preserves the original all-group-column behavior.
+        """
         groups = OrderedDict(token_groups or CLINICAL_TOKEN_GROUPS)
+        allowed_columns = None if columns is None else cls._validate_columns(columns)
+        if allowed_columns is not None:
+            df = df.loc[:, df.columns.isin(allowed_columns)]
         specs: "OrderedDict[str, GroupEncodingSpec]" = OrderedDict()
 
         for group_name, cols in groups.items():
@@ -231,7 +282,7 @@ class SemanticClinicalTokenEncoder:
         if not specs or all(spec.dim <= 0 for spec in specs.values()):
             raise ValueError("[CLIN2] no usable clinical groups were derived from the provided DataFrame")
 
-        return cls(specs)
+        return cls(specs, columns=allowed_columns)
 
     def _encode_numeric(self, row: pd.Series, spec: NumericFeatureSpec) -> list[float]:
         val = row.get(spec.name, np.nan)
@@ -282,6 +333,7 @@ class SemanticClinicalTokenEncoder:
         return str(val).strip() != ""
 
     def encode_row_tokens(self, row: pd.Series) -> "OrderedDict[str, np.ndarray]":
+        row = self._allowed_row(row)
         out: "OrderedDict[str, np.ndarray]" = OrderedDict()
         for name, spec in self.group_specs.items():
             feats: list[float] = []
@@ -295,6 +347,7 @@ class SemanticClinicalTokenEncoder:
     def encode_row_token_matrix(self, row: pd.Series) -> tuple[np.ndarray, np.ndarray]:
         """Return padded clinical token matrix and group-presence mask."""
 
+        row = self._allowed_row(row)
         tokens = self.encode_row_tokens(row)
         mat = np.zeros((len(self.group_names), self.max_token_dim), dtype=np.float32)
         presence = np.zeros((len(self.group_names),), dtype=np.float32)

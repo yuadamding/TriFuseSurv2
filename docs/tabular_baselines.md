@@ -10,6 +10,32 @@ No real-cohort baseline fit has been established by the synthetic software
 tests. Execute real-data fitting within the approved study run after endpoint,
 clinical, measurement, split and evaluation-support gates pass.
 
+
+The [C0/C1 development protocol](../configs/baseline_study_spec.json) is frozen
+separately from the principal neural-study draft. It uses the same 519 patients,
+365/77/77 split, endpoint definitions, 730-day primary horizon, fixed 210–730-day
+IBS grid and 2,000 paired patient-bootstrap draws. Its prespecified contrast is
+C1 minus C0; each model has one deterministic fit. The numerical baseline
+recipe does not depend on a neural epoch count. The updated execution plan nevertheless defers its Job until the development
+budget experiment and final main-study gates close. No baseline Job has been
+created.
+
+The executable baseline package binds source `aeb93bc`, the frozen specification
+SHA-256 `a6d129c091666955ef997fc950c218fcabc64a5566ebfdb9183357dee850bf7b`,
+the qualified manifest inventory and the original input hashes. It creates a
+separate `baseline-v1` environment from 16 exact, hash-locked binary wheels.
+The same-image dependency/reference fixtures must pass before any cohort fitting.
+The approved institutional Job reserves one H100; penalized Cox fits and their
+reference evaluation run on CPU. The existing radiomics environment is preserved.
+
+Local fabricated producer checks exercise both a completed 2,000-resample
+evaluation and the predefined unsupported-metric path. These are software checks;
+the real-data worker run remains deferred under the updated study ordering.
+The published controller passed a separate portable-host qualification after
+a fixture-only path-size lookup failed its original host test. Both the failed
+gate and the unchanged production controller remain preserved. The original
+failed toy fixtures remain recorded in the operations evidence.
+
 ## Inputs and clinical coding
 
 C0 uses the pretreatment clinical information supplied to the fusion models.
@@ -19,13 +45,14 @@ alcohol, pathology or stage coding. Treatment (`TX`) is excluded.
 
 On October 28, 2026, the user approved AGE as continuous, the coded fields as
 categorical, and TX excluded. Raw categories are preserved; category labels
-and a staging edition are not inferred. The user subsequently confirmed NSTAGE is derived from T/N/M. The prospective
-baseline keeps categorical T, N and M and omits only the derived NSTAGE field.
+and a staging edition are not inferred. The user subsequently confirmed NSTAGE
+is derived from T/N/M. The prospective baseline keeps categorical T, N and M and omits only the derived NSTAGE field.
 This resolves the nonredundant staging policy without recoding stage values.
 
 Every column in `baselines.fusion_clinical_columns` must be selected or accounted
-for by confirmed staging redundancy. Establish whether NSTAGE duplicates T/N/M before
-freezing the requested nonredundant representation. Its name alone is not
+for by confirmed staging redundancy. Establish that relationship before freezing
+the requested nonredundant representation; the user confirmation supplies it
+for this development study. Its name alone is not
 evidence that it is a composite stage. For example, dropping `NSTAGE` requires a
 documented, confirmed relationship to the retained stage components. The local
 dictionary template does not establish that relationship. A string indicating
