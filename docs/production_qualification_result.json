@@ -1,0 +1,149 @@
+{
+  "actual_cohort_fit_qualification": "pending; assessed separately during ongoing development training",
+  "clinical_qualification": "not_established",
+  "clinical_type_policy": "approved_categorical_v1",
+  "full_production_swin": {
+    "depths": [
+      2,
+      2,
+      18,
+      2
+    ],
+    "feature_size": 96
+  },
+  "independent_metadata_acceptance_sha256": "a2c6e7c4517ce1e4c307b47ed5e8186ded858ed85f9594f42e8c56345693c32b",
+  "job": "trifusesurv2-budget-development-20261028b",
+  "job_uid": "8cc49447-6372-4d6b-8edf-199db3904cfd",
+  "limits": "Fabricated inputs, invented small clinical/radiomics dimensions and six time bins; parameter count is for this fixture, not the cohort models.",
+  "modes": {
+    "F2": {
+      "actual_successful_updates": 2,
+      "effective_backend_settings": {
+        "cuda_matmul_allow_tf32": true,
+        "cudnn_allow_tf32": false,
+        "cudnn_benchmark": false,
+        "cudnn_deterministic": true,
+        "deterministic_algorithms": true,
+        "float32_matmul_precision": "high"
+      },
+      "fabricated_batches": 9,
+      "fabricated_parameters": 307518048,
+      "final_partial_accumulation_batches": 1,
+      "final_state_sha256": "a053655a1327a6e2da6bbeb1aa75a48b17835bfeee1ac770bc5c8cf72d8c2cf7",
+      "finite_required_gradients_model_optimizer_and_post_update_nll": true,
+      "initial_state_sha256": "4cb15236cf9cf38b287b2ddf9630863bf42201082e61c5f425d465d65dd7ad41",
+      "input_shape_bcdhw": [
+        1,
+        1,
+        96,
+        160,
+        96
+      ],
+      "optimizer_steps_skipped": 0,
+      "precision": {
+        "autocast_enabled": true,
+        "dtype": "torch.float16",
+        "production_policy_adopted_by_this_script": false,
+        "scaler": {
+          "_growth_tracker": 0,
+          "backoff_factor": 0.5,
+          "growth_factor": 2.0,
+          "growth_interval": 2000,
+          "scale": 65536.0
+        },
+        "selection": "trainer-default"
+      },
+      "required_active_parameter_names": [
+        "habitat_model.survival_heads.endpoint_residuals.OS.0.weight",
+        "habitat_model.survival_heads.endpoint_residuals.OS.0.bias",
+        "habitat_model.survival_heads.endpoint_residuals.OS.1.weight",
+        "habitat_model.survival_heads.endpoint_residuals.OS.1.bias",
+        "habitat_model.survival_heads.endpoint_residuals.OS.4.weight",
+        "habitat_model.survival_heads.endpoint_residuals.OS.4.bias",
+        "habitat_model.survival_heads.shared.0.weight",
+        "habitat_model.survival_heads.shared.0.bias",
+        "habitat_model.survival_heads.shared.1.weight",
+        "habitat_model.survival_heads.shared.1.bias",
+        "habitat_model.survival_heads.shared_logits.weight",
+        "habitat_model.survival_heads.shared_logits.bias",
+        "backbone.backbone_shared.swinViT.patch_embed.proj.weight",
+        "backbone.backbone_shared.swinViT.layers1.0.blocks.0.attn.qkv.weight"
+      ],
+      "status": "passed",
+      "trainable_parameters": 307518048
+    },
+    "F3": {
+      "actual_successful_updates": 2,
+      "effective_backend_settings": {
+        "cuda_matmul_allow_tf32": true,
+        "cudnn_allow_tf32": false,
+        "cudnn_benchmark": false,
+        "cudnn_deterministic": true,
+        "deterministic_algorithms": true,
+        "float32_matmul_precision": "high"
+      },
+      "fabricated_batches": 9,
+      "fabricated_parameters": 307518048,
+      "final_partial_accumulation_batches": 1,
+      "final_state_sha256": "bc404f4fbabd0b3f1ce13aa4d625cdc6b380458d0538ba126b7f9e4af41bd923",
+      "finite_required_gradients_model_optimizer_and_post_update_nll": true,
+      "initial_state_sha256": "4cb15236cf9cf38b287b2ddf9630863bf42201082e61c5f425d465d65dd7ad41",
+      "input_shape_bcdhw": [
+        1,
+        1,
+        96,
+        160,
+        96
+      ],
+      "optimizer_steps_skipped": 0,
+      "precision": {
+        "autocast_enabled": true,
+        "dtype": "torch.float16",
+        "production_policy_adopted_by_this_script": false,
+        "scaler": {
+          "_growth_tracker": 0,
+          "backoff_factor": 0.5,
+          "growth_factor": 2.0,
+          "growth_interval": 2000,
+          "scale": 65536.0
+        },
+        "selection": "trainer-default"
+      },
+      "required_active_parameter_names": [
+        "habitat_model.survival_heads.endpoint_residuals.OS.0.weight",
+        "habitat_model.survival_heads.endpoint_residuals.OS.0.bias",
+        "habitat_model.survival_heads.endpoint_residuals.OS.1.weight",
+        "habitat_model.survival_heads.endpoint_residuals.OS.1.bias",
+        "habitat_model.survival_heads.endpoint_residuals.OS.4.weight",
+        "habitat_model.survival_heads.endpoint_residuals.OS.4.bias",
+        "habitat_model.survival_heads.shared.0.weight",
+        "habitat_model.survival_heads.shared.0.bias",
+        "habitat_model.survival_heads.shared.1.weight",
+        "habitat_model.survival_heads.shared.1.bias",
+        "habitat_model.survival_heads.shared_logits.weight",
+        "habitat_model.survival_heads.shared_logits.bias",
+        "backbone.backbone_shared.swinViT.patch_embed.proj.weight",
+        "backbone.backbone_shared.swinViT.layers1.0.blocks.0.attn.qkv.weight"
+      ],
+      "status": "passed",
+      "trainable_parameters": 307518048
+    }
+  },
+  "numerical_policy": {
+    "bytes": 3751,
+    "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-b/inputs/production_numerical_policy.json",
+    "sha256": "e0d01361ddcaa14b4176dae9ab07be8c67d6d2c446e1e5220dd01887802b9033"
+  },
+  "patient_fits": 0,
+  "patient_input_reads": 0,
+  "plan_sha256": "aeb760e8d608af5ea3efda889cfd1ef5861cc36f36810bbd6ffcc9928faa097a",
+  "production_precision_policy_changed": false,
+  "qualifier_sha256": "0d1648e16b6c25a46ea1486258b9505ba7670492e48a67f163d4bfb9bbbd6445",
+  "raw_report_sha256": "115ee00881cccdba83735fcb27a96f015f8dacbd935a68fe42a5bea744491665",
+  "schema_version": 1,
+  "scope": "fabricated_actual_CT_Swin_survival_NLL_engineering",
+  "source_commit": "3298bf017c667ea44ae8ad621dc8cfaa95961aa6",
+  "source_tree_sha256": "c40782445575be0e3338971c03f31764080d3ad77db60e5b9b6ec60ed7603806",
+  "status": "passed",
+  "worker_gate_sha256": "2b02c9780f170d53afaca210194e06c3259b47032a2f3e21926bf6f0a77cd04f"
+}

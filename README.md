@@ -88,6 +88,10 @@ remains required before the fresh 12-epoch budget pair.
 The [explanatory study plan](docs/explanatory_study_plan.md) records the later
 fusion ladder and distinguishes it from routing and contour designs that still
 need a complete specification before held-out review.
+The [production-path handoff](docs/production_path_20261028.md) records the next
+completed gate: both full Swin survival-NLL checks passed, and at October 28,
+2026, 1:44:29 PM CDT, fresh F2 training was active on one H100 in budget attempt B.
+Its paired adequacy assessment remains pending.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

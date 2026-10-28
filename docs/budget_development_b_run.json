@@ -1,0 +1,70 @@
+{
+  "adequacy": "pending_complete_paired_traces",
+  "admission_review_sha256": "b065e177848a3fd6245945c2a0aff5c7be57d73c0f80f447e39e3f929045c29b",
+  "admitted_pod_spec_sha256": "09751a0bf332193e3121079b297db2814222e276317859f00c8c801e1388bd28",
+  "automatic_retries": 0,
+  "common_initial_epochs": 12,
+  "completed_development_fits": 0,
+  "completed_epoch_rows_at_snapshot": {},
+  "context": "yding4_yn-gpu-workload@kubernetes-admin@kubernetes",
+  "controller_binding_sha256": "d0d6f7490530e70986420a4d32bfb0353f7abfdd777c914592bc89d277c065b4",
+  "controller_status": "detached_activated_and_watching_exact_identity_alive",
+  "host_gate_sha256": "018587270bb2142c68d53c6778ae021115e78b3b0885c48d437b876033d3d6b3",
+  "host_tests": {
+    "failed": 0,
+    "passed": 70
+  },
+  "image": "hpcharbor.mdanderson.edu/yding41/radiomics@sha256:bd8ad6777cbf704fbee7a1942f09e6a704ee718cf8bd198a7f65a0929cb6e161",
+  "job": "trifusesurv2-budget-development-20261028b",
+  "job_uid": "8cc49447-6372-4d6b-8edf-199db3904cfd",
+  "launched_at_utc": "2026-10-28T18:41:01.780256+00:00",
+  "mac_relay_files_created": false,
+  "manifest_sha256": "ffce20c90573ed0642d3f2b5494b480feebb944b4df92065a35d9cee413856ca",
+  "modes": [
+    "F2",
+    "F3"
+  ],
+  "namespace": "yn-gpu-workload",
+  "neural_training_invocations_observed": 1,
+  "new_environment_created": false,
+  "plan_sha256": "aeb760e8d608af5ea3efda889cfd1ef5861cc36f36810bbd6ffcc9928faa097a",
+  "pod_uid": "ad4439aa-e761-419f-ba20-1067ef3e724d",
+  "primary_scientific_result": "not_available",
+  "publication": "both bundles readback verified; exact temporary staging archives removed",
+  "qualification_report": "docs/production_qualification_result.json",
+  "qualification_report_sha256": "0360541c301bb6664bc753690fdf03f3345afa390fb5e17709498e989712b34c",
+  "remaining": "Complete F2/F3, audit actual checkpoint/update exposure, assess common cap; fresh common24 pair if rule requires, then freeze core study and run C0/C1 plus all6 substantive fits.",
+  "requested_gpus": 1,
+  "reserved_test_patients": 77,
+  "running_ready_gpus": 1,
+  "schema_version": 1,
+  "seed": 42,
+  "snapshot_at_houston": "October 28, 2026, 01:44:29 PM CDT",
+  "snapshot_at_utc": "2026-10-28T18:44:29.570963+00:00",
+  "source_code_and_amp_policy": "unchanged from qualification for actual fits",
+  "source_commit": "3298bf017c667ea44ae8ad621dc8cfaa95961aa6",
+  "source_tree_sha256": "c40782445575be0e3338971c03f31764080d3ad77db60e5b9b6ec60ed7603806",
+  "stages": [
+    {
+      "end_sha256": "0f22bd2c04d649a0f9d783cfe23506c0cccd93e354dd52ceddfa6b23be7c7a34",
+      "returncode": 0,
+      "stage": "qualify-source",
+      "stage_seconds": 27.368158935999418,
+      "start_sha256": "8497169e56fe622ca66cc63ab058071ed77f9669a293a7e75765d79f8634cde2",
+      "started_at_utc": "2026-10-28T18:43:07.248069+00:00",
+      "status": "completed"
+    },
+    {
+      "stage": "train-F2",
+      "start_sha256": "7957903f894537913a959dfe2c872d057271d8b0b269ac0ee120ad2b81846aac",
+      "started_at_utc": "2026-10-28T18:43:48.518111+00:00",
+      "status": "started"
+    }
+  ],
+  "status": "production_qualification_passed_F2_training_active_at_snapshot",
+  "test_evaluation": "not_run",
+  "train_patients": 365,
+  "val_patients": 77,
+  "whole_job_deadline": null,
+  "workload_binding_sha256": "7c357bf3efd2aa63aca6ddfb6fb9a204d86c48bc184ed26365396794b2dcbc50"
+}
