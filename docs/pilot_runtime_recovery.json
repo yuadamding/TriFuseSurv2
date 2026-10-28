@@ -1,0 +1,89 @@
+{
+  "continuation": {
+    "job": "trifusesurv2-paired-development-20261027b",
+    "job_uid": "60953ee5-ecc4-4dd1-a580-dd143b5a4752",
+    "model_settings_or_split_changed": false,
+    "phase": "Pending",
+    "pod_uid": "95bd76fb-1683-4d16-95b6-1dd9ae698e39",
+    "ready_workers": 0,
+    "reason": "insufficient cluster placement resources",
+    "retained_input_files_verified": 8623,
+    "shared_memory_static_capacity_bytes": 8589934592,
+    "shared_memory_static_retained_tensor_bytes": 377487360,
+    "supervisor_healthy": true,
+    "supervisor_peak_rss_kib": 22444,
+    "training_plan_changes": [
+      "runs[*].out_dir"
+    ],
+    "training_started": false
+  },
+  "corrections": [
+    "Fresh raw API collection resource versions; bounded watch queue/decoder; close retired threads and descriptors; bounded consecutive transport failures.",
+    "8 GiB memory-backed /dev/shm with two-worker transport canary and unchanged 200 GiB memory limit.",
+    "8 MiB bounded status receipts; oversized receipts do not abort the entire snapshot.",
+    "Prospective manifest binder checks Job/template annotations, environment, worker argv and plan identity together."
+  ],
+  "evidence": {
+    "paired-b-annotation-audit.json": {
+      "run_relative_path": "paired-b-annotation-audit.json",
+      "sha256": "f108e7f7e57697f15c7cc54fbf96f0e8ed11ee62969d58320944923dd58adfbd"
+    },
+    "paired-b-handoff-snapshot-v2.json": {
+      "run_relative_path": "paired-b-handoff-snapshot-v2.json",
+      "sha256": "945e9275d63daae2e9288f6fa689ab15a2dbf1e3b502fc4b21ab6b50e7708d92"
+    },
+    "paired-b-launch.json": {
+      "run_relative_path": "paired-b-launch.json",
+      "sha256": "fafbf76bdb5a08f44809bd81cf0e520e4ff994b3a06f91ac8f8415a6e0ff15e8"
+    },
+    "paired-b-publication.json": {
+      "run_relative_path": "paired-b-publication.json",
+      "sha256": "74ca66c33724ad873a0f455c05effe1a1d5c01cc3ef0b6a6ffe5d2162d3b97f6"
+    },
+    "paired-b-static.json": {
+      "run_relative_path": "paired-b-static.json",
+      "sha256": "53f8eedf376e17ffeb7d2c36e472fd2b2927e2bf88f0e0cbbee0e259e66a5179"
+    }
+  },
+  "live_status": false,
+  "observed_at_houston": "October 27, 2026, 11:38:11 PM CDT",
+  "observed_at_utc": "2026-10-28T04:38:11.413413+00:00",
+  "prior_attempt": {
+    "F3_started": false,
+    "captured_and_cleaned": true,
+    "eligible_patients": 519,
+    "excluded_primary_missing": 94,
+    "failure": "F2 DataLoader SIGBUS during lazy initialization before first optimizer update",
+    "prepared_cases": 613,
+    "split_counts": {
+      "test": 77,
+      "train": 365,
+      "val": 77
+    }
+  },
+  "record_kind": "dated_paired_pilot_recovery",
+  "retained_metadata_discrepancy": {
+    "active_attempt_modified": false,
+    "authoritative_plan_sha256": "262e511297f2e3eb77b761cff6a8e76aaa800939bf225814194c7058a34d2cb0",
+    "authorities": [
+      "mounted PLAN.json",
+      "TRIFUSE_PLAN_SHA256 environment",
+      "immutable live binding",
+      "same-image static gate"
+    ],
+    "field": "metadata.annotations.trifusesurv2_plan_sha256 (Job and Pod template)",
+    "future_rendering_corrected_and_checked": true,
+    "value": "bff536de82ec69f3faaec25fc8481431f4de77c7182211b48e6a99a1a95330b0"
+  },
+  "run": "common-grid-h100-20261027",
+  "scientific_scope": "Two-epoch development/capacity pilot; clinical qualification, convergence and F3 prognostic benefit remain unestablished.",
+  "source_commit": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+  "validation": {
+    "current_h100_worker_startup_passed": false,
+    "host_runtime_checks": 31,
+    "local_controller_checks": 34,
+    "prospective_manifest_binding_checks": 5,
+    "same_image_cpu_gate_passed": true,
+    "status_adapter_checks": 12
+  }
+}

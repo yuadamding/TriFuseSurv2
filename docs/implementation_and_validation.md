@@ -12,6 +12,11 @@ This guide records the executable baseline
 change the source bound to an existing run. This is a dated knowledge record,
 not a live scheduler status page.
 
+The later [paired pilot recovery record](pilot_runtime_recovery.md) reports
+completed cohort preparation, diagnosed runtime failures, qualified corrections
+and the October 27, 11:38 PM CDT queued continuation. The scientific evidence
+below remains bounded by its original observation time.
+
 Use the [anatomical correspondence workflow](anatomical_correspondence.md) for
 the detailed input schema and commands, and the
 [common-grid qualification record](common_grid_qualification.md) for the

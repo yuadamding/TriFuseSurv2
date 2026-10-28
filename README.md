@@ -27,6 +27,11 @@ inside a worker with one verified H100. Sampling and PyRadiomics ran on CPU;
 the tiny model checks ran on CUDA. Overlay review accepted only development geometry, retaining
 source-FOV truncation and small-region sampling limitations.
 
+The later [paired pilot recovery](docs/pilot_runtime_recovery.md) records completed
+613-case preparation, the supervisor/DataLoader fixes, and the corrected run
+queued for one H100 as of October 27, 2026, 11:38 PM CDT. Its training and
+scientific acceptance remain unfinished.
+
 The [dated evidence summary](docs/development_qualification_summary.json) binds
 those observations to source and receipt hashes. At its latest snapshot,
 **October 27, 2026, 9:03 PM CDT**, the separate single-H100 cohort worker was
