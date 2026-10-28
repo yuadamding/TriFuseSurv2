@@ -57,7 +57,9 @@ separate 12-epoch pair on training/validation data only. The new
 `--development-only` trainer path preserves reserved test IDs while excluding
 their records, datasets, evaluations and exports. The primary scientific metric
 is mean paired deltaIBS over 210–730 days, with the user-defined worthwhile
-reduction of 0.005. The full synthetic suite passes 260 tests and 176 subtests.
+reduction of 0.005. Development training source `30dfdec` passed the full
+synthetic suite of 260 tests and 176 subtests. The later supporting-horizon
+evaluator update passed 30 focused evaluator/baseline tests and 16 subtests.
 Its [dated launch record](docs/budget_development_run.json) shows the separate
 source `30dfdec` Job submitted on October 28, 2026, at 11:10 AM CDT. At the
 11:11 AM CDT snapshot it was Pending cluster resources with zero Running/Ready
