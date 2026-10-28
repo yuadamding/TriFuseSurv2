@@ -72,10 +72,46 @@ behavior only.
 
 Frozen `metrics.csv` does not store validation NLL. If `best.pt` is epoch one,
 its full-precision metric and epoch-two `last.pt` can prove the two-candidate
-selection. If `best.pt` is epoch two, the missing epoch-one full-precision NLL
-leaves selection blocked. A `best` filename is not proof. The prescribed export
-tie rule selects `last`. A future separately pinned validation trace or
-qualified checkpoint reevaluation is needed to close that evidence gap.
+selection. If `best.pt` is epoch two, selection needs additional history. A
+`best` filename is not proof. The prescribed export tie rule selects `last`.
+
+For the exact frozen `614d7fb` source tree, the optional
+`--training-log-receipt /approved/training-log-receipt.json` can supply rigorous
+rounded-log evidence. The frozen FINAL receipts did not hash the per-mode logs;
+a separately pinned postprocessing plan must bind the collected original log
+bytes and immutable completed-parent receipts. Its worker verifies those
+bindings and emits the following receipt, which the auditor cross-checks:
+
+```json
+{
+  "schema_version": 1,
+  "status": "completed_training_logs_bound",
+  "runtime_final_sha256": "completed runtime FINAL hash",
+  "training_receipt_sha256": "completed training FINAL hash",
+  "training_plan_sha256": "frozen training-plan hash",
+  "source_identity": {"commit_sha": "exact frozen commit", "source_tree_sha256": "exact frozen source tree"},
+  "logs": [
+    {"fusion_mode": "F2", "path": "/approved/training-evidence/training_F2.log", "sha256": "collected original log hash"},
+    {"fusion_mode": "F3", "path": "/approved/training-evidence/training_F3.log", "sha256": "collected original log hash"}
+  ]
+}
+```
+
+Each path must be the exact sibling of the training FINAL receipt prescribed
+by the frozen executor. The parser requires matching model/mode/parameter
+identity, exactly ordered fold-zero epochs one and two, no resumed training,
+and consistent new-best entries pointing to the expected checkpoint. It uses
+the pipe-delimited four-decimal `val_nll` field, excluding the separate
+three-decimal field printed later on the same line.
+
+A displayed four-decimal value defines a closed decimal interval of
+`value ± 0.00005`. Exact binary checkpoint values are compared using
+`Decimal.from_float`, without inventing an exact epoch-one value. An epoch-two
+best checkpoint is proven only when its exact NLL lies in its own log interval
+and strictly below the epoch-one interval's closed lower bound. Equality or
+overlap that cannot prove strict improvement remains blocked. The report
+retains the rounded values, intervals, source-log hashes and proof relation.
+Logs from another source tree are not accepted by this parser profile.
 
 New trainer runs record full-precision `val_nll`. The auditor consumes that
 hash-bound epoch trace when present, including the distinction between

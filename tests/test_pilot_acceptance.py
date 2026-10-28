@@ -10,6 +10,7 @@ import torch
 from trifusesurv2.validation.pilot import (
     Unavailable, audit_pilot, checked_file, exact_ids, optimizer_evidence,
     selection_evidence, sha256, write_json, write_pilot_report, read_json,
+    parse_rounded_validation_log, bound_training_logs, ROUNDED_LOG_SOURCE,
 )
 from trifusesurv2.validation.cohort_quality import write_csv
 
@@ -168,8 +169,11 @@ def test_untrusted_paths_and_changed_bytes_are_rejected(tmp_path):
         checked_file(root / ".." / "outside", root=root)
 
 
-def complete_fixture(root):
+def complete_fixture(root, *, source_identity=None, best_epoch=1):
     checkpoint, mapping = checkpoint_fixture()
+    if source_identity is not None:
+        checkpoint["source_identity"] = dict(source_identity)
+        mapping["source_identity"] = dict(source_identity)
     source = checkpoint["source_identity"]
     ids = {"train": ["train-001"], "val": ["val-NA"], "test": ["001", "NA"]}
     split_dir = root / "splits" / "fold_00"; split_dir.mkdir(parents=True)
@@ -206,14 +210,15 @@ def complete_fixture(root):
         losses = {key: 1 for key in ("train_loss", "train_surv_loss", "train_surv_primary_loss", "train_surv_aux_loss",
                                      "train_surv_os_nll", "train_surv_dss_nll", "train_surv_dfs_nll")}
         write_csv(fold / "metrics.csv", [{"epoch": epoch, **losses} for epoch in (1, 2)])
-        for suffix, epoch, value in (("best", 1, .3), ("last", 2, .5)):
+        selected = "last" if best_epoch == 2 else "best"
+        for suffix, epoch, value in (("best", best_epoch, .3), ("last", 2, .3 if best_epoch == 2 else .5)):
             ck = copy.deepcopy(checkpoint)
             ck.update(epoch=epoch, report_metric=value, args=spec["settings"])
             torch.save(ck, fold / f"{suffix}.pt")
         risks = [{"patient_id": pid, "risk_score": .2, "risk_horizon_days": 730, "risk_endpoint": "OS"} for pid in ids["test"]]
         write_csv(experiment / "cv_test_risks_export.csv", risks)
-        write_csv(fold / "test_risks_best.csv", [{**row, **selected_rows(.3, "best")[0]} for row in risks])
-        write_json(experiment / "cv_summary.json", {"fold_export_suffixes": ["best"], "fusion_mode": mode,
+        write_csv(fold / f"test_risks_{selected}.csv", [{**row, **selected_rows(.3, selected)[0]} for row in risks])
+        write_json(experiment / "cv_summary.json", {"fold_export_suffixes": [selected], "fusion_mode": mode,
                                                    "folds_run": [0], "use_lora": False, "report_metric": "nll"})
         artifacts = [{"path": str(path), "bytes": path.stat().st_size, "sha256": sha256(path)} for path in experiment.rglob("*") if path.is_file()]
         stages.append({"fusion_mode": mode, "invocations": 1, "returncode": 0,
@@ -230,7 +235,7 @@ def complete_fixture(root):
     write_json(training_final, {"status": "passed_paired_development_training", "training_plan_sha256": sha256(plan_path),
                                 "modes": ["F2", "F3"], "epochs_per_mode": 2, "stage_receipts": stages, "hardware": hardware})
     execution = root / "execution_plan.json"
-    execution_fields = {"run_id": "fabricated_cpu_fixture", "source_commit": "fabricated", "pinned_image": "fabricated_fixture"}
+    execution_fields = {"run_id": "fabricated_cpu_fixture", "source_commit": source["commit_sha"], "pinned_image": "fabricated_fixture"}
     write_json(execution, execution_fields)
     runtime = root / "runtime_FINAL.json"
     write_json(runtime, {"status": "passed_paired_development", "training_plan_sha256": sha256(plan_path),
@@ -260,3 +265,115 @@ def test_complete_training_without_actual_optimizer_map_remains_blocked(tmp_path
     report = audit_pilot(**kwargs)
     assert report["status"] == "blocked"
     assert all(item["status"] == "blocked" for item in report["criteria"] if item["criterion"] == "survival_path_optimizer_updates")
+
+
+def rounded_log_fixture(best_path, *, mode="F3", values=("0.4000", "0.3000"), new_best=(1, 2)):
+    lines = [f"[MODEL] fusion={mode} regions=verified parameters=9 trainable=9",
+             "[fold 00] training epochs 1..2 (no early stop)"]
+    for epoch, value in enumerate(values, 1):
+        # The later duplicate is intentionally different precision, as in the
+        # frozen source. It must never be used as the validation measurement.
+        lines.append(f"[fold 00] epoch {epoch:03d} | primary=OS | loss=1.0000 | val_nll={value} | train_c=0.500 val_c=0.500 val_nll={float(value):.3f}")
+        if epoch in new_best:
+            lines.append(f"[fold 00] new best nll={value} -> {best_path}")
+    return "\n".join(lines) + "\n"
+
+
+def parsed_fixture(tmp_path, **changes):
+    best_path = tmp_path / "best.pt"
+    return parse_rounded_validation_log(rounded_log_fixture(best_path, **changes), mode="F3", endpoint="OS",
+                                         parameters=9, trainable_parameters=9, best_checkpoint_path=best_path)
+
+
+def test_disjoint_rounded_epoch_intervals_prove_selection_without_inventing_exact_epoch_one(tmp_path):
+    rounded = parsed_fixture(tmp_path, values=("2.5965", "2.5844"))
+    checkpoint = {"epoch": 2, "report_metric": 2.584412345}
+    result = selection_evidence(checkpoint, checkpoint, selected_rows(2.584412345, "last"), "last", rounded_log=rounded)
+    assert result["full_precision_epoch_nll"] is None
+    assert result["rounded_log_evidence"]["epochs"][0]["lower_closed"] == "2.59645"
+    assert result["rounded_log_evidence"]["epochs"][0]["upper_closed"] == "2.59655"
+    assert result["rounded_log_evidence"]["ordering_proof"] == "exact_epoch_two_nll_strictly_below_epoch_one_closed_lower_bound"
+
+
+@pytest.mark.parametrize("values,metric", [(("0.3000", "0.3000"), .3), (("0.0313", "0.0312"), .03125)])
+def test_overlapping_or_closed_rounding_boundary_cannot_prove_improvement(tmp_path, values, metric):
+    checkpoint = {"epoch": 2, "report_metric": metric}
+    with pytest.raises(Unavailable, match="overlap or a rounding-boundary tie"):
+        selection_evidence(checkpoint, checkpoint, selected_rows(metric, "last"), "last", rounded_log=parsed_fixture(tmp_path, values=values))
+
+
+def test_checkpoint_value_must_be_inside_its_rounded_epoch_interval(tmp_path):
+    checkpoint = {"epoch": 2, "report_metric": .301}
+    with pytest.raises(ValueError, match="outside its rounded log interval"):
+        selection_evidence(checkpoint, checkpoint, selected_rows(.301, "last"), "last", rounded_log=parsed_fixture(tmp_path))
+
+
+def test_log_identity_and_exact_epoch_inventory_are_required(tmp_path):
+    with pytest.raises(ValueError, match="model/mode"):
+        parsed_fixture(tmp_path, mode="F2")
+    with pytest.raises(Unavailable, match="both planned epoch"):
+        parsed_fixture(tmp_path, values=("0.4000",), new_best=(1,))
+    best_path = tmp_path / "best.pt"
+    text = rounded_log_fixture(best_path).replace("epoch 002 |", "epoch 001 |")
+    with pytest.raises(ValueError, match="repeated, extra or unordered"):
+        parse_rounded_validation_log(text, mode="F3", endpoint="OS", parameters=9, trainable_parameters=9, best_checkpoint_path=best_path)
+    duplicate_field = rounded_log_fixture(best_path).replace(" | val_nll=0.4000 | ", " | val_nll=0.4000 | val_nll=0.4000 | ")
+    with pytest.raises(ValueError, match="one finite pipe-delimited"):
+        parse_rounded_validation_log(duplicate_field, mode="F3", endpoint="OS", parameters=9, trainable_parameters=9, best_checkpoint_path=best_path)
+
+
+def test_matching_collection_cannot_apply_frozen_parser_to_unqualified_source(tmp_path):
+    wrong_source = {"commit_sha": "other", "source_tree_sha256": "other"}
+    receipt = {"schema_version": 1, "status": "completed_training_logs_bound", "source_identity": wrong_source,
+               "runtime_final_sha256": "runtime", "training_receipt_sha256": "training", "training_plan_sha256": "plan"}
+    with pytest.raises(ValueError, match="only for the exact frozen"):
+        bound_training_logs(receipt, runtime_final_sha256="runtime", training_receipt_sha256="training",
+                            training_plan_sha256="plan", source_identity=wrong_source,
+                            training_receipt_path=tmp_path / "FINAL.json", trusted_root=tmp_path)
+
+
+def complete_log_fixture(root):
+    # All execution, source and GPU declarations here are fabricated metadata;
+    # the tiny model and optimizer fixtures execute on CPU only.
+    kwargs = complete_fixture(root, source_identity=ROUNDED_LOG_SOURCE, best_epoch=2)
+    logs = []
+    for mode in ("F2", "F3"):
+        path = root / f"training_{mode}.log"
+        path.write_text(rounded_log_fixture(root / mode / "fixture/fold_00/best.pt", mode=mode))
+        logs.append({"fusion_mode": mode, "path": str(path), "sha256": sha256(path)})
+    receipt = root / "training_log_receipt.json"
+    write_json(receipt, {"schema_version": 1, "status": "completed_training_logs_bound", "source_identity": ROUNDED_LOG_SOURCE,
+                         "runtime_final_sha256": sha256(kwargs["runtime_final"]), "training_receipt_sha256": sha256(root / "training_FINAL.json"),
+                         "training_plan_sha256": sha256(kwargs["training_plan"]), "logs": logs})
+    kwargs["training_log_receipt"] = receipt
+    return kwargs
+
+
+def test_bound_log_receipt_closes_epoch_two_history_gap_in_complete_fabricated_audit(tmp_path):
+    kwargs = complete_log_fixture(tmp_path)
+    report = audit_pilot(**kwargs)
+    assert report["status"] == "passed", [(item["criterion"], item.get("reason")) for item in report["criteria"] if item["status"] != "passed"]
+    proofs = [item["evidence"] for item in report["criteria"] if item["criterion"] == "validation_nll_checkpoint_selection"]
+    assert all(proof["full_precision_epoch_nll"] is None and proof["rounded_log_evidence"] for proof in proofs)
+
+
+@pytest.mark.parametrize("fault", ["wrong_source", "wrong_runtime", "changed_log", "foreign_path", "duplicate_mode"])
+def test_log_collection_must_bind_exact_completed_source_mode_paths_and_bytes(tmp_path, fault):
+    kwargs = complete_log_fixture(tmp_path)
+    path = kwargs["training_log_receipt"]
+    receipt = json.loads(path.read_text())
+    if fault == "wrong_source":
+        receipt["source_identity"]["commit_sha"] = "other_source"
+    elif fault == "wrong_runtime":
+        receipt["runtime_final_sha256"] = "other_runtime"
+    elif fault == "changed_log":
+        (tmp_path / "training_F2.log").write_text("changed")
+    elif fault == "foreign_path":
+        receipt["logs"][0]["path"] = str(tmp_path / "different.log")
+    else:
+        receipt["logs"][1]["fusion_mode"] = "F2"
+    path.write_text(json.dumps(receipt))
+    report = audit_pilot(**kwargs)
+    gate = next(item for item in report["criteria"] if item["criterion"] == "completed_training_log_provenance")
+    assert gate["status"] == "failed"
+    assert report["status"] == "failed"

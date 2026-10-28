@@ -9,15 +9,25 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, timezone
+from decimal import Decimal, localcontext
 import hashlib
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any
 
 
 class Unavailable(ValueError):
     """Evidence is missing; no pass or failure may be inferred."""
+
+
+# The four-decimal parser is qualified against this frozen trainer's print
+# statements. Future trainers have a full-precision metrics trace instead.
+ROUNDED_LOG_SOURCE = {
+    "commit_sha": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+    "source_tree_sha256": "2df5644243d02a1bbd1013f2ef570f12ef48f60e2f14eaeddace8fc818c1c474",
+}
 
 
 def sha256(path: Path) -> str:
@@ -196,7 +206,91 @@ def optimizer_evidence(checkpoint: dict, mapping: dict, checkpoint_sha256: str, 
             "interpretation": "Adam state steps count successful optimizer updates, not AMP attempts; nonzero moments prove survival-path optimization, not clinical benefit."}
 
 
-def selection_evidence(best: dict, last: dict, rows: list[dict], selected: str, *, epoch_metrics=None) -> dict:
+def bound_training_logs(receipt: dict, *, runtime_final_sha256: str, training_receipt_sha256: str,
+                        training_plan_sha256: str, source_identity: dict,
+                        training_receipt_path: Path, trusted_root: Path) -> dict[str, dict]:
+    """Validate separately pinned, completed-run log collection evidence."""
+    if receipt.get("schema_version") != 1 or receipt.get("status") != "completed_training_logs_bound":
+        raise ValueError("Unsupported completed-training-log receipt")
+    for key, expected in (("runtime_final_sha256", runtime_final_sha256),
+                          ("training_receipt_sha256", training_receipt_sha256),
+                          ("training_plan_sha256", training_plan_sha256),
+                          ("source_identity", source_identity)):
+        if receipt.get(key) != expected:
+            raise ValueError(f"Training log receipt {key} differs from the successful execution chain")
+    if source_identity != ROUNDED_LOG_SOURCE:
+        raise ValueError("Rounded-log parser is qualified only for the exact frozen pilot source")
+    records = receipt.get("logs", [])
+    if len(records) != 2 or sorted(item.get("fusion_mode", "") for item in records) != ["F2", "F3"]:
+        raise ValueError("Training log receipt must bind each mode exactly once")
+    output = {}
+    for item in records:
+        mode = item["fusion_mode"]
+        expected_path = training_receipt_path.parent / f"training_{mode}.log"
+        path = Path(item["path"])
+        if path != expected_path:
+            raise ValueError("Training log path is not the frozen executor's exact per-mode log")
+        checked_file(path, root=trusted_root, digest=item["sha256"])
+        output[mode] = source_record(path)
+    return output
+
+
+def parse_rounded_validation_log(text: str, *, mode: str, endpoint: str,
+                                 parameters: int, trainable_parameters: int,
+                                 best_checkpoint_path: Path) -> dict:
+    """Parse the frozen grammar, preserving uncertainty from .4f formatting.
+
+    The same summary line also prints a three-decimal ``val_nll`` later.
+    Only the separately pipe-delimited four-decimal field is used here.
+    """
+    lines = text.splitlines()
+    model_lines = [line for line in lines if line.startswith("[MODEL] fusion=")]
+    expected_model = f"[MODEL] fusion={mode} regions=verified parameters={parameters} trainable={trainable_parameters}"
+    if not model_lines:
+        raise Unavailable("Training log lacks its model identity marker")
+    if model_lines != [expected_model]:
+        raise ValueError("Training log model/mode/parameter identity differs or is repeated")
+    if any("resumed from epoch" in line for line in lines):
+        raise ValueError("Rounded-log proof does not support resumed training")
+    if [line for line in lines if re.match(r"^\[fold \d+\] training epochs ", line)] != ["[fold 00] training epochs 1..2 (no early stop)"]:
+        raise ValueError("Training log epoch budget differs from the frozen two-epoch pilot")
+    summaries, new_best = [], []
+    for line_number, line in enumerate(lines, 1):
+        epoch_match = re.match(r"^\[fold (\d+)\] epoch (\d+) \|", line)
+        if epoch_match:
+            fold, epoch = map(int, epoch_match.groups())
+            if fold != 0 or f" | primary={endpoint} | " not in line:
+                raise ValueError("Validation log fold or primary endpoint differs")
+            values = re.findall(r" \| val_nll=([+-]?\d+\.\d{4})(?= \| )", line)
+            if len(values) != 1:
+                raise ValueError("Expected one finite pipe-delimited four-decimal validation NLL")
+            center = Decimal(values[0])
+            half_unit = Decimal("0.00005")
+            with localcontext() as context:
+                context.prec = max(64, len(center.as_tuple().digits) + 10)
+                lower, upper = center - half_unit, center + half_unit
+            summaries.append({"epoch": epoch, "line_number": line_number, "displayed_val_nll": values[0],
+                              "lower_closed": str(lower), "upper_closed": str(upper)})
+        best_match = re.match(r"^\[fold (\d+)\] new best nll=([+-]?\d+\.\d{4}) -> (.+)$", line)
+        if best_match:
+            fold, displayed, path = best_match.groups()
+            if (int(fold) != 0 or not summaries or Path(path) != best_checkpoint_path
+                    or displayed != summaries[-1]["displayed_val_nll"]):
+                raise ValueError("New-best log entry differs from epoch NLL/fold/checkpoint path")
+            new_best.append(summaries[-1]["epoch"])
+    if len(summaries) < 2:
+        raise Unavailable("Rounded validation log does not retain both planned epoch summaries")
+    if [row["epoch"] for row in summaries] != [1, 2]:
+        raise ValueError("Rounded validation log has repeated, extra or unordered epochs")
+    if new_best not in ([1], [1, 2]):
+        raise ValueError("New-best log history is incomplete, repeated or inconsistent")
+    return {"parser_profile": "frozen_614d7fb_pipe_delimited_validation_nll_4dp",
+            "decimal_places": 4, "interval_half_width": "0.00005", "interval_endpoints": "closed",
+            "epochs": summaries, "new_best_epochs": new_best,
+            "precision_statement": "The displayed NLL is rounded. The unknown exact value is not reconstructed."}
+
+
+def selection_evidence(best: dict, last: dict, rows: list[dict], selected: str, *, epoch_metrics=None, rounded_log=None) -> dict:
     """The pilot has exactly two epochs; last wins export ties by source order."""
     if last.get("epoch") != 2 or best.get("epoch") not in (1, 2):
         raise ValueError("Unexpected two-epoch checkpoint epochs")
@@ -221,16 +315,45 @@ def selection_evidence(best: dict, last: dict, rows: list[dict], selected: str, 
         expected_best_epoch = 1 if trace[0] <= trace[1] else 2
         if best["epoch"] != expected_best_epoch or b != trace[expected_best_epoch - 1] or end != trace[1]:
             raise ValueError("Checkpoint NLL/epoch disagrees with full-precision epoch validation trace")
-    if best["epoch"] == 2 and trace is None:
-        raise Unavailable("Epoch-one validation NLL is not retained in metrics.csv; need an independently bound full-precision validation trace")
+    rounded_proof = None
+    if rounded_log is not None:
+        intervals = rounded_log["epochs"]
+        if [row["epoch"] for row in intervals] != [1, 2]:
+            raise ValueError("Rounded log proof must cover exactly epochs one and two")
+        expected_history = [1] if best["epoch"] == 1 else [1, 2]
+        if rounded_log["new_best_epochs"] != expected_history:
+            raise ValueError("Checkpoint best epoch differs from retained new-best log history")
+        exact_values = {2: Decimal.from_float(end), best["epoch"]: Decimal.from_float(b)}
+        for epoch, exact in exact_values.items():
+            interval = intervals[epoch - 1]
+            if not Decimal(interval["lower_closed"]) <= exact <= Decimal(interval["upper_closed"]):
+                raise ValueError("Exact checkpoint validation NLL lies outside its rounded log interval")
+        if trace is not None:
+            for exact, interval in zip(trace, intervals):
+                if not Decimal(interval["lower_closed"]) <= Decimal.from_float(exact) <= Decimal(interval["upper_closed"]):
+                    raise ValueError("Full-precision epoch NLL disagrees with rounded log interval")
+        if best["epoch"] == 2 and trace is None:
+            # Strict inequality proves epoch two improved on every possible
+            # epoch-one value, including closed rounding-boundary cases.
+            lower_one = Decimal(intervals[0]["lower_closed"])
+            if not Decimal.from_float(end) < lower_one:
+                raise Unavailable("Rounded epoch-one interval cannot prove strict improvement: overlap or a rounding-boundary tie remains")
+            relation = "exact_epoch_two_nll_strictly_below_epoch_one_closed_lower_bound"
+        else:
+            relation = "rounded_intervals_consistent_with_exact_checkpoint_or_epoch_trace_ordering"
+        rounded_proof = {**rounded_log, "ordering_proof": relation,
+                         "exact_epoch_two_checkpoint_nll_decimal": str(Decimal.from_float(end))}
+    if best["epoch"] == 2 and trace is None and rounded_proof is None:
+        raise Unavailable("Epoch-one validation NLL is not retained in metrics.csv; need a bound full-precision trace or decisive rounded-log interval proof")
     return {"selected": selected, "best_validation_nll": b, "last_validation_nll": end,
             "rule": "minimum validation NLL; last wins export ties; best.pt retains first epoch on an epoch-NLL tie",
-            "candidate_epochs": [best["epoch"], last["epoch"]], "full_precision_epoch_nll": trace}
+            "candidate_epochs": [best["epoch"], last["epoch"]], "full_precision_epoch_nll": trace,
+            "rounded_log_evidence": rounded_proof}
 
 
 def audit_pilot(*, training_plan: Path | None = None, execution_plan: Path | None = None,
                 runtime_final: Path | None = None, trusted_root: Path | None = None,
-                parameter_maps: dict[str, Path] | None = None) -> dict:
+                parameter_maps: dict[str, Path] | None = None, training_log_receipt: Path | None = None) -> dict:
     criteria, inputs, contracts, stages, mode_data = [], {}, {}, [], {}
 
     def check(name, callback, *, required=True, mode=None):
@@ -314,6 +437,21 @@ def audit_pilot(*, training_plan: Path | None = None, execution_plan: Path | Non
         return {"hardware": hardware, "pod_uid": runtime["pod_uid"], "pod_name": runtime["pod_name"],
                 "pinned_image": runtime["pinned_image"], "source_commit": runtime["source_commit"]}
     check("single_h100_execution_identity", execution_identity)
+
+    log_records, logs_bound = {}, False
+    if training_log_receipt is not None:
+        def log_binding():
+            nonlocal log_records
+            if not chain_ok:
+                raise Unavailable("Successful execution receipt chain is required before log proof")
+            receipt = capture(training_log_receipt, "training_log_receipt")
+            log_records = bound_training_logs(receipt,
+                runtime_final_sha256=inputs["runtime_final"]["sha256"],
+                training_receipt_sha256=inputs["training_receipt"]["sha256"],
+                training_plan_sha256=inputs["training_plan"]["sha256"], source_identity=plan["source_identity"],
+                training_receipt_path=Path(inputs["training_receipt"]["path"]), trusted_root=trusted_root)
+            return log_records
+        logs_bound = check("completed_training_log_provenance", log_binding)
 
     def bound(path):
         item = binding.get(str(path.absolute()))
@@ -486,7 +624,17 @@ def audit_pilot(*, training_plan: Path | None = None, execution_plan: Path | Non
                 raise Unavailable("Checkpoint validation-NLL evidence is unavailable")
             if settings.get("report_metric") != "nll" or settings.get("export_policy") != "best_val":
                 raise ValueError("Frozen validation-NLL export rule differs")
-            return selection_evidence(data["checkpoints"]["best"], data["checkpoints"]["last"], data["selected_risks"], data["selected"], epoch_metrics=data["metrics"])
+            rounded = None
+            if training_log_receipt is not None:
+                if not logs_bound:
+                    raise Unavailable("Completed per-mode log provenance is unavailable")
+                record = log_records[mode]
+                log_path = checked_file(Path(record["path"]), root=trusted_root, digest=record["sha256"])
+                rounded = parse_rounded_validation_log(log_path.read_text(), mode=mode, endpoint=settings["endpoint"],
+                    parameters=data["contract"]["parameters"], trainable_parameters=data["contract"]["trainable_parameters"],
+                    best_checkpoint_path=data["fold"] / "best.pt")
+                rounded["log_artifact"] = record
+            return selection_evidence(data["checkpoints"]["best"], data["checkpoints"]["last"], data["selected_risks"], data["selected"], epoch_metrics=data["metrics"], rounded_log=rounded)
         check("validation_nll_checkpoint_selection", selection, mode=mode)
 
     def comparability():

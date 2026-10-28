@@ -15,6 +15,7 @@ def main(argv=None):
     parser.add_argument("--runtime-final", type=Path)
     parser.add_argument("--trusted-root", type=Path, help="Approved root for hash-bound trusted full-pickle checkpoint reads")
     parser.add_argument("--parameter-map", action="append", default=[], metavar="MODE=JSON")
+    parser.add_argument("--training-log-receipt", type=Path, help="Separately pinned completed per-mode logs for rigorous four-decimal NLL interval proof")
     parser.add_argument("--out-dir", type=Path, required=True, help="New report directory; existing outputs are never overwritten")
     args = parser.parse_args(argv)
     mappings = {}
@@ -26,7 +27,8 @@ def main(argv=None):
     if not args.training_plan and not args.execution_plan:
         parser.error("At least one --training-plan or --execution-plan is required")
     report = audit_pilot(training_plan=args.training_plan, execution_plan=args.execution_plan,
-                         runtime_final=args.runtime_final, trusted_root=args.trusted_root, parameter_maps=mappings)
+                         runtime_final=args.runtime_final, trusted_root=args.trusted_root, parameter_maps=mappings,
+                         training_log_receipt=args.training_log_receipt)
     write_pilot_report(report, args.out_dir)
     print(f"Pilot acceptance: {report['status']}; {args.out_dir / 'pilot_acceptance.json'}")
     return {"passed": 0, "failed": 1, "blocked": 2}[report["status"]]
