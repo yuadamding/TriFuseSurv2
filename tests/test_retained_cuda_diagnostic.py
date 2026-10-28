@@ -107,6 +107,48 @@ class IdentityTests(unittest.TestCase):
 
 
 class NumericalMetadataTests(unittest.TestCase):
+    def test_scalar_value_preserves_signed_finite_values_and_rejects_nonfinite(self):
+        for value in (-2.5, -0.0, 0.0, 1.0):
+            with self.subTest(value=value):
+                observed = diagnostic.tensor_summary(torch.tensor(value))
+                self.assertEqual(observed["scalar_value"], value)
+                self.assertEqual(observed["shape"], [])
+                json.dumps(observed, allow_nan=False)
+        singleton = diagnostic.tensor_summary(torch.tensor([-3.]))
+        self.assertEqual(singleton["scalar_value"], -3.)
+        for value in (float("nan"), float("inf"), -float("inf")):
+            with self.subTest(value=value):
+                observed = diagnostic.tensor_summary(torch.tensor(value))
+                self.assertIsNone(observed["scalar_value"])
+                self.assertFalse(observed["all_finite"])
+                json.dumps(observed, allow_nan=False)
+        self.assertIsNone(diagnostic.tensor_summary(torch.tensor([1., 2.]))["scalar_value"])
+
+    def test_real_cpu_adamw_scalar_step_corresponds_to_named_counter(self):
+        # One actual optimizer operation with prescribed fabricated gradients.
+        # No neural forward/backward, clinical data or model fit is performed.
+        model = tiny_metadata_model()
+        _, groups = diagnostic.required_parameter_groups(model)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=.001)
+        successful = []
+        handle = optimizer.register_step_post_hook(lambda *_: successful.append(True))
+        for parameter in model.parameters():
+            parameter.grad = torch.ones_like(parameter)
+        optimizer.step()
+        handle.remove()
+        observed = diagnostic.parameter_and_optimizer_observations(model, optimizer, groups)
+        self.assertEqual(len(successful), 1)
+        self.assertEqual(diagnostic.update_failures(observed, len(successful)), [])
+        for rows in observed["required_paths"].values():
+            for row in rows:
+                raw = observed["optimizer_states"][row["parameter_name"]]["step"]
+                self.assertEqual(raw["shape"], [])
+                self.assertEqual(raw["elements"], 1)
+                self.assertEqual(raw["scalar_value"], 1.0)
+                self.assertEqual(raw["scalar_value"], row["step"])
+                self.assertTrue(raw["all_finite"])
+        json.dumps(observed, allow_nan=False)
+
     def test_nonfinite_counts_norm_and_json_are_safe(self):
         result = diagnostic.tensor_summary(torch.tensor([float("nan"), float("inf"), -float("inf"), 3., 4.]))
         self.assertEqual((result["nan_elements"], result["positive_inf_elements"], result["negative_inf_elements"]), (1, 1, 1))

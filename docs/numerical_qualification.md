@@ -99,3 +99,29 @@ with the corresponding cosine schedule if required. The numerical failure
 provides no evidence to change the epoch cap. Freeze the main study only after
 qualification and budget determination, then execute C0/C1 and all six fresh
 principal neural fits and the paired scientific evaluation.
+
+## Dated execution handoff — October 28, 2026
+
+Instrumentation source `21d5e03` is published separately from the retained
+scientific source `30dfdec`. The full synthetic CPU suite passed 302 tests and
+211 subtests. Nine affected qualifier checks passed after the final
+type-descriptor/settings-guard review. The controller passed 32 tests locally
+against the rendered manifest and 32 on actual Seadragon host Python 3.6.
+These are engineering results, separate from the numerical matrix.
+
+Job `trifusesurv2-amp-diagnostic-20261028a`, UID
+`31b9958f-7ab9-4510-a86b-f2ded8eac51a`, was submitted once after immutable
+publication and admission review. At **12:35:43 PM CDT**, the Pod was
+Running/Ready with one GPU request, no restarts and a matched detached owner.
+A separate **12:36:39 PM CDT** guarded startup read verified one H100 80GB and
+the exact current Pod UID. Source tests and the six-cell numerical result
+remain unobserved at this handoff. The controller continues independently and
+owns terminal capture, metadata validation and exact cleanup.
+
+The [dated JSON](clinical_cuda_followup_run.json) binds the plan, manifest,
+controller, admitted Pod spec, publication, host gate, launch and startup
+receipts. Existing radiomics-v1 is reused without installation; verified staging
+archives are removed and no temporary work-mac relay files were created.
+The next scientific steps remain the numerical disposition, actual CT/Swin
+survival-NLL qualification and a fresh common-budget pair. No numerical-policy
+change or budget adequacy is claimed from this handoff.

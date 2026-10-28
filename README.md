@@ -76,6 +76,11 @@ exact retained CUDA fixture. The new study configuration requires
 `--clinical_type_policy approved_categorical_v1`; legacy encoding remains
 available for historical contracts. Numerical correction and a fresh budget
 attempt require separately bound H100 evidence.
+The [dated follow-up handoff](docs/clinical_cuda_followup_run.json) records
+source `21d5e03` submitted for the six-cell diagnostic. At October 28, 2026,
+12:35 PM CDT it was Running/Ready with one GPU request and a matched supervisor;
+the separate 12:36 PM CDT startup receipt verified one H100 80GB. Matrix results
+and the intended CT/Swin qualification remain pending at that snapshot.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

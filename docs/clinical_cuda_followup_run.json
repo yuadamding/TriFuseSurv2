@@ -1,0 +1,153 @@
+{
+  "clinical_policy": {
+    "categorical": [
+      "PATHOLOGY",
+      "SEX",
+      "RACE",
+      "T",
+      "N",
+      "M",
+      "KFCF",
+      "SMOKE",
+      "ALCOHOL",
+      "HPV"
+    ],
+    "development_cells_verified": 4862,
+    "development_rows": 442,
+    "excluded": [
+      "NSTAGE",
+      "TX",
+      "derived_stage_aliases"
+    ],
+    "focused_subtests_passed": 50,
+    "focused_tests_passed": 45,
+    "missing_unseen_separate": true,
+    "numeric": [
+      "AGE"
+    ],
+    "ordinal_channels": false,
+    "policy": "approved_categorical_v1",
+    "raw_case_preserved": true,
+    "real_data_training_qualified": false,
+    "saved_in_encoder_and_contract": true,
+    "source_cell_identity_receipt": "/storage/TriFuseSurv/runs/study-20261028/prospective-clinical-typing-a/SOURCE_CELL_IDENTITY.json",
+    "source_commit": "21d5e037aa305cefe4c6f1767c61478330df169d",
+    "status": "implemented_and_pushed",
+    "vocabulary_fit": "training_only"
+  },
+  "diagnostic": {
+    "actual_hardware": {
+      "compute_capability": [
+        9,
+        0
+      ],
+      "cuda_build": "12.8",
+      "name": "NVIDIA H100 80GB HBM3",
+      "torch_version": "2.9.1+cu128",
+      "total_memory_bytes": 84929478656,
+      "visible_device_count": 1
+    },
+    "admission_review_sha256": "83604da1ad50b3cf74e01c117bf54f39280b0663099b631dbdfd56a8ed0211f7",
+    "admitted_pod_spec_sha256": "aca997b7c7dcd4c6de7794a9573e9839e100406c9d33da87cd51aed15b8593f5",
+    "automatic_retries": 0,
+    "cells_published_at_status_snapshot": 0,
+    "cleanup_status": "not_due_nonterminal",
+    "clinical_input_reads": 0,
+    "controller_binding_sha256": "de04e38a9884a0b7fffde56973384952d1130375ba52cb4f0f6e74dbea0390b5",
+    "create_attempts": 1,
+    "eta": "insufficient measured evidence",
+    "existing_radiomics_environment_reused": true,
+    "guarded_startup_observed_at_utc": "2026-10-28T17:36:39.917981+00:00",
+    "guarded_startup_sha256": "10a5603e37cdbb59c4ebc75c1d8684a914ef050c315e59170da2f7be0e06df44",
+    "host_gate_sha256": "165002a01a1ede18d12c57ef710ea9871c523e738a80631361ab74938b839f45",
+    "host_tests_passed": 32,
+    "job": "trifusesurv2-amp-diagnostic-20261028a",
+    "job_uid": "31b9958f-7ab9-4510-a86b-f2ded8eac51a",
+    "jobs_submitted": 1,
+    "local_controller_tests_passed": 32,
+    "mac_relay_files_created": false,
+    "manifest_sha256": "c79272e5323d5e32f6f15dd97be074155acf17aa1bd725c3b431bec2a0841691",
+    "matrix_optimizer_opportunities": 6,
+    "new_environment_created": false,
+    "numerical_result": "not_observed",
+    "observed_at_houston": "October 28, 2026, 12:35:43 PM CDT",
+    "observed_at_utc": "2026-10-28T17:35:43.977831+00:00",
+    "original_fixture_sha256": "61cc6794a50ccb330427746d4c751b8535abe82772168d73a578f0c757b57e8a",
+    "original_model_source_commit": "30dfdec6c285ec5d813f0e6dc1ebc47cbf4ebf1d",
+    "original_model_source_tree_sha256": "c75dcaeb557791e22734c4eceedb5fb07b20b1a10f0a1ea2a9015f2f69244c13",
+    "phase": "running_synthetic_diagnostic",
+    "plan_sha256": "b374de7f7180e2a73fe8163a40801cda961e0902506d60d5eeb09ff1df00d366",
+    "planned_cells": 6,
+    "pod_name": "trifusesurv2-amp-diagnostic-20261028a-ttnjp",
+    "pod_uid": "35cf7ad5-81c2-4483-8699-e9c787a4a7f3",
+    "publication": "both_bundles_readback_verified_staging_archives_removed",
+    "qualification_passed": false,
+    "real_data_neural_training_invocations": 0,
+    "remote_bundle": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/amp-diagnostic-a",
+    "remote_lifecycle": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/amp-diagnostic-a-lifecycle",
+    "remote_output": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/amp-diagnostic-a-output",
+    "requested_gpu_count": 1,
+    "running_ready_gpu_count": 1,
+    "software_source_commit": "21d5e037aa305cefe4c6f1767c61478330df169d",
+    "software_source_tree_sha256": "25b35b5f6cb772b42bd9ccaeacbe517d15b9c757ca6f683f2ee73d2ed7a4e0b4",
+    "whole_job_deadline": null,
+    "workload_binding_sha256": "59f15740c6deb60cc1d88bc0bd7c5392a495a7fe9c28ce4b752df053b5b8c6b9"
+  },
+  "evidence": {
+    "guarded_startup": {
+      "run_relative_path": "common-grid-h100-20261027/amp-diagnostic-a-startup-a.json",
+      "sha256": "033290cd92bb7443b6c14311bca6e3f1a397df0ce0bbdb3617fbcd95532c5973"
+    },
+    "host_gate": {
+      "run_relative_path": "study-20261028/amp-diagnostic-a-host-gate.json",
+      "sha256": "165002a01a1ede18d12c57ef710ea9871c523e738a80631361ab74938b839f45"
+    },
+    "launch": {
+      "run_relative_path": "common-grid-h100-20261027/amp-diagnostic-a-launch.json",
+      "sha256": "bdf5dbfaffaf1d1f334f774ac4282c7b707820c07973d036e9d6ae7f6b2ab92f"
+    },
+    "publication": {
+      "run_relative_path": "common-grid-h100-20261027/amp-diagnostic-a-publication.json",
+      "sha256": "5b0f861bd00d646b5e554bf81698ae8c7bef5db8ef2ebb96862c65ae22f54713"
+    },
+    "status": {
+      "run_relative_path": "common-grid-h100-20261027/amp-diagnostic-a-status-a.json",
+      "sha256": "b3aff7587e55c9f2b59caf87bf24b52fa074b53292fe2acecc8a86bab9130353"
+    }
+  },
+  "guarded_hardware_proof_at_utc": "2026-10-28T17:36:39.917981+00:00",
+  "live_status": false,
+  "record_kind": "dated_clinical_correction_and_cuda_diagnostic_handoff",
+  "schema_version": 1,
+  "scientific_rules_unchanged": {
+    "OS_origin": "diagnosis",
+    "event1": "death_from_any_cause",
+    "first_common_extension_epochs_each": 24,
+    "initial_budget_epochs_each": 12,
+    "main_neural_seeds": [
+      42,
+      142,
+      242
+    ],
+    "minimum_worthwhile_absolute_IBS_reduction": 0.005,
+    "primary_IBS_days": [
+      210,
+      730
+    ],
+    "unit": "days"
+  },
+  "scope": "Synthetic CUDA diagnosis only; no clinical inputs, real-data fits, numerical-policy adoption or budget adequacy result.",
+  "snapshot_at_utc": "2026-10-28T17:35:43.977831+00:00",
+  "snapshot_display": "October 28, 2026, 12:35:43 PM CDT",
+  "source_validation": {
+    "full_synthetic_cpu_suite": {
+      "log_sha256": "e8de60e1bfc6646db15c066fb4ac6ee8884ec7254cccd4087fc70688436aca08",
+      "subtests": 211,
+      "tests": 302
+    },
+    "host_controller_tests": 32,
+    "legacy_failure_preserved": true,
+    "post_review_affected_qualifier_tests": 9
+  },
+  "supervisor_at_snapshot": "exact_identity_matched"
+}
