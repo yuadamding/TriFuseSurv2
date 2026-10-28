@@ -2,9 +2,10 @@
 
 This implementation is prospective software. Synthetic reference checks establish
 engineering behavior; they do not qualify the local cohort, demonstrate H100
-training, establish convergence, or show that F3 improves prediction. The running
-two-epoch pilot remains bound to its original source and does not gain new export
-artifacts by changing this repository.
+training, establish convergence, or show that F3 improves prediction. The
+completed two-epoch pilot remains bound to source
+`614d7fbdb3551f58c2e8b5da403f7b6f5418f23e` and does not gain new export artifacts
+retroactively by changing this repository.
 
 ## Input contract
 
@@ -114,6 +115,33 @@ trainer's historical custom bin-endpoint `ibs` remains a diagnostic. See the
 [IBS API](https://scikit-survival.readthedocs.io/en/v0.25.0/api/generated/sksurv.metrics.integrated_brier_score.html)
 and [reference implementation](https://github.com/sebp/scikit-survival/blob/v0.25.0/sksurv/metrics.py).
 
+The additive `supporting_horizon_brier` report scores every distinct
+`primary_horizon` and `secondary_horizons` entry, including horizons outside the
+IBS integration grid. It uses the explicit survival probability at that time and
+the pinned [Brier-score reference](https://scikit-survival.readthedocs.io/en/v0.25.0/api/generated/sksurv.metrics.brier_score.html),
+with censoring estimated from training patients. Lower is better. The existing
+per-fit `brier` array still describes only `ibs_times`; neither the primary IBS
+interval nor its meaningful-improvement threshold changes.
+
+Each supporting horizon reports per-fit scores, per-mode seed means and sample
+SDs, and matched-seed candidate-minus-comparator differences. Its percentile
+intervals regenerate exactly the primary patient draws, preserving pairing
+across all fits, but count valid draws independently by horizon. A secondary
+horizon outside a bootstrap sample's follow-up therefore cannot change the
+primary IBS/concordance intervals. These supporting intervals are pointwise;
+they are not simultaneous confidence bands or adjusted for multiple comparisons.
+
+Known, independently checked reference follow-up failures mark that supporting
+horizon `unassessable`, with the exact error and follow-up diagnostics; primary
+outputs and other assessable horizons remain available. No patient or time is
+removed, no score is imputed, and no alternative horizon is chosen. Bootstraps
+are not run for a horizon whose full-cohort score is unassessable. For assessable
+horizons, invalid draws and their reasons are retained; insufficient valid draws
+yield null intervals while retaining the point scores. The existing protocol,
+all-horizon training censoring support, prediction and calibration gates still
+apply. Unexpected reference errors propagate instead of becoming scientific
+unassessability.
+
 Unknown/zero training censoring support, a grid outside held-out follow-up range,
 or otherwise undefined reference scores fail explicitly. The reference Brier
 implementation also checks observed follow-up support. The evaluator does not
@@ -192,6 +220,9 @@ ties, identical-model zero contrasts, literal IDs, complete fit inventories,
 curve support/monotonicity, missing values and unsupported horizons. The export
 integration fixture checks the selected endpoint, patient ordering, original
 outcome precision, bin grid, checkpoint/contract hashes and sidecar binding.
+`tests/test_supporting_horizon_brier.py` additionally checks horizons outside the
+IBS grid, manual training-reference IPCW scores and bootstrap intervals,
+independent support failures, paired seed contrasts and unchanged primary output.
 Run these as engineering fixtures in the pinned study environment; clinical
 evaluation remains subject to the study and single-H100 execution gates.
 

@@ -351,12 +351,15 @@ def evaluate_predictions(predictions, outcomes, spec):
                 "percentile_95_ci": np.percentile(values, [2.5, 97.5]).tolist() if sufficient else None,
                 "ci_status": "available" if sufficient else "insufficient_valid_replicates",
             })
+    from .horizon_brier import supporting_horizon_brier
+    horizon_brier = supporting_horizon_brier(y_train, y_test, fits, ev)
     return {"schema_version": 1, "reference": {"library": "scikit-survival", "version": REFERENCE_VERSION},
             "status": "evaluated", "evaluation": ev, "n_patients": len(y_test),
             "outcome_inventory_sha256": ev["outcome_inventory_sha256"],
             "patient_inventory_sha256": hashlib.sha256(json.dumps(target["Patient_ID"].tolist(), separators=(",", ":")).encode()).hexdigest(),
             "fit_identities": identities, "scores": scores, "mode_summary": mode_summary,
             "calibration": calibration, "support": support, "paired_contrasts": contrasts,
+            "supporting_horizon_brier": horizon_brier,
             "bootstrap": {"requested": ev["bootstrap_replicates"], "invalid": sum(reasons.values()),
                           "invalid_reasons": dict(reasons), "draws_sha256": draw_digest.hexdigest(),
                           "method": "same patient indices across modes/seeds; mean per-seed differences; percentile interval",

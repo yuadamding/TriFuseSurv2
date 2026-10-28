@@ -58,6 +58,12 @@ separate 12-epoch pair on training/validation data only. The new
 their records, datasets, evaluations and exports. The primary scientific metric
 is mean paired deltaIBS over 210–730 days, with the user-defined worthwhile
 reduction of 0.005. The full synthetic suite passes 260 tests and 176 subtests.
+Its [dated launch record](docs/budget_development_run.json) shows the separate
+source `30dfdec` Job submitted on October 28, 2026, at 11:10 AM CDT. At the
+11:11 AM CDT snapshot it was Pending cluster resources with zero Running/Ready
+H100s and a matched detached supervisor. The 53-test host controller gate passed;
+the new source's same-image CUDA gate and both fits await worker startup.
+This snapshot does not establish a common training cap or a scientific result.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

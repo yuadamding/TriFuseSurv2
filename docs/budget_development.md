@@ -115,6 +115,41 @@ Local prospective artifacts are under
 `pilot_development_evidence.json`, and `FILES.json`.
 The proposal SHA-256 is
 `89306388b7fb5d4d594c7e4202a60ff0258ca282627ad92dded6a528542dd7d5`.
-New executable source, development inputs and the execution manifest remain to
-be bound before launch. See [the cohort qualification](cohort_qualification.md)
-and [study protocol](study_protocol.md) for the retained scientific scope.
+Executable source `30dfdec`, the 442-row development views and the execution
+manifest are now bound in the [dated launch record](budget_development_run.json).
+See [the cohort qualification](cohort_qualification.md) and
+[study protocol](study_protocol.md) for the retained scientific scope.
+
+## First assessment attempt — October 28, 2026
+
+Job `trifusesurv2-budget-development-20261028a`, UID
+`d5ca7fee-5555-403a-9850-41fed98a82b9`, was submitted once and activated at
+11:10 AM CDT after two suspended, zero-Pod binding reads. The bound resources
+are one H100, 24 CPUs, 200 GiB RAM and 8 GiB memory-backed shared memory.
+It reuses the pinned radiomics image, institutional PVC/subpath and existing
+`radiomics-v1` interpreter without installation. The new output and lifecycle
+roots are separate from the completed pilot and baseline candidate.
+
+The controller passed 53 tests on actual Seadragon Python 3.6. These include
+metadata from tiny fabricated F2/F3 producer runs whose full checkpoints were
+accepted by the unchanged numerical auditor. Portable fixture tests deny reads
+through original workstation paths. These checks do not establish actual H100
+execution of the new source: focused same-image source tests, a tiny CUDA AMP
+update for each fusion mode and shared-memory transport still run in the worker
+before either real-data fit.
+
+At **October 28, 2026, 11:11:06 AM CDT**, the Pod was Pending because the
+cluster could not place the bound GPU/CPU/memory request. Zero H100s were
+Running/Ready; the detached supervisor's exact process identity matched.
+No worker or fit had started, and no queue ETA was established. Pending counts
+against the one-H100 cap. The bound owner continues independently and captures
+terminal evidence and exact cleanup. Do not duplicate the Pending attempt or
+replay publication/launch commands to inspect its status.
+
+The common substantive cap remains unset. Completion of this pair must produce
+the frozen NLL-window assessment, finite/update exposure evidence and scoped
+timings before the rule can accept the cap or require a fresh common extension.
+The separate frozen C0/C1 candidate stays deferred; none of the six substantive
+neural fits has run. The dated JSON binds source, plan, manifest, admission,
+controller, host gate, launch and snapshot hashes. Original pilot receipts and
+their separately reconciled controller failure remain intact.

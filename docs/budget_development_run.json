@@ -1,0 +1,109 @@
+{
+  "evidence": {
+    "host_gate": {
+      "run_relative_path": "study-20261028/budget-a-host-gate.json",
+      "sha256": "a4a3d9f4f7eb167070dd1a4988438f18610c478ba93e4f91b1d7b000afc8ea2a"
+    },
+    "launch": {
+      "run_relative_path": "common-grid-h100-20261027/budget-a-launch.json",
+      "sha256": "36fc9d6450da01690f7c2a65c505462bb4ce90e68441e87ec4a77059467ece2b"
+    },
+    "publication": {
+      "run_relative_path": "common-grid-h100-20261027/budget-a-publication.json",
+      "sha256": "4d9ef5ef6a5840f70c587141ac9d09beca2db914f3fa7da760e59070963db6bf"
+    },
+    "status": {
+      "run_relative_path": "common-grid-h100-20261027/budget-a-status-a.json",
+      "sha256": "0057bec4540f33b55b2f59b934140a544550e9225a0022dbf4c2ec41654648b9"
+    }
+  },
+  "live_status": false,
+  "next_scientific_steps": [
+    "Assess the common training budget from both modes using the frozen NLL/update/timing rule.",
+    "If necessary, record a fresh common extension for both modes.",
+    "Freeze the full study; run C0/C1 and all six substantive paired-seed fits."
+  ],
+  "primary_effect": {
+    "delta_threshold": -0.005,
+    "metric": "mean paired F3-minus-F2 IBS over 210\u2013730 days",
+    "minimum_worthwhile_absolute_reduction": 0.005
+  },
+  "publication": {
+    "both_bundles_readback_verified": true,
+    "mac_relay_files_created": false,
+    "radiomics_environment_reused": true,
+    "staging_archives_removed": true
+  },
+  "qualification": {
+    "actual_tiny_cpu_producer_helper_tests": "passed; fabricated fixtures only",
+    "dependency_installations": 0,
+    "host_controller_tests_passed": 53,
+    "host_python": "/usr/libexec/platform-python3.6",
+    "local_controller_tests_passed": 53,
+    "new_source_same_image_cuda_gate": "pending_worker_start",
+    "source_synthetic_subtests_passed": 176,
+    "source_synthetic_tests_passed": 260
+  },
+  "record_kind": "dated_budget_development_launch_snapshot",
+  "resources": {
+    "cpu": 24,
+    "ephemeral_limit_gib": 16,
+    "ephemeral_request_gib": 8,
+    "memory_gib": 200,
+    "requested_h100": 1,
+    "running_ready_h100": 0,
+    "shared_memory_gib": 8
+  },
+  "schema_version": 1,
+  "scope": "Separate F2/F3 development-only budget assessment; no substantive or held-out fit result.",
+  "snapshot_at_utc": "2026-10-28T16:11:06.020848+00:00",
+  "snapshot_display": "October 28, 2026, 11:11:06 AM CDT",
+  "source": {
+    "archive_observed_commit_sha": null,
+    "archive_observed_source_dirty": null,
+    "commit_sha": "30dfdec6c285ec5d813f0e6dc1ebc47cbf4ebf1d",
+    "declared_commit_sha": "30dfdec6c285ec5d813f0e6dc1ebc47cbf4ebf1d",
+    "source_tree_sha256": "c75dcaeb557791e22734c4eceedb5fb07b20b1a10f0a1ea2a9015f2f69244c13"
+  },
+  "state": {
+    "adequacy": "not_assessed",
+    "eta": "insufficient queue/throughput evidence",
+    "job": "active",
+    "pod": "Pending",
+    "reason": "Unschedulable: cluster GPU, CPU and memory resources unavailable for the bound placement; no worker started.",
+    "supervisor_exact_identity": "matched",
+    "training_started": false,
+    "worker_started": false
+  },
+  "workload": {
+    "admission_review_sha256": "aa459377be1f3a065331463492648cfa5506b0aea900d0d87851d060afae1207",
+    "admitted_pod_spec_sha256": "59cfd88454d15a920c7efb87148123ca279a9eff249a1c35062629bd5ec07d91",
+    "automatic_retries": 0,
+    "context": "yding4_yn-gpu-workload@kubernetes-admin@kubernetes",
+    "controller_binding_sha256": "4b06d004f123043fd0fe5da4187daf0107fffdd13e4f904dc2366a7eecaf0924",
+    "host_gate_sha256": "a4a3d9f4f7eb167070dd1a4988438f18610c478ba93e4f91b1d7b000afc8ea2a",
+    "image": "hpcharbor.mdanderson.edu/yding41/radiomics@sha256:bd8ad6777cbf704fbee7a1942f09e6a704ee718cf8bd198a7f65a0929cb6e161",
+    "initial_epochs_per_mode": 12,
+    "job": "trifusesurv2-budget-development-20261028a",
+    "job_uid": "d5ca7fee-5555-403a-9850-41fed98a82b9",
+    "manifest_sha256": "b2f816fd7597cf905820f968048905badefa174011b44bf2dfa2be16c32dede1",
+    "modes": [
+      "F2",
+      "F3"
+    ],
+    "mount_path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027",
+    "namespace": "yn-gpu-workload",
+    "plan_sha256": "11ed467e1aae357f5c7491df54473c34916f0d19f89a01c74ba00f860315505d",
+    "pod_name": "trifusesurv2-budget-development-20261028a-9fbzs",
+    "pod_uid": "6232f42a-80e6-459a-9a77-8b11f782a2bf",
+    "pvc": "yding4-gpu-home",
+    "pvc_subpath": "TriFuseSurv2/common-grid-h100-20261027",
+    "pvc_uid": "9c61923f-cdc4-4971-b818-91c2d96292be",
+    "seed": 42,
+    "train": 365,
+    "val": 77,
+    "whole_job_deadline": null,
+    "withheld_test_ids": 77,
+    "workload_binding_sha256": "2397c0abd14e0e379030b7fb0f1148b70b081c0f2b4d7ef7db31100a1289f44e"
+  }
+}
