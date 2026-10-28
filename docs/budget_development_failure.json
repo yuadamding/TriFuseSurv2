@@ -1,0 +1,72 @@
+{
+  "actual_hardware": {
+    "compute_capability": [
+      9,
+      0
+    ],
+    "cuda_build": "12.8",
+    "name": "NVIDIA H100 80GB HBM3",
+    "torch_version": "2.9.1+cu128",
+    "total_memory_bytes": 85028372480,
+    "visible_device_count": 1
+  },
+  "automatic_retries": 0,
+  "budget_adequacy": "not_assessed",
+  "cleanup": {
+    "absence_reads": 2,
+    "job_absent_at_snapshot": true,
+    "owned_pods": 0,
+    "receipt_sha256": "b550ea855fd0a62ff0879181a690b18e5599b168a8d62f7ed8394b1ef1bbcdd2",
+    "status": "complete"
+  },
+  "clinical_training_invocations": 0,
+  "controller_finished_at_utc": "2026-10-28T16:20:41.730186+00:00",
+  "current_gpu_allocation": 0,
+  "development_fits_completed": 0,
+  "evidence": {
+    "failure": {
+      "run_relative_path": "common-grid-h100-20261027/budget-a-failure-a.json",
+      "sha256": "3273fa7ad52ce200d1f09b91b47cb65c061ef01c5a733b01cab0c843968be6e7"
+    },
+    "local_exact_collection": {
+      "run_relative_path": "study-20261028/budget-a-terminal-evidence/COLLECTION.json",
+      "sha256": "f405e3888c790abaea65483fded1934c545229524b594cbb3113641ef655d00d"
+    },
+    "status": {
+      "run_relative_path": "common-grid-h100-20261027/budget-a-status-b.json",
+      "sha256": "f8c007b96a644a3332a77360934507373b1df8d5f8bac0a5f4a57ce0068d83e1"
+    },
+    "supervisor_terminal_sha256": "70597192ec5019df22b5ccc9db2158dfd14c1d5921ad40c2227a17c64d97a5fe",
+    "worker_final_sha256": "84eb0356ad2cf8139196bfbaaf4ae1fd105689b76e14168d9a066730c03efb46"
+  },
+  "exact_error": "ValueError: Nonfinite tiny CUDA gradient",
+  "failed_gate": "tiny fabricated CUDA AMP gradient validation",
+  "heldout_evaluation": "not_run",
+  "job": "trifusesurv2-budget-development-20261028a",
+  "job_uid": "d5ca7fee-5555-403a-9850-41fed98a82b9",
+  "live_status": false,
+  "next_diagnostic": "Separately bound fabricated fixture with mode, gradient names/counts and scaler state, matched FP32 versus FP16 initial weights/inputs, and actual step/skip evidence. No qualification checks should be relaxed based on this log.",
+  "observed_boundary": "Finite fabricated loss, backward and unscale reached; gradient guard failed before the failing mode optimizer step.",
+  "record_kind": "dated_budget_development_terminal_snapshot",
+  "restarts": 0,
+  "schema_version": 1,
+  "snapshot_at_utc": "2026-10-28T16:23:49.870281+00:00",
+  "snapshot_display": "October 28, 2026, 11:23:49 AM CDT",
+  "source_commit": "30dfdec6c285ec5d813f0e6dc1ebc47cbf4ebf1d",
+  "source_tests_breakdown": {
+    "development_training": 8,
+    "semantic_clinical_columns": 8,
+    "survival_curve_export": 4,
+    "training_contracts": 17
+  },
+  "source_tests_passed_in_worker": 37,
+  "state": "failed_source_qualification_cleaned",
+  "unresolved": [
+    "Current fusion mode not logged",
+    "Gradient list emptiness versus nonfinite values not distinguished",
+    "Affected gradient names and scaler scale not logged",
+    "Numerical root cause unestablished"
+  ],
+  "worker_finished_at_utc": "2026-10-28T16:20:36.852674+00:00",
+  "worker_started_at_utc": "2026-10-28T16:18:55.241450+00:00"
+}

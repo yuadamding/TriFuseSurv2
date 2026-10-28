@@ -66,6 +66,10 @@ source `30dfdec` Job submitted on October 28, 2026, at 11:10 AM CDT. At the
 H100s and a matched detached supervisor. The 53-test host controller gate passed;
 the new source's same-image CUDA gate and both fits await worker startup.
 This snapshot does not establish a common training cap or a scientific result.
+The [fresh October 28 report](docs/explicit_report_20261028.md) supersedes that
+Pending state: the worker verified one H100 and passed 37 source tests, then
+failed its tiny CUDA gradient qualification before either real-data fit began.
+Exact cleanup completed; the 11:23 AM CDT snapshot found no retained Job or Pod.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

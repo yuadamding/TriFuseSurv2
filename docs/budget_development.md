@@ -153,3 +153,13 @@ The separate frozen C0/C1 candidate stays deferred; none of the six substantive
 neural fits has run. The dated JSON binds source, plan, manifest, admission,
 controller, host gate, launch and snapshot hashes. Original pilot receipts and
 their separately reconciled controller failure remain intact.
+
+At **October 28, 2026, 11:23:49 AM CDT**, a fresh snapshot established that
+this attempt had failed and been exact-cleaned. The worker verified one H100
+and passed all 37 focused source tests, then failed the tiny CUDA AMP gradient
+guard at 11:20:36 AM CDT before any real-data training invocation. Its log
+does not distinguish the affected mode, empty versus nonfinite gradients, or
+the numerical cause. The common budget remains unassessed. See the
+[explicit report](explicit_report_20261028.md) and
+[terminal evidence summary](budget_development_failure.json). The earlier
+launch snapshot remains unchanged as historical evidence.
