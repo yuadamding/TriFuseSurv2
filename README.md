@@ -70,6 +70,12 @@ The [fresh October 28 report](docs/explicit_report_20261028.md) supersedes that
 Pending state: the worker verified one H100 and passed 37 source tests, then
 failed its tiny CUDA gradient qualification before either real-data fit began.
 Exact cleanup completed; the 11:23 AM CDT snapshot found no retained Job or Pod.
+The subsequent [clinical typing and numerical qualification work](docs/numerical_qualification.md)
+adds an explicit prospective categorical policy and a matched diagnostic of the
+exact retained CUDA fixture. The new study configuration requires
+`--clinical_type_policy approved_categorical_v1`; legacy encoding remains
+available for historical contracts. Numerical correction and a fresh budget
+attempt require separately bound H100 evidence.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

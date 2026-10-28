@@ -21,6 +21,13 @@
     "window_epochs": 5,
     "window_statistic": "median"
   },
+  "amendment": {
+    "at_utc": "2026-10-28T17:03:25.213484+00:00",
+    "previous_design_sha256": "89306388b7fb5d4d594c7e4202a60ff0258ca282627ad92dded6a528542dd7d5",
+    "previous_failed_attempt_preserved": "budget-development-a/source30dfdec",
+    "reason": "User review of48eeb47 confirmed neural type-policy mismatch and requested exact retained CUDA fixture diagnosis before a fresh budget attempt.",
+    "scientific_rule_changes": false
+  },
   "checkpoint_selection": {
     "EMA_enabled": false,
     "SWA_enabled": false,
@@ -44,6 +51,29 @@
       "ALCOHOL",
       "HPV"
     ],
+    "clinical_type_policy": {
+      "categorical": [
+        "PATHOLOGY",
+        "SEX",
+        "RACE",
+        "T",
+        "N",
+        "M",
+        "KFCF",
+        "SMOKE",
+        "ALCOHOL",
+        "HPV"
+      ],
+      "fit_scope": "training_patients_only",
+      "missing": "Separate reserved missing slot; categorical group presence false when all permitted inputs are missing.",
+      "name": "approved_categorical_v1",
+      "numeric": [
+        "AGE"
+      ],
+      "ordinal": [],
+      "raw_category_spelling": "Preserve literal nonempty categories and case including nd/ND; no stage alias or ordinal channel.",
+      "unseen": "Separate reserved unseen slot; nonempty unseen category remains present; no vocabulary refit."
+    },
     "development_metadata_and_radiomics": "derive hash-bound 442-row views from qualified sources without using held-out outcomes or predictions",
     "development_patient_inventory": "exact unchanged train union validation",
     "development_rows": 442,
@@ -175,7 +205,9 @@
       "Expected, attempted, successful and AMP-skipped optimizer steps are recorded separately for every epoch, including the partial final accumulation.",
       "Named shared and OS survival-head optimizer states demonstrate successful updates; do not count AMP attempts as updates.",
       "Any skipped/lost optimization exposure receives an explicit numerical disposition before declaring adequacy; no post hoc tolerance is invented.",
-      "Pair inputs, allowed clinical columns, architecture settings, parameter counts, trainable counts and schedules match except fusion mode."
+      "Pair inputs, allowed clinical columns, architecture settings, parameter counts, trainable counts and schedules match except fusion mode.",
+      "The approved clinical type policy is enforced in CSV ingestion, train-only fitting, transform/presence, saved encoder and model contract.",
+      "Exact legacy fixture diagnosis and the new-source intended CT/Swin survival-NLL qualification must have separately bound evidence; preserve failed attempts and distinguish numerical diagnosis from a passing qualification."
     ]
   },
   "preparation_source": {
@@ -183,6 +215,7 @@
     "path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-a/prepare_proposal.py",
     "sha256": "472c9e41d2e0f57f8286d8c77e7c5b36e55d778c3086b1ce5508d615aafc43c3"
   },
+  "record_kind": "prospective_scientific_design_not_execution_ledger",
   "schema_version": 1,
   "scientific_primary_effect": {
     "candidate_minus_comparator_threshold": -0.005,
@@ -227,6 +260,7 @@
       "HPV"
     ],
     "clinical_noise_std": 0.0,
+    "clinical_type_policy": "approved_categorical_v1",
     "comparison_recipe": "principal",
     "contour_warmstart_ckpt": "",
     "contour_warmstart_dir": "",
@@ -428,9 +462,11 @@
     "required_changes": [
       "Opt-in development-only train/validation path with no held-out evaluation, export or outcome use.",
       "V2 semantic clinical encoder must honor the explicit source-column whitelist, including exclusion of NSTAGE and its derived aliases.",
-      "Full-precision epoch-end training/validation NLL, scoped timing, LR and actual optimizer-update telemetry."
+      "Full-precision epoch-end training/validation NLL, scoped timing, LR and actual optimizer-update telemetry.",
+      "Explicit prospective clinical type policy: AGE numeric and approved coded fields categorical, preserving literal raw categories and group presence; persist policy in encoder and model contract.",
+      "Qualify exact retained CUDA fixture via materialized-state/input/RNG matched precision/scaling matrix, then justify any numerical correction and qualify actual CT/Swin survival-NLL updates including final partial accumulation."
     ],
-    "reviewed_prechange_source_commit": "aeb93bc0af855f2e04a210ea5ef24c9079ac9a70"
+    "reviewed_prechange_source_commit": "48eeb4793157eb529b867d0c897cae57eb2a20fb"
   },
   "status": "prospective_design_pending_new_source_and_execution_binding",
   "telemetry": {

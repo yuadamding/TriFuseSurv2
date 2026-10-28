@@ -65,7 +65,9 @@ from trifusesurv2.utils.clinical import (
     ENDPOINT_MAP,
 )
 from trifusesurv2.utils.radiomics import RadiomicsEncoder
-from trifusesurv2.encoders.clinical import SemanticClinicalTokenEncoder
+from trifusesurv2.encoders.clinical import (
+    APPROVED_TYPE_POLICY, LEGACY_TYPE_POLICY, SemanticClinicalTokenEncoder,
+)
 from trifusesurv2.encoders.radiomics import HabitatRadiomicsTokenEncoder
 from trifusesurv2.utils.data import NodeTopologyScaler, PreprocessedContourAwareDataset, PreprocessedHabitatSurvivalDataset
 from trifusesurv2.utils.data import resolve_preprocessed_case_path
@@ -375,6 +377,20 @@ def read_development_metadata(path: str, id_col: str, split: Dict[str, List[str]
     if not records:
         raise ValueError('Development metadata has no training/validation records')
     return pd.DataFrame.from_records(records, columns=columns)
+
+
+def read_clinical_metadata(path, id_col, clinical_cols, type_policy=LEGACY_TYPE_POLICY):
+    """Preserve prospective clinical literals before numeric/NA CSV inference.
+
+    Identifier and endpoint handling retain their existing contracts. Applying
+    converters only to selected clinical sources leaves the legacy reader and
+    unrelated fields unchanged; AGE is parsed by its declared numeric encoder.
+    """
+    SemanticClinicalTokenEncoder.validate_type_policy(type_policy, clinical_cols)
+    options = {}
+    if type_policy == APPROVED_TYPE_POLICY:
+        options['converters'] = {column: lambda value: value for column in clinical_cols}
+    return read_identifier_csv(path, identifier_columns=(id_col,), **options)
 
 
 def load_precomputed_splits(cv_folds: int, *, splits_dir: str = "", splits_csv: str = "") -> Dict[int, Dict[str, List[str]]]:
@@ -2930,6 +2946,9 @@ def run_one_fold(
           + (f" reserved_test_ids={len(split['test'])} development_only=True" if development_only else ''))
 
     v2_requested = str(getattr(args, "model_version", "v2")).strip().lower() == "v2"
+    clinical_type_policy = getattr(args, 'clinical_type_policy', LEGACY_TYPE_POLICY)
+    if not v2_requested and clinical_type_policy != LEGACY_TYPE_POLICY:
+        raise ValueError('Prospective clinical type policy requires model_version=v2.')
     train_ids = tr_df[args.id_col].astype(str).tolist()
     region_manifests = None
     if v2_requested and args.region_mode == "verified":
@@ -2942,7 +2961,7 @@ def run_one_fold(
     _validate_principal_sampling(args, region_manifests)
 
     if v2_requested:
-        clin_enc = SemanticClinicalTokenEncoder.fit(tr_df, columns=args.clinical_cols)
+        clin_enc = SemanticClinicalTokenEncoder.fit(tr_df, columns=args.clinical_cols, type_policy=clinical_type_policy)
     else:
         clin_enc = ClinicalEncoder.fit(tr_df, args.clinical_cols)
     clin_dim = clin_enc.output_dim
@@ -3260,13 +3279,20 @@ def run_one_fold(
     trainable_parameters = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
     _log(f"[MODEL] fusion={args.fusion_mode} regions={args.region_mode} parameters={model_parameters} trainable={trainable_parameters}")
     from trifusesurv2.preprocessing.region_io import file_sha256
-    experiment_spec = canonical_experiment_spec(args, runtime={
+    contract_args = argparse.Namespace(**vars(args))
+    if clinical_type_policy == LEGACY_TYPE_POLICY:
+        # Absence of this new opt-in setting retains the legacy contract shape.
+        vars(contract_args).pop('clinical_type_policy', None)
+    prospective_type_contract = ({'clinical_type_policy': clin_enc.type_policy}
+                                 if clinical_type_policy == APPROVED_TYPE_POLICY else {})
+    experiment_spec = canonical_experiment_spec(contract_args, runtime={
         **execution_topology(device, ddp_world_size=int(_DDP_WORLD_SIZE) if _DDP_INITIALIZED else None,
                              data_parallel_devices=torch.cuda.device_count() if args.data_parallel and device.type == "cuda" else None),
         "torch_version": str(torch.__version__),
         "optimizer": {"class": "AdamW", "betas": [0.9, 0.999], "eps": 1e-8},
         "scheduler": {"class": "CosineAnnealingLR", "T_max": scheduler_t_max(args), "eta_min": float(args.min_lr)},
         "contour_warmstart_sha256": file_sha256(contour_ckpt) if contour_ckpt and Path(contour_ckpt).is_file() else None,
+        **prospective_type_contract,
     })
     model_contract = {
         "schema_version": 2,
@@ -3282,6 +3308,7 @@ def run_one_fold(
         "test_ids": list(split['test']) if development_only else te_df[args.id_col].astype(str).tolist(),
         "evaluation_scope": 'development_only' if development_only else 'train_validation_test',
         "clinical_column_policy": clin_enc.column_policy if v2_requested else {"columns": list(args.clinical_cols)},
+        **prospective_type_contract,
         "metadata_sha256": file_sha256(args.meta_csv),
         "region_manifest_sha256": {pid: file_sha256(m["_manifest_path"]) for pid, m in (region_manifests or {}).items()},
         "radiomics_csv_sha256": file_sha256(_v2_radiomics_csv_path(args)) if v2_requested and args.use_radiomics else None,
@@ -4230,6 +4257,9 @@ def parse_args():
     )
 
     p.add_argument("--clinical_cols", type=str, nargs="*", default=DEFAULT_CLINICAL_COLS)
+    p.add_argument('--clinical_type_policy', choices=(LEGACY_TYPE_POLICY, APPROVED_TYPE_POLICY),
+                   default=LEGACY_TYPE_POLICY,
+                   help='Opt-in prospective AGE numeric / literal coded categorical policy; default preserves legacy encoding.')
 
     p.add_argument("--use_radiomics", dest="use_radiomics", action="store_true")
     p.add_argument("--no_radiomics", dest="use_radiomics", action="store_false")
@@ -4478,6 +4508,9 @@ def parse_args():
         raise ValueError("--roi_focus_every_batches must be >= 1.")
     if int(args.nonfinite_check_every_batches) < 0:
         raise ValueError("--nonfinite_check_every_batches must be >= 0.")
+    SemanticClinicalTokenEncoder.validate_type_policy(args.clinical_type_policy, args.clinical_cols)
+    if args.clinical_type_policy != LEGACY_TYPE_POLICY and args.model_version != 'v2':
+        raise ValueError('--clinical_type_policy approved_categorical_v1 requires --model_version v2.')
     if args.development_only:
         if int(args.cv_folds) != 1 and int(args.debug_fold) < 0:
             raise ValueError('--development-only requires one selected fold (--cv_folds 1 or --debug_fold).')
@@ -4593,7 +4626,7 @@ def main():
         splits = load_precomputed_splits(args.cv_folds, splits_dir=args.splits_dir, splits_csv=args.splits_csv)
         meta = read_development_metadata(args.meta_csv, args.id_col, splits[folds[0]])
     else:
-        meta = read_identifier_csv(args.meta_csv, identifier_columns=(args.id_col,))
+        meta = read_clinical_metadata(args.meta_csv, args.id_col, args.clinical_cols, args.clinical_type_policy)
     args.id_col = resolve_identifier_column(meta.columns, args.id_col)
     for value in meta[args.id_col]:
         require_identifier(value, name=args.id_col)

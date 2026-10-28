@@ -163,3 +163,14 @@ the numerical cause. The common budget remains unassessed. See the
 [explicit report](explicit_report_20261028.md) and
 [terminal evidence summary](budget_development_failure.json). The earlier
 launch snapshot remains unchanged as historical evidence.
+
+The next source also requires the explicit
+[approved categorical clinical policy](clinical_type_policy.md), because the
+whitelist alone did not implement the approved source types. AGE remains
+numeric; KFCF/SMOKE/ALCOHOL/HPV and T/N/M are categorical without ordinal
+duplication. The amended prospective design in
+`configs/budget_development_spec.json` preserves the original scientific budget
+rule and primary effect, and records the earlier design hash as its parent.
+The historical 89306388 proposal and failed attempt retain their original bytes.
+See [the qualification sequence](numerical_qualification.md) for the exact
+retained six-cell CUDA diagnosis and separate actual CT/Swin survival-NLL gate.

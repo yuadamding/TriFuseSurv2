@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+import copy
 from dataclasses import dataclass
 import re
 from typing import Any
@@ -39,6 +40,34 @@ RAW_STAGE_SOURCE_COLUMNS: dict[str, str] = {
     "M_RAW": "M",
     "NSTAGE_RAW": "NSTAGE",
 }
+
+LEGACY_TYPE_POLICY = "legacy"
+APPROVED_TYPE_POLICY = "approved_categorical_v1"
+APPROVED_CLINICAL_TYPES = {
+    "AGE": "numeric", "PATHOLOGY": "categorical", "SEX": "categorical", "RACE": "categorical",
+    "T": "categorical", "N": "categorical", "M": "categorical", "KFCF": "categorical",
+    "SMOKE": "categorical", "ALCOHOL": "categorical", "HPV": "categorical",
+}
+
+
+def _literal_category(value: Any) -> str | None:
+    """Only actual missing/blank values are missing; nonblank strings are literal."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value)
+    return text if text.strip() else None
+
+
+def _approved_numeric_value(value: Any, column: str) -> float:
+    if _literal_category(value) is None:
+        return np.nan
+    try:
+        result = float(value)
+    except (ValueError, TypeError):
+        raise ValueError(f"[CLIN2] {column} must be a finite number or an actual missing/blank value") from None
+    if not np.isfinite(result):
+        raise ValueError(f"[CLIN2] {column} must be a finite number or an actual missing/blank value")
+    return result
 
 
 def normalize_raw_stage_value(col: str, val: Any) -> str:
@@ -120,6 +149,13 @@ class CategoricalFeatureSpec:
 
 
 @dataclass(frozen=True)
+class ProspectiveCategoricalFeatureSpec(CategoricalFeatureSpec):
+    """Separate missing/unseen slots without changing legacy serialized specs."""
+
+    missing_index: int
+
+
+@dataclass(frozen=True)
 class GroupEncodingSpec:
     name: str
     numeric: tuple[NumericFeatureSpec, ...]
@@ -135,7 +171,9 @@ class SemanticClinicalTokenEncoder:
         group_specs: "OrderedDict[str, GroupEncodingSpec]",
         *,
         columns: Sequence[str] | None = None,
+        type_policy: str = LEGACY_TYPE_POLICY,
     ):
+        self.validate_type_policy(type_policy, columns)
         self.group_specs = OrderedDict(group_specs)
         self.group_names = tuple(group_specs.keys())
         self.token_dims = {name: spec.dim for name, spec in group_specs.items()}
@@ -145,6 +183,25 @@ class SemanticClinicalTokenEncoder:
         # column restriction. Explicit policies travel with the saved encoder.
         if columns is not None:
             self._allowed_columns = self._validate_columns(columns)
+        if type_policy == APPROVED_TYPE_POLICY:
+            self._type_policy = {
+                "name": APPROVED_TYPE_POLICY, "schema_version": 1,
+                "columns": {col: APPROVED_CLINICAL_TYPES[col] for col in self.allowed_columns},
+                "fit_split": "training_only", "stage_representation": "literal_categorical_only_no_derived_aliases",
+                "categorical": {
+                    "normalization": "none; preserve case, spelling and nonblank whitespace",
+                    "missing_values": "None, pandas/NumPy missing values, empty or whitespace-only strings",
+                    "missing_slot": "len(training_vocabulary)", "unseen_slot": "len(training_vocabulary) + 1",
+                    "unseen_nonempty_is_present": True,
+                    "empty_training_vocabulary": "retain separate missing and unseen slots",
+                },
+                "numeric": {"centering": "training_mean", "scale": "training_sample_std_ddof_1",
+                    "missing_encoding": "standardized_zero_and_missing_indicator_one",
+                    "invalid_nonempty_or_nonfinite": "error",
+                    "constant_or_single_observation_scale": 1.0,
+                    "near_constant_std_threshold": 1e-6,
+                    "no_training_observations": {"mean": 0.0, "scale": 1.0}},
+            }
 
     @staticmethod
     def _validate_columns(columns: Sequence[str]) -> tuple[str, ...]:
@@ -161,6 +218,26 @@ class SemanticClinicalTokenEncoder:
     def allowed_columns(self) -> tuple[str, ...] | None:
         """Requested source columns, or unrestricted legacy group behavior."""
         return getattr(self, "_allowed_columns", None)
+
+    @classmethod
+    def validate_type_policy(cls, type_policy: str, columns: Sequence[str] | None) -> None:
+        if type_policy not in (LEGACY_TYPE_POLICY, APPROVED_TYPE_POLICY):
+            raise ValueError(f"[CLIN2] unknown clinical type policy: {type_policy!r}")
+        if type_policy == APPROVED_TYPE_POLICY:
+            if columns is None:
+                raise ValueError("[CLIN2] approved_categorical_v1 requires explicit source columns")
+            allowed = cls._validate_columns(columns)
+            if not allowed or set(allowed) - set(APPROVED_CLINICAL_TYPES):
+                raise ValueError("[CLIN2] prospective columns must use approved sources; NSTAGE, TX and derived aliases are excluded")
+
+    @property
+    def type_policy(self) -> dict[str, Any]:
+        """Persisted prospective semantics; old encoder pickles retain legacy behavior."""
+        return copy.deepcopy(getattr(self, "_type_policy", {"name": LEGACY_TYPE_POLICY}))
+
+    @property
+    def uses_approved_types(self) -> bool:
+        return getattr(self, "_type_policy", {}).get("name") == APPROVED_TYPE_POLICY
 
     @property
     def column_policy(self) -> dict[str, Any]:
@@ -211,17 +288,23 @@ class SemanticClinicalTokenEncoder:
         token_groups: OrderedDict[str, tuple[str, ...]] | None = None,
         *,
         columns: Sequence[str] | None = None,
+        type_policy: str = LEGACY_TYPE_POLICY,
     ) -> "SemanticClinicalTokenEncoder":
         """Fit train-only statistics using the permitted source columns.
 
-        A selected TNM source (for example ``T``) still produces its ordinal
+        Under the legacy default, a selected TNM source still produces its ordinal
         and derived ``T_RAW`` features. Excluding ``NSTAGE`` and
         ``NSTAGE_RAW`` excludes both representations. Group identities remain
         fixed, including groups with no available permitted measurements.
-        ``None`` preserves the original all-group-column behavior.
+        ``None`` preserves the original all-group-column behavior. The opt-in
+        ``approved_categorical_v1`` policy uses numeric AGE and literal categories
+        for all other approved sources, with no derived stage features.
         """
         groups = OrderedDict(token_groups or CLINICAL_TOKEN_GROUPS)
+        cls.validate_type_policy(type_policy, columns)
         allowed_columns = None if columns is None else cls._validate_columns(columns)
+        if type_policy == APPROVED_TYPE_POLICY:
+            return cls._fit_approved_types(df, groups, allowed_columns)
         if allowed_columns is not None:
             df = df.loc[:, df.columns.isin(allowed_columns)]
         specs: "OrderedDict[str, GroupEncodingSpec]" = OrderedDict()
@@ -284,9 +367,41 @@ class SemanticClinicalTokenEncoder:
 
         return cls(specs, columns=allowed_columns)
 
+    @classmethod
+    def _fit_approved_types(cls, df, groups, allowed_columns):
+        if df.empty:
+            raise ValueError("[CLIN2] prospective clinical fitting requires training rows")
+        selected = [col for cols in groups.values() for col in cols if col in allowed_columns]
+        if set(selected) != set(allowed_columns) or len(selected) != len(allowed_columns):
+            raise ValueError("[CLIN2] prospective groups must cover every allowed source exactly once")
+        specs = OrderedDict()
+        for group_name, cols in groups.items():
+            numeric, categorical = [], []
+            for col in cols:
+                if col not in allowed_columns:
+                    continue
+                series = df[col] if col in df else pd.Series(np.nan, index=df.index)
+                if APPROVED_CLINICAL_TYPES[col] == "numeric":
+                    values = np.asarray([_approved_numeric_value(value, col) for value in series], dtype=float)
+                    observed = values[np.isfinite(values)]
+                    mean = float(observed.mean()) if len(observed) else 0.0
+                    std = float(observed.std(ddof=1)) if len(observed) > 1 else 1.0
+                    if not np.isfinite([mean, std]).all():
+                        raise ValueError(f"[CLIN2] nonfinite training statistics for {col}")
+                    numeric.append(NumericFeatureSpec(col, mean, std if std > 1e-6 else 1.0, False))
+                else:
+                    categories = sorted({value for raw in series if (value := _literal_category(raw)) is not None})
+                    mapping = {value: index for index, value in enumerate(categories)}
+                    categorical.append(ProspectiveCategoricalFeatureSpec(col, mapping, len(categories) + 1, len(categories)))
+            dim = 2 * len(numeric) + sum(len(spec.mapping) + 2 for spec in categorical)
+            specs[group_name] = GroupEncodingSpec(group_name, tuple(numeric), tuple(categorical), dim)
+        return cls(specs, columns=allowed_columns, type_policy=APPROVED_TYPE_POLICY)
+
     def _encode_numeric(self, row: pd.Series, spec: NumericFeatureSpec) -> list[float]:
         val = row.get(spec.name, np.nan)
-        if spec.ordinal:
+        if self.uses_approved_types:
+            x = _approved_numeric_value(val, spec.name)
+        elif spec.ordinal:
             x = parse_ordinal_value(spec.name, val)
         else:
             try:
@@ -299,7 +414,9 @@ class SemanticClinicalTokenEncoder:
 
     def _numeric_is_present(self, row: pd.Series, spec: NumericFeatureSpec) -> bool:
         val = row.get(spec.name, np.nan)
-        if spec.ordinal:
+        if self.uses_approved_types:
+            x = _approved_numeric_value(val, spec.name)
+        elif spec.ordinal:
             x = parse_ordinal_value(spec.name, val)
         else:
             try:
@@ -309,6 +426,11 @@ class SemanticClinicalTokenEncoder:
         return not np.isnan(x)
 
     def _encode_categorical(self, row: pd.Series, spec: CategoricalFeatureSpec) -> list[float]:
+        if self.uses_approved_types:
+            key = _literal_category(row.get(spec.name, None))
+            vec = np.zeros(len(spec.mapping) + 2, dtype=np.float32)
+            vec[spec.missing_index if key is None else spec.mapping.get(key, spec.unk_index)] = 1.0
+            return vec.tolist()
         dim = len(spec.mapping) + 1
         vec = np.zeros(dim, dtype=np.float32)
         val = self._row_value(row, spec.name)
@@ -325,6 +447,8 @@ class SemanticClinicalTokenEncoder:
         return vec.tolist()
 
     def _categorical_is_present(self, row: pd.Series, spec: CategoricalFeatureSpec) -> bool:
+        if self.uses_approved_types:
+            return _literal_category(row.get(spec.name, None)) is not None
         val = self._row_value(row, spec.name)
         if val is None or pd.isna(val):
             return False
@@ -365,7 +489,13 @@ class SemanticClinicalTokenEncoder:
     def encode_frame_token_matrix(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         mats = []
         pres = []
-        for _, row in df.iterrows():
+        # iterrows can promote an integer code to a float because another
+        # numeric column (AGE) is fractional. Keep each source cell's type on
+        # the prospective route; a code fitted as "1" must not become "1.0".
+        rows = ((pd.Series(values, index=df.columns, dtype=object)
+                 for values in df.itertuples(index=False, name=None))
+                if self.uses_approved_types else (row for _, row in df.iterrows()))
+        for row in rows:
             mat, p = self.encode_row_token_matrix(row)
             mats.append(mat)
             pres.append(p)

@@ -137,6 +137,7 @@ class DevelopmentFoldTests(unittest.TestCase):
                 '--ct_col', 'ct', '--mask_pt_col', 'pt', '--mask_ln_col', 'ln',
                 '--time_col', 'time', '--event_col', 'event', '--device', 'cpu',
                 '--development-only', '--cv_folds', '1', '--report_metric', 'nll',
+                '--clinical_type_policy', 'approved_categorical_v1',
                 '--clinical_cols', 'AGE', 'HPV', 'T', 'N',
                 '--img_size', '32', '32', '32', '--feature_size', '12', '--depths', '1', '1', '1', '1',
                 '--img_token_dim', '16', '--v2_model_dim', '16', '--v2_num_heads', '4',
@@ -160,6 +161,10 @@ class DevelopmentFoldTests(unittest.TestCase):
         self.assertEqual(contract['test_ids'], ['missing-test'])
         self.assertEqual(len(contract['region_manifest_sha256']), 5)
         self.assertEqual(contract['clinical_column_policy']['columns'], ['AGE', 'HPV', 'T', 'N'])
+        expected_types = {'AGE': 'numeric', 'HPV': 'categorical', 'T': 'categorical', 'N': 'categorical'}
+        self.assertEqual(contract['clinical_type_policy']['columns'], expected_types)
+        self.assertEqual(contract['experiment_spec']['settings']['clinical_type_policy'], 'approved_categorical_v1')
+        self.assertEqual(contract['experiment_spec']['runtime']['clinical_type_policy'], contract['clinical_type_policy'])
         self.assertEqual(selection['test_exports'], [])
         self.assertEqual(selection['selection_metric'], 'nll')
         self.assertEqual(result['export_risks'], {})
@@ -177,6 +182,8 @@ class DevelopmentFoldTests(unittest.TestCase):
         self.assertIn('optimizer_lr_group_0', metrics.index)
         checkpoint = torch.load(fold / 'last.pt', weights_only=False)
         self.assertIsNotNone(checkpoint['optimizer_state'])
+        self.assertEqual(checkpoint['encoders']['clinical'].type_policy, contract['clinical_type_policy'])
+        self.assertNotIn('T_RAW', checkpoint['encoders']['clinical'].available_columns())
 
 
 if __name__ == '__main__':

@@ -4,7 +4,8 @@
   "status": "draft",
   "scope": "Prospective development comparison; not clinical qualification or external validation",
   "blocking_items": [
-    "Common substantive training budget not yet justified by pilot/learning curves"
+    "New-source clinical categorical-policy and CUDA numerical qualification",
+    "Common substantive training budget not yet justified by learning curves"
   ],
   "endpoint_definition": {
     "status": "confirmed",
@@ -221,7 +222,8 @@
       "v2_image_habitat_dropout_p": 0.0,
       "v2_node_dropout_p": 0.0,
       "v2_radiomics_group_dropout_p": 0.0,
-      "v2_topology_dropout_p": 0.0
+      "v2_topology_dropout_p": 0.0,
+      "clinical_type_policy": "approved_categorical_v1"
     },
     "pilot_binding": {
       "source_commit": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
@@ -279,7 +281,30 @@
       "source": "UserconfirmedNSTAGEderivedfromT/N/M; appliesconsistentlytobaselinesandfutureF2/F3",
       "requires_semantic_encoder_whitelist": true
     },
-    "development_budget_spec_sha256": "89306388b7fb5d4d594c7e4202a60ff0258ca282627ad92dded6a528542dd7d5"
+    "development_budget_spec_sha256": "226dc98dcef247e908d26fbba22652c28f0df292b1d2166f167980c4cc697597",
+    "clinical_type_policy": {
+      "name": "approved_categorical_v1",
+      "numeric": [
+        "AGE"
+      ],
+      "categorical": [
+        "PATHOLOGY",
+        "SEX",
+        "RACE",
+        "T",
+        "N",
+        "M",
+        "KFCF",
+        "SMOKE",
+        "ALCOHOL",
+        "HPV"
+      ],
+      "ordinal": [],
+      "raw_category_spelling": "Preserve literal nonempty categories and case including nd/ND; no stage alias or ordinal channel.",
+      "missing": "Separate reserved missing slot; categorical group presence false when all permitted inputs are missing.",
+      "unseen": "Separate reserved unseen slot; nonempty unseen category remains present; no vocabulary refit.",
+      "fit_scope": "training_patients_only"
+    }
   },
   "baselines": {
     "status": "ready_for_separate_baseline_freeze",
@@ -372,7 +397,8 @@
     "n_iter": 100,
     "tol": 1e-09,
     "outcome_inventory_sha256": "838c79f9687a442b3dbfd8e66ba4e11e076171a0baebdf0877695be45a42d15c",
-    "execution_status": "deferred_until_training_budget_and_final_main_protocol_gates_close"
+    "execution_status": "deferred_until_training_budget_and_final_main_protocol_gates_close",
+    "fusion_clinical_inventory_role": "Pre-redundancy accounting inventory: selected baseline columns are numeric+categorical below; NSTAGE is accounted for only as documented redundancy and is absent from neural and baseline tensors."
   },
   "later_stages": {
     "F0_F1_F4": "after interpretable adequately trained F2/F3 core",

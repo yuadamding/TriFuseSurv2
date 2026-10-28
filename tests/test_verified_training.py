@@ -53,6 +53,9 @@ class VerifiedTrainingTests(unittest.TestCase):
         before = contract_path.read_bytes()
         contract = json.loads(before)
         self.assertEqual(contract["fusion_mode"], "F3")
+        self.assertNotIn('clinical_type_policy', contract)
+        self.assertNotIn('clinical_type_policy', contract['experiment_spec']['settings'])
+        self.assertNotIn('clinical_type_policy', contract['experiment_spec']['runtime'])
         self.assertEqual(len(contract["region_manifest_sha256"]), 6)
         self.assertGreater(contract["parameters"], 0)
         args.resume = True
