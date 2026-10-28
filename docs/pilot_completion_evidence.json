@@ -1,0 +1,184 @@
+{
+  "cleanup": {
+    "absence_reads": 2,
+    "status": "complete"
+  },
+  "hardware": {
+    "compute_capability": [
+      9,
+      0
+    ],
+    "cuda_build": "12.8",
+    "name": "NVIDIA H100 80GB HBM3",
+    "torch_version": "2.9.1+cu128",
+    "total_memory_bytes": 84929478656,
+    "visible_device_count": 1
+  },
+  "job": "trifusesurv2-paired-development-20261027b",
+  "job_uid": "60953ee5-ecc4-4dd1-a580-dd143b5a4752",
+  "modes": {
+    "F2": {
+      "checkpoint_hashes": {
+        "best.pt": "d4692b20d61ce5bd1dd2acdee61c452021050b9c2a491e8b20063e31355ff94f",
+        "last.pt": "60311bcc190982e80d773e373f6d94c47576a86e645152d8ef3a05a8a7ecf329"
+      },
+      "epochs_completed": 2,
+      "finished_at_utc": "2026-10-28T05:38:37.055136+00:00",
+      "returncode": 0,
+      "started_at_utc": "2026-10-28T05:28:19.260056+00:00",
+      "whole_stage_seconds": 617.79508
+    },
+    "F3": {
+      "checkpoint_hashes": {
+        "best.pt": "fab061571b338c5e49ace18914648333490a3b3ea4737e7672c4bac664aa9c49",
+        "last.pt": "3bab45d514d53bd9163e52537765e5c517b8b30410a67e7c4631f1a4720b1c8d"
+      },
+      "epochs_completed": 2,
+      "finished_at_utc": "2026-10-28T05:50:39.719690+00:00",
+      "returncode": 0,
+      "started_at_utc": "2026-10-28T05:39:18.497726+00:00",
+      "whole_stage_seconds": 681.221964
+    }
+  },
+  "parent_receipts": {
+    "paired-development-b-lifecycle/application-validation.json": {
+      "bytes": 314,
+      "sha256": "c9f34c399e785c9f73d95ab49dd8fd160b4688cbb82dc593b6edda6dc6a9d297"
+    },
+    "paired-development-b-lifecycle/cleanup.json": {
+      "bytes": 257,
+      "sha256": "f6355b58343b2129c26c0c3aa16fc4058e8dd1e75bc2119a13ee9baadd99e2c9"
+    },
+    "paired-development-b-lifecycle/supervisor-terminal.json": {
+      "bytes": 607,
+      "sha256": "3c720641f559b28c0b2694ae00c692c026e0f17685f09dcf87bcea4f5da61fbe"
+    },
+    "paired-development-b-lifecycle/terminal-job.json": {
+      "bytes": 9026,
+      "sha256": "23d59a64b6d3d99d0683f98934d7fc01fe5818e2a5a79f3fff9638e7cf47f9f8"
+    },
+    "paired-development-b-lifecycle/terminal-pods.json": {
+      "bytes": 11676,
+      "sha256": "252b8426c95dafa0c60dc1a2fd5b80571bceccb757ac36a092365c04b056c27d"
+    },
+    "paired-development-b-output/runtime/FINAL.json": {
+      "bytes": 5875,
+      "sha256": "26e2f06d3b748ea7b926352274bba9e068235a5d2062c9f84419911617633cde"
+    },
+    "paired-development-b-output/training-evidence/FINAL.json": {
+      "bytes": 25437,
+      "sha256": "6f7cdbdacf18e6daae431f76258fb5905dc8b661843eb5a804ab242a9b0ab32f"
+    }
+  },
+  "pod_uid": "95bd76fb-1683-4d16-95b6-1dd9ae698e39",
+  "postprocessing": {
+    "a": "server_dry_run_rejected_cpu_and_memory_rewritten_to_zero_no_job_created",
+    "b": {
+      "admission_review_sha256": "b9023f22be902103d7883685c828770e8c5a9d51583384460ad13ecc3625ad4a",
+      "admitted_pod_spec_sha256": "66482ca1fa59ecc1a6e9c2eef167bd25c5bbf80462afc18c7a1e36682ff659ab",
+      "automatic_retries": 0,
+      "controller_binding_sha256": "5ccda1857b2d60ec89780837cd0090379c02bbaeeb5d085a6ddcce2e85d0407e",
+      "execution_device": "cpu",
+      "job": "trifusesurv2-pilot-postprocess-20261028b",
+      "job_uid": "04ba9835-e257-43a7-8a55-50d8be5f32c4",
+      "manifest_sha256": "03a7921d97a1cd92a7da785b8452f43518945d3cdd6fa649d0e55b4d248524cf",
+      "observed_at_utc": "2026-10-28T06:27:51.685749+00:00",
+      "pending_reason": "Insufficient eligible GPU/CPU/memory capacity; exact Pod scheduling condition retained locally.",
+      "plan_sha256": "4b8560913d56d9ca6fc5fb0d103e4d2d2580dc87d607f2d216c0a413255039ae",
+      "pod_name": "trifusesurv2-pilot-postprocess-20261028b-kcjl6",
+      "pod_uid": "7b09413e-32f8-445c-a0e6-8e9e55a54dd3",
+      "requested_gpu_count": 1,
+      "running_ready_gpu_count": 0,
+      "status": "pending_cluster_resources",
+      "supervisor": {
+        "current_host": "ldragon4",
+        "identity": {
+          "cmdline_sha256": "68a76e323d9229b0cd3cce1b6540142a498664b2b515e6789575e0f5b79e0e8b",
+          "fqdn": "ldragon4.cm.cluster",
+          "hostname": "ldragon4",
+          "pid": 4021028,
+          "process_group": 4021028,
+          "session_id": 4021028,
+          "start_time_ticks": 377552915,
+          "tty_nr": 0
+        },
+        "live_check": "matched"
+      },
+      "whole_job_deadline": null,
+      "worker_started": false
+    },
+    "evidence": {
+      "postprocess-admission-a.rejection.json": {
+        "bytes": 1271,
+        "sha256": "2fd7e9d1e55f5880e8562c23f9d190d44e6b37c368a349232a56a801380f6e45"
+      },
+      "postprocess-admission-b.receipt.json": {
+        "bytes": 715,
+        "sha256": "38057f06a7754f077a73f055ebc9328b4a3410f66b6f2d26883495aaa11bd7b8"
+      },
+      "postprocess-b-static-review.json": {
+        "bytes": 1655,
+        "sha256": "ed4e42671ad6ce2f370d6b798b469e031712e05529be52ddf868bd45f775aa97"
+      },
+      "postprocess-b-status-a.summary.json": {
+        "bytes": 1792,
+        "sha256": "9cb782ded208c10df88953425d6642c6eab111458e93e1c1317e1dd25147f359"
+      }
+    }
+  },
+  "postprocessing_source_commit": "71d7c16112744cbf092d56c98c3ad7838ff995e9",
+  "remaining_scientific_gates": [
+    "OS origin and censoring definition",
+    "Clinical coding/staging dictionary",
+    "Flagged cohort adjudication and measurement policy",
+    "Common training budget justified by development convergence assessment"
+  ],
+  "runtime_limitations": [
+    "Whole-stage durations include initialization, final evaluation and artifact checking after process exit; individual epoch durations were not captured.",
+    "Peak host RAM and GPU allocated/reserved memory were not captured.",
+    "The pilot is an engineering test, not evidence of convergence or clinical superiority."
+  ],
+  "schema_version": 1,
+  "shared_memory": {
+    "available_before_bytes": 8589934592,
+    "canary_removed": true,
+    "capacity_bytes": 8589934592,
+    "clinical_inputs_used": false,
+    "filesystem": "tmpfs",
+    "model_or_gpu_computation": false,
+    "mount_path": "/dev/shm",
+    "payload_shape": [
+      8,
+      96,
+      160,
+      96
+    ],
+    "prefetch_factor": 2,
+    "retained_tensor_bytes": 377487360,
+    "status": "passed",
+    "verified_shared_tensors": 8,
+    "workers": 2
+  },
+  "software_validation": {
+    "clinical_model_fits_by_new_study_software": 0,
+    "engineering_suite": "231 tests and 163 subtests passed",
+    "host_controller_fabricated_tests": 30,
+    "postprocess_worker_fabricated_tests": 7,
+    "rounded_log_and_mapper_regressions": "35 tests and 3 subtests passed"
+  },
+  "status": "execution_complete_stronger_audit_pending_cluster_resources",
+  "training_logs": {
+    "F2": {
+      "bytes": 8825,
+      "path": "paired-development-b-output/training-evidence/training_F2.log",
+      "sha256": "e86c0c34eb1717f15e699f5cd305272969669a10f9a5d5b6040c465df999bf2a"
+    },
+    "F3": {
+      "bytes": 9182,
+      "path": "paired-development-b-output/training-evidence/training_F3.log",
+      "sha256": "205f5bb810791c855eab1aad0e21975d63cc310b6cc804e1e7c2ba373e15afb3"
+    }
+  },
+  "training_source_commit": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+  "worker_finished_at_utc": "2026-10-28T05:50:41.036992+00:00"
+}

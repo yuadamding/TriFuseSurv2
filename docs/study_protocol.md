@@ -150,5 +150,5 @@ matched evaluation perturbations. No disconnected mask-only intervention or
 early consistency objective is included in this implementation.
 
 The current blockers are endpoint semantics, clinical coding/staging, flagged
-cohort review, pilot completion and a justified training budget. No baseline
+cohort review, stronger pilot acceptance and a justified training budget. No baseline
 fit, substantive F2/F3 experiment or clinical result is claimed here.

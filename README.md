@@ -29,8 +29,10 @@ source-FOV truncation and small-region sampling limitations.
 
 The later [paired pilot recovery](docs/pilot_runtime_recovery.md) records completed
 613-case preparation, the supervisor/DataLoader fixes, and the corrected run
-queued for one H100 as of October 27, 2026, 11:38 PM CDT. Its training and
-scientific acceptance remain unfinished.
+queued for one H100 as of October 27, 2026, 11:38 PM CDT. The later
+[pilot completion report](docs/pilot_completion.md) records both modes finishing
+two epochs on October 28, 2026, 12:50 AM CDT, followed by verified cleanup.
+Stronger checkpoint acceptance is tracked separately.
 
 The next [OS study protocol](docs/study_protocol.md) and
 [specification](configs/study_spec.json) preserve the architecture and split.
@@ -42,9 +44,9 @@ coding, cohort review and an adequate training budget are resolved. New
 Synthetic software tests and metadata accounting are separate from completed
 H100 training and scientific results.
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
-prepared patients and retains a 525-case review queue. At **October 28, 2026,
-12:45 AM CDT**, the unchanged pilot had finished F2's two epochs and F3's first
-epoch on one verified H100. Strong checkpoint acceptance remains pending;
+prepared patients and retains a 525-case review queue. The unchanged pilot
+completed both modes; its separate acceptance audit is Pending cluster
+resources as of **October 28, 2026, 1:27 AM CDT**;
 [optimizer identity reconstruction](docs/checkpoint_optimizer_mapping.md)
 provides the separately pinned postprocessing path.
 
