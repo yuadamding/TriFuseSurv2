@@ -18,6 +18,8 @@ import math
 import json
 import contextlib
 import argparse
+import csv
+import time
 from typing import Tuple, Dict, List, Optional, Any, Sequence
 
 import numpy as np
@@ -1294,12 +1296,90 @@ def predict_risk_scores(
     return out
 
 
+@torch.no_grad()
+def restore_selected_curve_checkpoint(model, path):
+    """Curve provenance requires an exact state restore, not a partial warmstart."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    _unwrap_model(model).load_state_dict(checkpoint["model_state"], strict=True)
+
+
+@torch.no_grad()
+def persist_selected_inference_weights(model, path, *, source_checkpoint, contract_path, weights):
+    """Persist the actual averaged inference state, including for lightweight runs."""
+    from trifusesurv2.evaluation.curves import file_sha256
+    state = {"model_state": {name: value.detach().cpu().clone()
+                             for name, value in _unwrap_model(model).state_dict().items()},
+             "weights": weights, "source_checkpoint_sha256": file_sha256(source_checkpoint),
+             "model_contract_sha256": file_sha256(contract_path),
+             "source_identity": source_identity(),
+             "purpose": "selected inference weights; not an optimizer-resume checkpoint"}
+    with Path(path).open("xb") as handle:
+        torch.save(state, handle)
+    return Path(path)
+
+
+@torch.no_grad()
+def export_survival_curves(
+    model, loader, device, *, outcome_frame, args, fold, split, checkpoint_path,
+    contract_path, weights, autocast_ctx, teacher_force_alpha, output_path,
+):
+    """Export selected weights after training; never alter selection or fitting."""
+    from trifusesurv2.evaluation.curves import file_sha256, hazards_to_survival, write_survival_curves
+
+    model.eval()
+    hazards = {}
+    for batch in loader:
+        payload = _unpack_surv_batch(batch)
+        logits = _model_forward_eval(model, payload, device, autocast_ctx,
+                                     teacher_force_alpha=float(teacher_force_alpha))
+        logits = _extract_endpoint_logits(logits, str(args.endpoint))
+        values = torch.sigmoid(logits.float()).detach().cpu().numpy()
+        for i, pid in enumerate(payload["pid"]):
+            pid = str(pid)
+            if pid in hazards:
+                raise ValueError(f"duplicate curve-export patient: {pid}")
+            hazards[pid] = values[i]
+    ids = outcome_frame[args.id_col].tolist()
+    if set(ids) != set(hazards) or len(ids) != len(set(ids)):
+        raise ValueError("curve export does not exactly match its split inventory")
+    matrix = np.stack([hazards[pid] for pid in ids])
+    width = float(args.time_bin_width_days)
+    requested = list(getattr(args, "curve_export_times_days", []) or [])
+    times = sorted(set([0.0, float(args.risk_horizon_days), *requested,
+                        *(float(i + 1) * width for i in range(matrix.shape[1]))]))
+    probabilities = hazards_to_survival(matrix, times, width)
+    return write_survival_curves(
+        output_path, patient_ids=ids, observed_times=outcome_frame[args.time_col],
+        events=outcome_frame[args.event_col], evaluation_times=times,
+        survival_probabilities=probabilities, split=split, fold=int(fold),
+        seed=int(args.seed), mode=str(args.fusion_mode), endpoint=str(args.endpoint),
+        checkpoint_sha256=file_sha256(checkpoint_path), model_contract_sha256=file_sha256(contract_path),
+        risk_horizon=float(args.risk_horizon_days), metadata={
+            "weights": weights, "interpolation": "piecewise_exponential_within_hazard_bin",
+            "time_bin_width_days": width, "num_time_bins": int(matrix.shape[1]),
+            "hazard_probability_clip": [1e-7, 1.0 - 1e-7],
+            "source_identity": source_identity(),
+        },
+    )
+
+
 def _finite_float(value: Any, default: float = float("nan")) -> float:
     try:
         out = float(value)
     except Exception:
         return float(default)
     return out if np.isfinite(out) else float(default)
+
+
+def append_epoch_metrics(path: Path, row: Dict[str, Any]) -> None:
+    """Keep full float precision and refuse incompatible historical CSV headers."""
+    path = Path(path)
+    if path.exists():
+        with path.open(newline="") as handle:
+            header = next(csv.reader(handle), [])
+        if header != list(row):
+            raise ValueError("Epoch metrics header differs; do not append a new telemetry schema to historical metrics")
+    pd.DataFrame([row]).to_csv(path, mode="a", header=not path.is_file(), index=False)
 
 
 def validation_composite_score(metrics: Dict[str, float]) -> float:
@@ -2778,6 +2858,12 @@ def run_one_fold(
         raise RuntimeError(f"[fold {fold:02d}] test split contains rows without valid primary endpoint labels")
 
     fold_num_time_bins, fold_max_time = compute_multitask_num_time_bins(tr_df, args)
+    if bool(getattr(args, "export_survival_curves", False)):
+        requested_curve_times = np.asarray([float(args.risk_horizon_days),
+                                           *(getattr(args, "curve_export_times_days", []) or [])], dtype=float)
+        if (not np.isfinite(requested_curve_times).all() or np.any(requested_curve_times < 0)
+                or np.any(requested_curve_times > fold_num_time_bins * float(args.time_bin_width_days))):
+            raise ValueError("Requested curve-export times exceed this fold's trained hazard coverage")
     print(f"[TIME][fold {fold:02d}] train num_time_bins={fold_num_time_bins} train_max_time={fold_max_time:.1f}d")
     multi_time_cols, multi_event_cols = multitask_survival_columns(args)
 
@@ -3189,6 +3275,7 @@ def run_one_fold(
     scheduler_warmup_pause_reported = False
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
+        epoch_started_at = time.perf_counter()
         if tr_sampler is not None:
             tr_sampler.set_epoch(epoch)
         teacher_force_alpha = _teacher_force_alpha_for_epoch(epoch, args)
@@ -3283,6 +3370,7 @@ def run_one_fold(
             autocast_ctx=autocast_ctx,
             teacher_force_alpha=float(epoch_eval_teacher_force_alpha),
         )
+        epoch_train_and_evaluation_seconds = time.perf_counter() - epoch_started_at
 
         if swa is not None and epoch >= int(args.swa_start_epoch):
             if ((epoch - int(args.swa_start_epoch)) % int(args.swa_update_freq_epochs)) == 0:
@@ -3322,6 +3410,8 @@ def run_one_fold(
 
         row = {
             "epoch": int(epoch),
+            "val_nll": float(val_met.get("nll", float("nan"))),
+            "epoch_train_and_evaluation_seconds": float(epoch_train_and_evaluation_seconds),
             "teacher_force_alpha": float(teacher_force_alpha),
             "survival_teacher_force_alpha": float(_survival_teacher_force_alpha(teacher_force_alpha, args)),
             "survival_loss_weight": float(survival_loss_weight),
@@ -3373,7 +3463,7 @@ def run_one_fold(
                 )
                 scheduler_warmup_pause_reported = True
         if is_main_rank:
-            pd.DataFrame([row]).to_csv(metrics_csv, mode="a", header=not metrics_csv.is_file(), index=False)
+            append_epoch_metrics(metrics_csv, row)
 
             save_checkpoint(
                 ckpt_last,
@@ -3723,6 +3813,26 @@ def run_one_fold(
                 },
             )
 
+    if bool(getattr(args, "export_survival_curves", False)):
+        selected_checkpoint = ckpt_best if export_checkpoint == "best" else ckpt_last
+        restore_selected_curve_checkpoint(_eval_model, selected_checkpoint)
+        weight_context = (ema.apply_to(mm) if export_suffix == "ema" else
+                          swa.apply_to(mm) if export_suffix == "swa" else contextlib.nullcontext())
+        with weight_context:
+            if export_suffix in {"ema", "swa"}:
+                selected_checkpoint = persist_selected_inference_weights(
+                    _eval_model, fold_dir / f"selected_{export_suffix}_inference.pt",
+                    source_checkpoint=selected_checkpoint, contract_path=contract_path, weights=export_suffix,
+                )
+            for split_name, split_loader, split_frame in (("val", va_loader, va_df), ("test", te_loader, te_df)):
+                export_survival_curves(
+                    _eval_model, split_loader, device, outcome_frame=split_frame, args=args,
+                    fold=fold, split=split_name, checkpoint_path=selected_checkpoint,
+                    contract_path=contract_path, weights=export_suffix, autocast_ctx=autocast_ctx,
+                    teacher_force_alpha=final_eval_teacher_force_alpha,
+                    output_path=fold_dir / f"{split_name}_survival_curves_export.csv",
+                )
+
     met_export = candidates[export_suffix]["test"]
     if _DDP_INITIALIZED and torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.barrier()
@@ -3900,6 +4010,10 @@ def parse_args():
     p.add_argument("--risk_horizon_days", type=float, default=3 * 365.0)
     p.add_argument("--auc_times_days", type=float, nargs="*", default=[365.0, 3 * 365.0, 5 * 365.0])
     p.add_argument("--dca_thresholds", type=float, nargs="*", default=[0.1, 0.2, 0.3])
+    p.add_argument("--export_survival_curves", action="store_true",
+                   help="After selection, export validation/test survival curves from the selected checkpoint.")
+    p.add_argument("--curve_export_times_days", type=float, nargs="*", default=[],
+                   help="Explicit prospective evaluation grid/horizons, added to all native bin endpoints; no extrapolation.")
     p.add_argument(
         "--report_metric",
         type=str,

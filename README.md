@@ -32,6 +32,22 @@ The later [paired pilot recovery](docs/pilot_runtime_recovery.md) records comple
 queued for one H100 as of October 27, 2026, 11:38 PM CDT. Its training and
 scientific acceptance remain unfinished.
 
+The next [OS study protocol](docs/study_protocol.md) and
+[specification](configs/study_spec.json) preserve the architecture and split.
+The specification remains draft until endpoint origin/censoring, clinical
+coding, cohort review and an adequate training budget are resolved. New
+[pilot/cohort auditors](docs/acceptance_reports.md),
+[paired evaluator and survival exports](docs/paired_evaluation.md), and
+[C0/C1 baselines](docs/tabular_baselines.md) provide the prospective checks.
+Synthetic software tests and metadata accounting are separate from completed
+H100 training and scientific results.
+The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
+prepared patients and retains a 525-case review queue. At **October 28, 2026,
+12:45 AM CDT**, the unchanged pilot had finished F2's two epochs and F3's first
+epoch on one verified H100. Strong checkpoint acceptance remains pending;
+[optimizer identity reconstruction](docs/checkpoint_optimizer_mapping.md)
+provides the separately pinned postprocessing path.
+
 The [dated evidence summary](docs/development_qualification_summary.json) binds
 those observations to source and receipt hashes. At its latest snapshot,
 **October 27, 2026, 9:03 PM CDT**, the separate single-H100 cohort worker was

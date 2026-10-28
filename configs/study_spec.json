@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "study_id": "trifusesurv2-os-development-20261028",
+  "status": "draft",
+  "scope": "Prospective development comparison; not clinical qualification or external validation",
+  "blocking_items": [
+    "OS time origin and censoring rule unconfirmed",
+    "Clinical code dictionary and staging interpretation unconfirmed",
+    "Whole-cohort flagged-case review incomplete",
+    "Pilot optimizer and checkpoint acceptance pending",
+    "Common substantive training budget not yet justified by pilot/learning curves"
+  ],
+  "endpoint_definition": {
+    "status": "partially_confirmed",
+    "endpoint": "OS",
+    "time_column": "OS.TIME",
+    "event_column": "OS.EVENT",
+    "time_unit": "days",
+    "event_definition": "1 = death (user confirmation); 0 is the observed non-event code",
+    "time_origin": null,
+    "censoring_rule": null,
+    "confirmation_source": "User response: opscc_survival_time_event.csv; Unit in days, 1 as decease",
+    "source_csv_sha256": "0ad9f578d63cb8e1968f9b6360a26c6f86f5a6fdc1c17b715cfdff2fffd6cc5e"
+  },
+  "cohort": {
+    "status": "inventory_reconciled_review_pending",
+    "prepared": 613,
+    "eligible": 519,
+    "paired_missing_os_exclusions": 94,
+    "id_column": "patient_id",
+    "split_counts": {
+      "train": 365,
+      "val": 77,
+      "test": 77
+    },
+    "split_files_sha256": {
+      "train": "8605c4bfbd9921380706b8afc61e4173ce53d975668679628771daf9b615950f",
+      "val": "ac4ee1490d8ca4d0e342591c18738b444b5152b59716f80957f5b85ca4321e5c",
+      "test": "27bc064073a210938d1883c1fcb05ace921cac82b35d5420252052c80483a1d4"
+    },
+    "eligible_metadata_sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e",
+    "outcomes_file_sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd",
+    "eligibility_changes": []
+  },
+  "evaluation": {
+    "endpoint": "OS",
+    "fold": 0,
+    "split": "test",
+    "modes": [
+      "C0",
+      "C1",
+      "F2",
+      "F3"
+    ],
+    "seeds": [
+      42,
+      142,
+      242
+    ],
+    "mode_seeds": {
+      "C0": [
+        "deterministic"
+      ],
+      "C1": [
+        "deterministic"
+      ],
+      "F2": [
+        42,
+        142,
+        242
+      ],
+      "F3": [
+        42,
+        142,
+        242
+      ]
+    },
+    "contrasts": [
+      [
+        "F2",
+        "F3"
+      ]
+    ],
+    "candidate_horizons": [
+      365,
+      730,
+      1095
+    ],
+    "primary_horizon": 730,
+    "secondary_horizons": [
+      365,
+      1095
+    ],
+    "horizon_status": "training_validation_metadata_support_passed; endpoint_definition_and_final_protocol_pending",
+    "risk_definition": "1-S(primary_horizon)",
+    "concordance_tau": 730,
+    "ibs_times": [
+      210,
+      240,
+      270,
+      300,
+      330,
+      360,
+      365,
+      390,
+      420,
+      450,
+      480,
+      510,
+      540,
+      570,
+      600,
+      630,
+      660,
+      690,
+      720,
+      730
+    ],
+    "ibs_interval_rule": "210-to-730 days, at 30-day steps plus 365 and 730. Lower bound is first 30-day grid point strictly above the larger training/validation minimum follow-up (10/194 days). Selected from development support before any held-out model predictions; no test-derived retuning.",
+    "calibration_bins": [
+      0,
+      0.2,
+      0.4,
+      0.6,
+      0.8,
+      1
+    ],
+    "bootstrap_replicates": 2000,
+    "bootstrap_seed": 20261028,
+    "bootstrap_min_valid_fraction": 0.95,
+    "tied_tol": 1e-08,
+    "outcome_inventory_sha256": "838c79f9687a442b3dbfd8e66ba4e11e076171a0baebdf0877695be45a42d15c",
+    "outcomes_file_sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd",
+    "reference_package": {
+      "name": "scikit-survival",
+      "version": "0.25.0"
+    },
+    "fallback_rule": "Before held-out model comparison, retain only horizons with positive training censoring survival, observed follow-up beyond the horizon and observed events in both train and validation. If 730 is unsupported, propose 365 in a new version before fitting/scoring; do not silently shorten after test results. Unsupported test metrics are unassessable, not retuned.",
+    "development_support_report_sha256": "18181479d8519461489436d6e3f55d425b8560cc4ae7e7ec6799d6d52630e181"
+  },
+  "training": {
+    "architecture_status": "fixed",
+    "principal_modes": [
+      "F2",
+      "F3"
+    ],
+    "paired_seeds": [
+      42,
+      142,
+      242
+    ],
+    "fits": 6,
+    "selection": {
+      "metric": "validation_nll",
+      "direction": "minimize",
+      "ties": "best.pt retains first strict minimum; final export uses fixed candidate priority last, ema, swa, best (only enabled candidates), matching pilot"
+    },
+    "common_epochs": null,
+    "budget_status": "await pilot runtime and development learning-curve evidence; no arbitrary epoch count",
+    "pilot_is_substantive_training": false,
+    "paired_shared_settings": {
+      "amp": true,
+      "attn_drop_rate": 0.0,
+      "attn_dropout_p": 0.0,
+      "aux_surv_loss_weight": 0.35,
+      "batch_size": 1,
+      "clinical_cols": [
+        "PATHOLOGY",
+        "NSTAGE",
+        "AGE",
+        "SEX",
+        "RACE",
+        "T",
+        "N",
+        "M",
+        "KFCF",
+        "SMOKE",
+        "ALCOHOL",
+        "HPV"
+      ],
+      "clinical_noise_std": 0.0,
+      "drop_rate": 0.0,
+      "dropout_path_rate": 0.0,
+      "expert_dropout_p": 0.0,
+      "gate_dropout_p": 0.0,
+      "gate_entropy_lambda": 0.01,
+      "gate_loadbal_lambda": 0.01,
+      "grad_accumulation_steps": 8,
+      "hazard_smooth_lambda": 0.01,
+      "loc_loss_ln_lambda": 0.25,
+      "loc_loss_pt_lambda": 0.25,
+      "loc_presence_lambda": 0.05,
+      "logit_l2_lambda": 1e-05,
+      "lora_dropout": 0.0,
+      "mask_focus_lambda": 0.0,
+      "mask_support_lambda": 0.1,
+      "max_time_bins": 100,
+      "modality_dropout_clin_p": 0.0,
+      "modality_dropout_rad_p": 0.0,
+      "primary_surv_loss_weight": 1.0,
+      "proj_dropout_p": 0.0,
+      "rad_proj_dropout_p": 0.0,
+      "surv_dropout_p": 0.0,
+      "time_bin_width_days": 180.0,
+      "token_dropout": 0.0,
+      "token_mlp_dropout": 0.0,
+      "v2_clinical_group_dropout_p": 0.0,
+      "v2_dropout": 0.0,
+      "v2_dropout_ramp_epochs": 0,
+      "v2_image_habitat_dropout_p": 0.0,
+      "v2_node_dropout_p": 0.0,
+      "v2_radiomics_group_dropout_p": 0.0,
+      "v2_topology_dropout_p": 0.0
+    },
+    "pilot_binding": {
+      "source_commit": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+      "source_tree_sha256": "2df5644243d02a1bbd1013f2ef570f12ef48f60e2f14eaeddace8fc818c1c474",
+      "training_plan_sha256": "33a187aff13e69a4c92a77cc5a449937f0fa9d7e8d375c37cd475e019c999271"
+    },
+    "pilot_risk_horizon_days": 1095.0,
+    "prospective_risk_horizon_days": 730,
+    "new_attempt_required": true,
+    "gpu_type": "H100",
+    "gpu_cap_including_pending": 1,
+    "scheduler": "Kubernetes",
+    "automatic_workload_retries": 0,
+    "whole_job_deadline": null,
+    "export_survival_curves": true,
+    "curve_export_times_days": [
+      210,
+      240,
+      270,
+      300,
+      330,
+      360,
+      365,
+      390,
+      420,
+      450,
+      480,
+      510,
+      540,
+      570,
+      600,
+      630,
+      660,
+      690,
+      720,
+      730,
+      1095
+    ]
+  },
+  "baselines": {
+    "status": "draft",
+    "metadata_sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e",
+    "split_files_sha256": {
+      "train": "8605c4bfbd9921380706b8afc61e4173ce53d975668679628771daf9b615950f",
+      "val": "ac4ee1490d8ca4d0e342591c18738b444b5152b59716f80957f5b85ca4321e5c",
+      "test": "27bc064073a210938d1883c1fcb05ace921cac82b35d5420252052c80483a1d4"
+    },
+    "fusion_clinical_columns": [
+      "PATHOLOGY",
+      "NSTAGE",
+      "AGE",
+      "SEX",
+      "RACE",
+      "T",
+      "N",
+      "M",
+      "KFCF",
+      "SMOKE",
+      "ALCOHOL",
+      "HPV"
+    ],
+    "clinical": {
+      "status": "proposed_pending_coding_confirmation",
+      "prediction_time": null,
+      "coding_source": null,
+      "numeric": [
+        "AGE"
+      ],
+      "categorical": [
+        "PATHOLOGY",
+        "NSTAGE",
+        "SEX",
+        "RACE",
+        "T",
+        "N",
+        "M",
+        "KFCF",
+        "SMOKE",
+        "ALCOHOL",
+        "HPV"
+      ],
+      "redundant_columns": {},
+      "staging_decision": null,
+      "coding_notes": "Preserve raw category distinctions including N2A/N2B/N2C and T4B. Meanings and nd/ND handling remain unconfirmed. Choose a documented nonredundant stage representation before fit."
+    },
+    "geometry": {
+      "status": "pending_whole_cohort_review",
+      "manifest_inventory_sha256": null,
+      "manifest_column": "region_manifest_path",
+      "scan_column": "scan_id",
+      "accepted_limitations": []
+    },
+    "alpha_grid": [
+      0.01,
+      0.1,
+      1,
+      10,
+      100
+    ],
+    "selection": "validation_ibs",
+    "ties": "efron",
+    "n_iter": 100,
+    "tol": 1e-09,
+    "outcome_inventory_sha256": "838c79f9687a442b3dbfd8e66ba4e11e076171a0baebdf0877695be45a42d15c"
+  },
+  "later_stages": {
+    "F0_F1_F4": "after interpretable adequately trained F2/F3 core",
+    "F5": "only if required by the final attention claim",
+    "outer_folds": "separate resource-bound proposal; no automatic 30-fit expansion",
+    "contour_robustness": "after core; synchronized CT masks, radiomics and geometry for clean/perturbed pairs; augmentation and consistency isolated"
+  }
+}

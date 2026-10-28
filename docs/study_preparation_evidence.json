@@ -1,0 +1,334 @@
+{
+  "artifacts": {
+    "cohort-quality-v3/cohort_qualification.json": {
+      "bytes": 20290,
+      "sha256": "a12cbfdad6afca9ee5b14602641e31a6a1595c6aa6edadd82166471e319c981d"
+    },
+    "current-panel-inspection.json": {
+      "bytes": 5851,
+      "sha256": "125dd7b5f21301a2d68b01f5c7cac61a66d257fbf5af7ac4927355d4354c60d4"
+    },
+    "development-support/development_support.json": {
+      "bytes": 2535,
+      "sha256": "18181479d8519461489436d6e3f55d425b8560cc4ae7e7ec6799d6d52630e181"
+    },
+    "draft-protocol-validation.json": {
+      "bytes": 1061,
+      "sha256": "999bcba0bd0c933a0b8a3c328044f01d6c92aadc94098fb6cdd13666f1c90ba6"
+    },
+    "eligibility-collection.json": {
+      "bytes": 298,
+      "sha256": "90befab6418737910e9ea8e9e088e8c16943c50c5461755a32965fa88c7ae1d1"
+    },
+    "endpoint-reconciliation/outcome_reconciliation.json": {
+      "bytes": 879,
+      "sha256": "69436e4dd0ff363abee3cd7d4d3762eee26e9daeff4991ee1c6f536f776db704"
+    },
+    "engineering-final-cohort-outcomes.log": {
+      "bytes": 701,
+      "sha256": "6c24a4f0a336660ad207369495c92279699b77cc62e729046d8251ba3d4f2a5a"
+    },
+    "engineering-suite-b.log": {
+      "bytes": 1804,
+      "sha256": "171909aac43dbde3d50ffd13511e23948b133acb211d4d0b837218a9a64d8e43"
+    },
+    "metadata-collection.json": {
+      "bytes": 599,
+      "sha256": "4dd091282764e171d0a9d48883081042de087c83f60aa92ae85cfceb8e4904f8"
+    },
+    "pilot-acceptance-v2/pilot_acceptance.json": {
+      "bytes": 6601,
+      "sha256": "d81d09ae0de4da172039e6b27933095a2266dc0dd98927027f25aa96d49f7167"
+    }
+  },
+  "at_utc": "2026-10-28T05:48:47.116610+00:00",
+  "clinical_fits_performed": 0,
+  "cohort": {
+    "accounting_gate": "passed",
+    "compartments": {
+      "ln_intra": {
+        "anatomical_states": {
+          "missing": 117,
+          "present": 496
+        },
+        "count": 613,
+        "disappearances": 3,
+        "extraction_failures": 3,
+        "image_available": 493,
+        "model_reference_volume_ratio": {
+          "excluded_anatomical_states": {
+            "missing": 117
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 2.6666666666666665,
+          "median": 0.9998860417944346,
+          "minimum": 0.0,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 0.9266057675769679,
+          "p95": 1.0896848787123101,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "model_volume_mm3": {
+          "excluded_anatomical_states": {
+            "missing": 117
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 99798.0,
+          "median": 5773.5,
+          "minimum": 0.0,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 241.5,
+          "p95": 30787.5,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "radiomics_available": 490,
+        "reference_volume_mm3": {
+          "excluded_anatomical_states": {
+            "missing": 117
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 98586.0,
+          "median": 5848.125,
+          "minimum": 1.25,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 235.625,
+          "p95": 30730.25,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "source_fov_truncated": 0
+      },
+      "ln_peri": {
+        "anatomical_states": {
+          "missing": 117,
+          "present": 496
+        },
+        "count": 613,
+        "disappearances": 0,
+        "extraction_failures": 0,
+        "image_available": 496,
+        "model_reference_volume_ratio": {
+          "excluded_anatomical_states": {
+            "missing": 117
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 1.0543026332367393,
+          "median": 1.00060116377182,
+          "minimum": 0.9556987515102698,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 0.9810145585517205,
+          "p95": 1.0198323757544778,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "model_volume_mm3": {
+          "excluded_anatomical_states": {
+            "missing": 117
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 165720.0,
+          "median": 33912.0,
+          "minimum": 1728.0,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 8504.25,
+          "p95": 92373.0,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "radiomics_available": 496,
+        "reference_volume_mm3": {
+          "excluded_anatomical_states": {
+            "missing": 117
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 165516.25,
+          "median": 34031.375,
+          "minimum": 1765.75,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 8545.9375,
+          "p95": 92764.1875,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "source_fov_truncated": 473
+      },
+      "pt_intra": {
+        "anatomical_states": {
+          "missing": 1,
+          "present": 612
+        },
+        "count": 613,
+        "disappearances": 0,
+        "extraction_failures": 0,
+        "image_available": 612,
+        "model_reference_volume_ratio": {
+          "excluded_anatomical_states": {
+            "missing": 1
+          },
+          "excluded_from_population_count": 1,
+          "maximum": 1.7362912250674742,
+          "median": 1.0001168318815195,
+          "minimum": 0.5923709798055348,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 612,
+          "p05": 0.957976419637113,
+          "p95": 1.0525148467733778,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 612,
+          "total_compartment_observations": 613
+        },
+        "model_volume_mm3": {
+          "excluded_anatomical_states": {
+            "missing": 1
+          },
+          "excluded_from_population_count": 1,
+          "maximum": 230997.0,
+          "median": 8748.0,
+          "minimum": 93.0,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 612,
+          "p05": 1235.85,
+          "p95": 43765.19999999999,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 612,
+          "total_compartment_observations": 613
+        },
+        "radiomics_available": 612,
+        "reference_volume_mm3": {
+          "excluded_anatomical_states": {
+            "missing": 1
+          },
+          "excluded_from_population_count": 1,
+          "maximum": 230510.0,
+          "median": 8730.375,
+          "minimum": 76.25,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 612,
+          "p05": 1232.325,
+          "p95": 43699.925,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 612,
+          "total_compartment_observations": 613
+        },
+        "source_fov_truncated": 0
+      },
+      "pt_peri": {
+        "anatomical_states": {
+          "invalid": 116,
+          "missing": 1,
+          "present": 496
+        },
+        "count": 613,
+        "disappearances": 0,
+        "extraction_failures": 0,
+        "image_available": 496,
+        "model_reference_volume_ratio": {
+          "excluded_anatomical_states": {
+            "invalid": 116,
+            "missing": 1
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 1.0501492537313433,
+          "median": 0.9991223200401291,
+          "minimum": 0.9515748745541383,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 0.9893099324239094,
+          "p95": 1.0088324175328685,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "model_volume_mm3": {
+          "excluded_anatomical_states": {
+            "invalid": 116,
+            "missing": 1
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 195324.0,
+          "median": 48301.5,
+          "minimum": 5277.0,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 19692.75,
+          "p95": 107529.75,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "radiomics_available": 496,
+        "reference_volume_mm3": {
+          "excluded_anatomical_states": {
+            "invalid": 116,
+            "missing": 1
+          },
+          "excluded_from_population_count": 117,
+          "maximum": 195332.75,
+          "median": 48397.125,
+          "minimum": 5025.0,
+          "missing_measurement_count": 0,
+          "model_grid_disappearance_zeros_retained": true,
+          "n": 496,
+          "p05": 19910.0625,
+          "p95": 107378.1875,
+          "population": "present_reference_anatomy_with_valid_support_and_passed_geometry_declarations",
+          "population_count": 496,
+          "total_compartment_observations": 613
+        },
+        "source_fov_truncated": 481
+      }
+    },
+    "counts": {
+      "eligible": 519,
+      "paired_missing_primary_outcomes": 94,
+      "prepared": 613
+    },
+    "intersections": {
+      "ln_interior_disappeared_with_measurable_shell": 3,
+      "pt_shell_unavailable_with_unknown_nodal_exclusion": 116
+    },
+    "review_gate": "pending",
+    "review_queue_count": 525,
+    "split_counts": {
+      "excluded": 94,
+      "test": 77,
+      "train": 365,
+      "val": 77
+    }
+  },
+  "endpoint_confirmation": {
+    "censoring_rule": null,
+    "event_one": "death",
+    "time_origin": null,
+    "time_unit": "days"
+  },
+  "full_cohort_review_complete": false,
+  "local_evidence_root": "/storage/TriFuseSurv/runs/study-20261028",
+  "schema_version": 1,
+  "scope": "prospective software and metadata preparation; no substantive fitted-model comparison"
+}

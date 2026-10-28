@@ -24,6 +24,13 @@ dependencies = [
 [project.optional-dependencies]
 radiomics = ["pyradiomics"]
 qc = ["matplotlib"]
+study = [
+  "numpy==1.26.4",
+  "scipy==1.15.3",
+  "pandas==2.3.3",
+  "scikit-learn==1.7.2",
+  "scikit-survival==0.25.0",
+]
 
 [project.scripts]
 trifusesurv2-train = "trifusesurv2.multimodal_survival.train:main"
