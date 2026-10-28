@@ -8,9 +8,13 @@ not a launch receipt or a claim of prognostic improvement.
 The endpoint CSV supplied by the user contains 519 records. Every literal
 patient ID and numerical OS time/event pair matches the retained eligible
 delivery. The original 365/77/77 training/validation/test assignment is unchanged.
-The user confirmed **days** and **1 = death**. The CSV has no time-origin or
-censoring definition, so those fields remain unconfirmed. Zero is the observed
-non-event code; its clinical ascertainment rule is not inferred from the file.
+The user confirmed **diagnosis** as the time origin, **days** as the unit,
+**1 = death**, and censoring described as **"till now"**. For event 0, use the
+supplied OS.TIME as the right-censored duration from diagnosis. Preserve the
+hash-bound durations unchanged. No explicit calendar cutoff was supplied;
+"now" is not converted to the conversation date and does not cause follow-up
+to increase with the system clock. The definition is user-confirmed; the CSV
+contains no individual diagnosis/follow-up dates for independent date validation.
 Source and split hashes are in the specification and outcome reconciliation
 receipt. The separate full-cohort accounting includes 613 prepared patients,
 of whom 94 have both OS fields missing.
@@ -51,8 +55,8 @@ requires a separately identified attempt.
 
 The following metadata-only planning calculations use training censoring
 Kaplan–Meier estimates and training/validation outcomes. No held-out model
-predictions were available or read. They provisionally interpret code 0 as
-censoring while the endpoint definition is completed.
+predictions were available or read. They interpret code 0 as censoring, consistent with the subsequent user
+confirmation; the numerical calculations and supplied durations are unchanged.
 
 | Horizon (days) | Training observed beyond | Validation observed beyond | Training events by horizon | Validation events by horizon | Training censoring survival |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -111,16 +115,21 @@ regression. Calibration is descriptive, without a claimed calibration interval.
 
 ## Clinical and geometry baselines
 
-The proposed C0 encoding keeps AGE continuous and preserves categories for
-coded fields, including N2A/N2B/N2C and T4B. Clinical code meanings, prediction-time
-availability, staging edition and whether NSTAGE is a redundant overall stage
-group remain unresolved. Do not fit both an unqualified composite stage and
-its purported components, silently drop information, or relabel unknown HPV
-codes as negative. The final policy must retain the same prognostic information
-as the fusion models and explicitly account for any staging redundancy. TX is
-excluded. The current draft deliberately cannot pass the baseline fit gate.
+The user approved C0 encoding with AGE continuous, coded fields categorical
+and TX excluded. Preserve raw distinctions, including N2A/N2B/N2C, T4B and
+nd/ND. The user then confirmed that **NSTAGE is derived from T/N/M**. Retain
+categorical T, N and M and omit NSTAGE as the documented redundant field.
+All other clinical information supplied to the fusion models remains included.
+The frozen pilot is unchanged; this is the prospective baseline policy.
 
-C1 uses reference-grid PT/LN volumes (`log1p` in mm³), distances, voxel spread,
+The staging edition was not supplied. No stage recoding or edition is inferred:
+this policy uses the provided component categories. Unknown HPV codes remain
+distinct from negative results. Clinical encoding and the nonredundant staging
+representation are now confirmed; remaining study gates still prevent fitting.
+
+C1 is qualified for computational development use with the exact 519-case
+manifest inventory and the limitations in the [cohort review](cohort_qualification.md).
+It uses reference-grid PT/LN volumes (`log1p` in mm³), distances, voxel spread,
 and laterality only where its anatomical midline and measurement validity are
 qualified. It keeps known absence distinct from unavailable anatomy, with
 missingness indicators and annotation states. Unqualified node counts and
@@ -149,6 +158,12 @@ augmentation, and consistency conditions separately, with paired seeds and
 matched evaluation perturbations. No disconnected mask-only intervention or
 early consistency objective is included in this implementation.
 
-The current blockers are endpoint semantics, clinical coding/staging, flagged
-cohort review, stronger pilot acceptance and a justified training budget. No baseline
+The remaining gate for the substantive neural comparison is a justified
+common training budget. Computational development cohort review is complete
+for the unchanged 519-case inventory; anatomical/clinical qualification remains
+unestablished. The C0/C1 baseline protocol can freeze independently of that
+neural budget.
+The two-epoch pilot passed its 18 required engineering criteria, and its
+controller receipt mismatch was reconciled separately. Endpoint semantics, raw clinical encoding and
+the nonredundant staging representation have been confirmed. No baseline
 fit, substantive F2/F3 experiment or clinical result is claimed here.

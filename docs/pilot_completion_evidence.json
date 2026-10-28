@@ -3,6 +3,24 @@
     "absence_reads": 2,
     "status": "complete"
   },
+  "cohort_computational_development_review": {
+    "clinical_qualification": "not_established",
+    "counts": {
+      "disappeared_LN_interiors": 3,
+      "eligible": 519,
+      "excluded_paired_missing_OS": 94,
+      "prepared": 613,
+      "radiomics_extraction_failures": 3,
+      "ratio_flag_cases": 20,
+      "review_queue": 525,
+      "reviewed_compartments": 2452,
+      "source_fov_flag_cases": 518
+    },
+    "manifest_inventory_sha256": "4205ccd31e36905c5a04d5d973451a4201b941fd7428db6c1a34a2b1e9da092f",
+    "qualification_sha256": "55a539798df389f513d726639374c560d84cb33f4d0c80b84e95ed1d152d8013",
+    "status": "qualified_for_development"
+  },
+  "endpoint_confirmation_note": "User confirmed diagnosis origin, days, death=1 and retaining delivered CSV censoring described as till now. No rolling-clock censoring recomputation; AGE treatment is tracked in the study protocol.",
   "hardware": {
     "compute_capability": [
       9,
@@ -16,26 +34,158 @@
   },
   "job": "trifusesurv2-paired-development-20261027b",
   "job_uid": "60953ee5-ecc4-4dd1-a580-dd143b5a4752",
+  "latest_status_snapshot_at_utc": "2026-10-28T13:38:45.507782+00:00",
   "modes": {
     "F2": {
+      "audited_checkpoint_selection": {
+        "best_validation_nll": 2.5924600159580056,
+        "candidate_epochs": [
+          1,
+          2
+        ],
+        "full_precision_epoch_nll": null,
+        "last_validation_nll": 2.5941849681367346,
+        "rounded_log_evidence": {
+          "decimal_places": 4,
+          "epochs": [
+            {
+              "displayed_val_nll": "2.5925",
+              "epoch": 1,
+              "line_number": 30,
+              "lower_closed": "2.59245",
+              "upper_closed": "2.59255"
+            },
+            {
+              "displayed_val_nll": "2.5942",
+              "epoch": 2,
+              "line_number": 42,
+              "lower_closed": "2.59415",
+              "upper_closed": "2.59425"
+            }
+          ],
+          "exact_epoch_two_checkpoint_nll_decimal": "2.59418496813673460366089784656651318073272705078125",
+          "interval_endpoints": "closed",
+          "interval_half_width": "0.00005",
+          "log_artifact": {
+            "bytes": 8825,
+            "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/paired-development-b-output/training-evidence/training_F2.log",
+            "sha256": "e86c0c34eb1717f15e699f5cd305272969669a10f9a5d5b6040c465df999bf2a"
+          },
+          "new_best_epochs": [
+            1
+          ],
+          "ordering_proof": "rounded_intervals_consistent_with_exact_checkpoint_or_epoch_trace_ordering",
+          "parser_profile": "frozen_614d7fb_pipe_delimited_validation_nll_4dp",
+          "precision_statement": "The displayed NLL is rounded. The unknown exact value is not reconstructed."
+        },
+        "rule": "minimum validation NLL; last wins export ties; best.pt retains first epoch on an epoch-NLL tie",
+        "selected": "best"
+      },
+      "audited_optimization": {
+        "all_audited_parameters_have_nonzero_moments": true,
+        "attempted_update_telemetry": "unavailable_in_frozen_trainer",
+        "attempted_updates": null,
+        "mapped_parameter_count": 561,
+        "opportunities_per_epoch": 46,
+        "optimizer_group_count": 8,
+        "optimizer_states_present": 528,
+        "optimizer_step_opportunities": 92,
+        "parameters": 307566600,
+        "successful_updates_max": 92,
+        "successful_updates_min": 92,
+        "survival_head_parameters": 24,
+        "trainable_parameters": 307566600
+      },
       "checkpoint_hashes": {
         "best.pt": "d4692b20d61ce5bd1dd2acdee61c452021050b9c2a491e8b20063e31355ff94f",
         "last.pt": "60311bcc190982e80d773e373f6d94c47576a86e645152d8ef3a05a8a7ecf329"
       },
       "epochs_completed": 2,
       "finished_at_utc": "2026-10-28T05:38:37.055136+00:00",
+      "primary_test_predictions": 77,
       "returncode": 0,
+      "split_counts": {
+        "test": 77,
+        "train": 365,
+        "val": 77
+      },
       "started_at_utc": "2026-10-28T05:28:19.260056+00:00",
       "whole_stage_seconds": 617.79508
     },
     "F3": {
+      "audited_checkpoint_selection": {
+        "best_validation_nll": 2.584356857536288,
+        "candidate_epochs": [
+          2,
+          2
+        ],
+        "full_precision_epoch_nll": null,
+        "last_validation_nll": 2.584356857536288,
+        "rounded_log_evidence": {
+          "decimal_places": 4,
+          "epochs": [
+            {
+              "displayed_val_nll": "2.5965",
+              "epoch": 1,
+              "line_number": 30,
+              "lower_closed": "2.59645",
+              "upper_closed": "2.59655"
+            },
+            {
+              "displayed_val_nll": "2.5844",
+              "epoch": 2,
+              "line_number": 42,
+              "lower_closed": "2.58435",
+              "upper_closed": "2.58445"
+            }
+          ],
+          "exact_epoch_two_checkpoint_nll_decimal": "2.58435685753628785477076235110871493816375732421875",
+          "interval_endpoints": "closed",
+          "interval_half_width": "0.00005",
+          "log_artifact": {
+            "bytes": 9182,
+            "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/paired-development-b-output/training-evidence/training_F3.log",
+            "sha256": "205f5bb810791c855eab1aad0e21975d63cc310b6cc804e1e7c2ba373e15afb3"
+          },
+          "new_best_epochs": [
+            1,
+            2
+          ],
+          "ordering_proof": "exact_epoch_two_nll_strictly_below_epoch_one_closed_lower_bound",
+          "parser_profile": "frozen_614d7fb_pipe_delimited_validation_nll_4dp",
+          "precision_statement": "The displayed NLL is rounded. The unknown exact value is not reconstructed."
+        },
+        "rule": "minimum validation NLL; last wins export ties; best.pt retains first epoch on an epoch-NLL tie",
+        "selected": "last"
+      },
+      "audited_optimization": {
+        "all_audited_parameters_have_nonzero_moments": true,
+        "attempted_update_telemetry": "unavailable_in_frozen_trainer",
+        "attempted_updates": null,
+        "mapped_parameter_count": 561,
+        "opportunities_per_epoch": 46,
+        "optimizer_group_count": 8,
+        "optimizer_states_present": 528,
+        "optimizer_step_opportunities": 92,
+        "parameters": 307566600,
+        "successful_updates_max": 92,
+        "successful_updates_min": 92,
+        "survival_head_parameters": 24,
+        "trainable_parameters": 307566600
+      },
       "checkpoint_hashes": {
         "best.pt": "fab061571b338c5e49ace18914648333490a3b3ea4737e7672c4bac664aa9c49",
         "last.pt": "3bab45d514d53bd9163e52537765e5c517b8b30410a67e7c4631f1a4720b1c8d"
       },
       "epochs_completed": 2,
       "finished_at_utc": "2026-10-28T05:50:39.719690+00:00",
+      "primary_test_predictions": 77,
       "returncode": 0,
+      "split_counts": {
+        "test": 77,
+        "train": 365,
+        "val": 77
+      },
       "started_at_utc": "2026-10-28T05:39:18.497726+00:00",
       "whole_stage_seconds": 681.221964
     }
@@ -77,35 +227,182 @@
       "admission_review_sha256": "b9023f22be902103d7883685c828770e8c5a9d51583384460ad13ecc3625ad4a",
       "admitted_pod_spec_sha256": "66482ca1fa59ecc1a6e9c2eef167bd25c5bbf80462afc18c7a1e36682ff659ab",
       "automatic_retries": 0,
+      "cleanup": {
+        "absence_reads": 2,
+        "delete_repeated": false,
+        "job": "trifusesurv2-pilot-postprocess-20261028b",
+        "mode": "terminal",
+        "reads": [
+          {
+            "job_absent": true,
+            "owned_pods": 0
+          },
+          {
+            "job_absent": true,
+            "owned_pods": 0
+          }
+        ],
+        "status": "complete",
+        "uid": "04ba9835-e257-43a7-8a55-50d8be5f32c4"
+      },
+      "controller_application_error": "Optimizer mapping does not bind the frozen checkpoint/source.",
+      "controller_application_status": "failed",
       "controller_binding_sha256": "5ccda1857b2d60ec89780837cd0090379c02bbaeeb5d085a6ddcce2e85d0407e",
+      "controller_finished_at_utc": "2026-10-28T06:32:10.029211+00:00",
+      "controller_supervisor_status": "failed",
+      "cuda_compute_devices": 0,
       "execution_device": "cpu",
+      "hardware_reservation": {
+        "cuda_compute_performed": false,
+        "memory_total_mib": 81559,
+        "name": "NVIDIA H100 80GB HBM3",
+        "probe": "nvidia-smi",
+        "reserved_gpu_count": 1
+      },
+      "history": [
+        {
+          "admission_review_sha256": "b9023f22be902103d7883685c828770e8c5a9d51583384460ad13ecc3625ad4a",
+          "admitted_pod_spec_sha256": "66482ca1fa59ecc1a6e9c2eef167bd25c5bbf80462afc18c7a1e36682ff659ab",
+          "automatic_retries": 0,
+          "controller_binding_sha256": "5ccda1857b2d60ec89780837cd0090379c02bbaeeb5d085a6ddcce2e85d0407e",
+          "execution_device": "cpu",
+          "job": "trifusesurv2-pilot-postprocess-20261028b",
+          "job_uid": "04ba9835-e257-43a7-8a55-50d8be5f32c4",
+          "manifest_sha256": "03a7921d97a1cd92a7da785b8452f43518945d3cdd6fa649d0e55b4d248524cf",
+          "observed_at_utc": "2026-10-28T06:27:51.685749+00:00",
+          "pending_reason": "Insufficient eligible GPU/CPU/memory capacity; exact Pod scheduling condition retained locally.",
+          "plan_sha256": "4b8560913d56d9ca6fc5fb0d103e4d2d2580dc87d607f2d216c0a413255039ae",
+          "pod_name": "trifusesurv2-pilot-postprocess-20261028b-kcjl6",
+          "pod_uid": "7b09413e-32f8-445c-a0e6-8e9e55a54dd3",
+          "requested_gpu_count": 1,
+          "running_ready_gpu_count": 0,
+          "status": "pending_cluster_resources",
+          "supervisor": {
+            "current_host": "ldragon4",
+            "identity": {
+              "cmdline_sha256": "68a76e323d9229b0cd3cce1b6540142a498664b2b515e6789575e0f5b79e0e8b",
+              "fqdn": "ldragon4.cm.cluster",
+              "hostname": "ldragon4",
+              "pid": 4021028,
+              "process_group": 4021028,
+              "session_id": 4021028,
+              "start_time_ticks": 377552915,
+              "tty_nr": 0
+            },
+            "live_check": "matched"
+          },
+          "whole_job_deadline": null,
+          "worker_started": false
+        }
+      ],
       "job": "trifusesurv2-pilot-postprocess-20261028b",
+      "job_absent_at_latest_snapshot": true,
       "job_uid": "04ba9835-e257-43a7-8a55-50d8be5f32c4",
+      "lifecycle_acceptance": "established_by_separate_corrected_metadata_reconciliation_original_failure_preserved",
       "manifest_sha256": "03a7921d97a1cd92a7da785b8452f43518945d3cdd6fa649d0e55b4d248524cf",
-      "observed_at_utc": "2026-10-28T06:27:51.685749+00:00",
-      "pending_reason": "Insufficient eligible GPU/CPU/memory capacity; exact Pod scheduling condition retained locally.",
+      "model_forward_passes": 0,
+      "observed_at_utc": "2026-10-28T13:38:45.507782+00:00",
+      "owned_pods_at_latest_snapshot": 0,
       "plan_sha256": "4b8560913d56d9ca6fc5fb0d103e4d2d2580dc87d607f2d216c0a413255039ae",
       "pod_name": "trifusesurv2-pilot-postprocess-20261028b-kcjl6",
       "pod_uid": "7b09413e-32f8-445c-a0e6-8e9e55a54dd3",
+      "reconciliation": {
+        "original_failure_preserved": true,
+        "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/pilot-postprocess-b-reconciliation-a/REMOTE_RECONCILIATION.json",
+        "required_criteria": {
+          "blocked": 0,
+          "failed": 0,
+          "passed": 18
+        },
+        "sha256": "5427b7a2dd71b5240fea7af71e3de2d9d831e2e117d6806f59678934df060a11",
+        "source_binding_sha256": "94c7094a2e6ef1bddaf2b440dfb9b3f45da8a9e2409c6cab07c4b718112ad73e",
+        "status": "reconciled_metadata_validation_passed",
+        "validated_at_utc": "2026-10-28T13:54:45.682149+00:00",
+        "workload_rerun": false
+      },
       "requested_gpu_count": 1,
       "running_ready_gpu_count": 0,
-      "status": "pending_cluster_resources",
-      "supervisor": {
-        "current_host": "ldragon4",
-        "identity": {
-          "cmdline_sha256": "68a76e323d9229b0cd3cce1b6540142a498664b2b515e6789575e0f5b79e0e8b",
-          "fqdn": "ldragon4.cm.cluster",
-          "hostname": "ldragon4",
-          "pid": 4021028,
-          "process_group": 4021028,
-          "session_id": 4021028,
-          "start_time_ticks": 377552915,
-          "tty_nr": 0
-        },
-        "live_check": "matched"
-      },
+      "status": "worker_audit_passed_metadata_reconciled_cleanup_complete",
+      "torch_visible_cuda_devices": 0,
+      "training_invocations": 0,
       "whole_job_deadline": null,
-      "worker_started": false
+      "worker_acceptance_scope": "Pilot engineering acceptance only; no clinical performance or convergence claim.",
+      "worker_acceptance_status": "passed",
+      "worker_final_status": "completed_engineering_postprocess",
+      "worker_finished_at_utc": "2026-10-28T06:32:04.768141+00:00",
+      "worker_scientific_acceptance_flag": true,
+      "worker_started": true,
+      "worker_started_at_utc": "2026-10-28T06:30:51.684521+00:00"
+    },
+    "completed_artifacts": {
+      "pilot-postprocess-b-lifecycle/application-validation.json": {
+        "bytes": 118,
+        "sha256": "91413b3dc148c8d9694b7e1c1cbfe6806ed9407d1bde59cd425e8c72ed0d1588"
+      },
+      "pilot-postprocess-b-lifecycle/cleanup.json": {
+        "bytes": 256,
+        "sha256": "87dfa0870e6b45536e957f062cf1a30492490dbf2cd0702c3c4ca42faf7147a3"
+      },
+      "pilot-postprocess-b-lifecycle/supervisor-terminal.json": {
+        "bytes": 390,
+        "sha256": "463dd5550cbbb9107a920256a170ebe98a23b1b6813b506f425abb646ba180ff"
+      },
+      "pilot-postprocess-b-lifecycle/terminal-job.json": {
+        "bytes": 9007,
+        "sha256": "1f1767001ea7e9f756202cf4c6d05d8bb85d0f6a4eb8c8ac177d12a337ab8f9e"
+      },
+      "pilot-postprocess-b-lifecycle/terminal-pods.json": {
+        "bytes": 11566,
+        "sha256": "60cc8661dff231dd2f9f805e429a3dc35102ad2ae8f196e02ae889bd4bfc0659"
+      },
+      "pilot-postprocess-b-output/F2-optimizer-map/optimizer_parameter_map.json": {
+        "bytes": 39887,
+        "sha256": "d1b4efe0b1266e04eb941841d725c07ad751e81d514e9a224d9f29ede039f937"
+      },
+      "pilot-postprocess-b-output/F2-optimizer-map/reconstruction_evidence.json": {
+        "bytes": 41335,
+        "sha256": "a354c59e26b48a342f7397be843b0a5a24fac11f7d70b223e3a281618ad11cd4"
+      },
+      "pilot-postprocess-b-output/F3-optimizer-map/optimizer_parameter_map.json": {
+        "bytes": 39887,
+        "sha256": "9117148cdc8ad6eca5cc4ff828e411c50f8ac339d24cddaf593e70a1795bddf1"
+      },
+      "pilot-postprocess-b-output/F3-optimizer-map/reconstruction_evidence.json": {
+        "bytes": 41335,
+        "sha256": "5ec8c567d9412b3ddb73f6f35f70dd977ca383d256bf71fbe90aa39d8e5b6de3"
+      },
+      "pilot-postprocess-b-output/FINAL.json": {
+        "bytes": 9829,
+        "sha256": "57a5dd9c2569664487efed957814f45fac7a0472f3b2f6d2abbdb2c6ab4c49bd"
+      },
+      "pilot-postprocess-b-output/STARTUP.json": {
+        "bytes": 5562,
+        "sha256": "d225e4642a86b46279896ffd23e17a493ecf72a20699c15a5df6a2d8af511614"
+      },
+      "pilot-postprocess-b-output/map-F2-END.json": {
+        "bytes": 1090,
+        "sha256": "b9546fb4dbf464ec7ae87c4f7eed45e9181dce1ef33cda4e79290cc8d66767ea"
+      },
+      "pilot-postprocess-b-output/map-F3-END.json": {
+        "bytes": 1090,
+        "sha256": "fd05af913b84d7a6dc84ab7a868ff07abb59e635bcdaaa4f15aa43e85eca3698"
+      },
+      "pilot-postprocess-b-output/pilot-acceptance/pilot_acceptance.json": {
+        "bytes": 32503,
+        "sha256": "ea7fea33961ec8f871e6c58cd5345fc09c4e920e0c927bf6eb9eed9320893309"
+      },
+      "pilot-postprocess-b-output/pilot-acceptance/pilot_acceptance.md": {
+        "bytes": 1598,
+        "sha256": "681ec2fbd2d6809fb901eea3026b044292d6f5ee13b79838bb6836aae8c6bf73"
+      },
+      "pilot-postprocess-b-output/pilot-audit-END.json": {
+        "bytes": 1650,
+        "sha256": "3a04f7c5de7e7d7bbc34fbee3dd88d45f322d32e9bf7d03258448fe1bada6a42"
+      },
+      "pilot-postprocess-b-output/training-log-receipt.json": {
+        "bytes": 970,
+        "sha256": "6a30a290478eec6c77462fa36bf2a913f0e6c38d385e519d3250b8bad5abede1"
+      }
     },
     "evidence": {
       "postprocess-admission-a.rejection.json": {
@@ -123,20 +420,24 @@
       "postprocess-b-status-a.summary.json": {
         "bytes": 1792,
         "sha256": "9cb782ded208c10df88953425d6642c6eab111458e93e1c1317e1dd25147f359"
+      },
+      "postprocess-b-status-b.summary.json": {
+        "bytes": 5300,
+        "sha256": "66707dc3fe4285f1144fc055b9d802924a0adb9e118aaa74bdbf5adb0dfdf37e"
       }
     }
   },
   "postprocessing_source_commit": "71d7c16112744cbf092d56c98c3ad7838ff995e9",
   "remaining_scientific_gates": [
-    "OS origin and censoring definition",
-    "Clinical coding/staging dictionary",
-    "Flagged cohort adjudication and measurement policy",
     "Common training budget justified by development convergence assessment"
   ],
   "runtime_limitations": [
-    "Whole-stage durations include initialization, final evaluation and artifact checking after process exit; individual epoch durations were not captured.",
-    "Peak host RAM and GPU allocated/reserved memory were not captured.",
-    "The pilot is an engineering test, not evidence of convergence or clinical superiority."
+    "Whole training-stage durations include initialization, final evaluation and artifact checking after process exit; individual epoch durations were not captured.",
+    "Peak host RAM, GPU allocated/reserved memory and training shared-memory peak were not captured. GPU reservation and the shared-memory preflight canary are not peak-use measurements.",
+    "Successful Adam steps are recorded; attempted/skipped AMP counters were not retained separately.",
+    "No validated longer-training cost or convergence estimate follows from this two-epoch engineering pilot.",
+    "Worker criterion-level acceptance passed; the immutable controller application/supervisor receipts failed and require separate metadata reconciliation.",
+    "The pilot does not establish clinical superiority or full-cohort anatomical qualification."
   ],
   "schema_version": 1,
   "shared_memory": {
@@ -163,10 +464,11 @@
     "clinical_model_fits_by_new_study_software": 0,
     "engineering_suite": "231 tests and 163 subtests passed",
     "host_controller_fabricated_tests": 30,
+    "metadata_reconciliation_actual_artifact_and_tamper_tests": 6,
     "postprocess_worker_fabricated_tests": 7,
     "rounded_log_and_mapper_regressions": "35 tests and 3 subtests passed"
   },
-  "status": "execution_complete_stronger_audit_pending_cluster_resources",
+  "status": "pilot_engineering_acceptance_passed_receipts_reconciled_cleanup_complete",
   "training_logs": {
     "F2": {
       "bytes": 8825,
@@ -180,5 +482,142 @@
     }
   },
   "training_source_commit": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+  "worker_audit": {
+    "controller_reconciliation": "pending",
+    "created_at_utc": "2026-10-28T06:31:57.538502+00:00",
+    "criterion_results": [
+      {
+        "criterion": "receipt_chain_and_artifact_integrity",
+        "mode": null,
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "single_h100_execution_identity",
+        "mode": null,
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "completed_training_log_provenance",
+        "mode": null,
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "completed_artifacts",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "epoch_completion",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "finite_required_losses_and_predictions",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "exact_patient_and_input_identities",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "finite_checkpoint_tensors",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "survival_path_optimizer_updates",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "validation_nll_checkpoint_selection",
+        "mode": "F2",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "completed_artifacts",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "epoch_completion",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "finite_required_losses_and_predictions",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "exact_patient_and_input_identities",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "finite_checkpoint_tensors",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "survival_path_optimizer_updates",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "validation_nll_checkpoint_selection",
+        "mode": "F3",
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "paired_comparability",
+        "mode": null,
+        "required": true,
+        "status": "passed"
+      },
+      {
+        "criterion": "runtime_capacity",
+        "mode": null,
+        "required": false,
+        "status": "unassessable"
+      }
+    ],
+    "independent_local_readback": {
+      "collected_hashes_verified": 17,
+      "controller_mismatch": "Full checkpoint identity additionally includes source_dirty=false and declared_commit_sha=null; map/proof commit/tree projection matches the plan.",
+      "plan_source_identity": {
+        "commit_sha": "614d7fbdb3551f58c2e8b5da403f7b6f5418f23e",
+        "source_tree_sha256": "2df5644243d02a1bbd1013f2ef570f12ef48f60e2f14eaeddace8fc818c1c474"
+      },
+      "scope": "17 collected JSON/Markdown artifacts and local source/parent references; no checkpoint payload loads or model execution"
+    },
+    "passed_required_criteria": 18,
+    "report": {
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/pilot-postprocess-b-output/pilot-acceptance/pilot_acceptance.json",
+      "sha256": "ea7fea33961ec8f871e6c58cd5345fc09c4e920e0c927bf6eb9eed9320893309"
+    },
+    "required_criteria": 18,
+    "scope": "two-epoch development engineering acceptance; no convergence or clinical effectiveness claim",
+    "status": "passed"
+  },
   "worker_finished_at_utc": "2026-10-28T05:50:41.036992+00:00"
 }

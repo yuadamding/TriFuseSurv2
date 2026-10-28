@@ -38,7 +38,10 @@ def object_sha256(value) -> str:
 
 
 def clinical_columns(policy: dict, available_columns: list[str]) -> tuple[list[str], list[str]]:
-    """Require confirmed coding and an accounted-for, nonredundant stage choice."""
+    """Require confirmed coding and a documented nonredundant stage choice.
+
+    NSTAGE's meaning and relationship to TNM are not inferred from its name.
+    """
     if policy.get("status") != "confirmed":
         raise ValueError("Clinical encoding/staging policy is not confirmed.")
     if not str(policy.get("prediction_time", "")).strip():
@@ -63,7 +66,8 @@ def clinical_columns(policy: dict, available_columns: list[str]) -> tuple[list[s
             raise ValueError(f"Missing redundancy justification for {name}.")
     stages = set(chosen) & {"T", "N", "M", "NSTAGE"}
     if "NSTAGE" in stages and stages & {"T", "N", "M"}:
-        raise ValueError("Use either TNM components or confirmed composite staging, not both.")
+        raise ValueError("The requested nonredundant staging representation is unresolved "
+                         "for NSTAGE together with TNM; NSTAGE's meaning is not inferred from its name.")
     if not str(policy.get("coding_source", "")).strip():
         raise ValueError("Clinical encoding requires a coding-source reference.")
     return numeric, categorical

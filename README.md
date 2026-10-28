@@ -32,21 +32,27 @@ The later [paired pilot recovery](docs/pilot_runtime_recovery.md) records comple
 queued for one H100 as of October 27, 2026, 11:38 PM CDT. The later
 [pilot completion report](docs/pilot_completion.md) records both modes finishing
 two epochs on October 28, 2026, 12:50 AM CDT, followed by verified cleanup.
-Stronger checkpoint acceptance is tracked separately.
+Its 18 required checkpoint acceptance criteria passed, and the separate
+metadata reconciliation completed on October 28, 2026, 8:54 AM CDT.
 
 The next [OS study protocol](docs/study_protocol.md) and
 [specification](configs/study_spec.json) preserve the architecture and split.
-The specification remains draft until endpoint origin/censoring, clinical
-coding, cohort review and an adequate training budget are resolved. New
+The user confirmed OS from diagnosis, days, death=1, and fixed delivered
+censoring durations. Clinical encoding is approved; NSTAGE is omitted from
+the baseline because the user confirmed it is derived from retained T/N/M.
+Computational cohort review is complete for development use. The principal
+specification remains draft until the common neural training budget is justified;
+C0/C1 baseline preparation proceeds under a separate frozen protocol. New
 [pilot/cohort auditors](docs/acceptance_reports.md),
 [paired evaluator and survival exports](docs/paired_evaluation.md), and
 [C0/C1 baselines](docs/tabular_baselines.md) provide the prospective checks.
 Synthetic software tests and metadata accounting are separate from completed
 H100 training and scientific results.
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
-prepared patients and retains a 525-case review queue. The unchanged pilot
-completed both modes; its separate acceptance audit is Pending cluster
-resources as of **October 28, 2026, 1:27 AM CDT**;
+prepared patients and records computational dispositions for all 525 queued
+cases, while preserving their original pending anatomical-review fields. The unchanged pilot
+completed both modes and passed the separate acceptance audit. Its original
+controller receipt mismatch was resolved by separately pinned validation;
 [optimizer identity reconstruction](docs/checkpoint_optimizer_mapping.md)
 provides the separately pinned postprocessing path.
 

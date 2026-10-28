@@ -17,9 +17,16 @@ The runner requires an explicit numeric/categorical policy; it does not infer
 that a numeric code represents a continuous measurement, or guess HPV, smoking,
 alcohol, pathology or stage coding. Treatment (`TX`) is excluded.
 
+On October 28, 2026, the user approved AGE as continuous, the coded fields as
+categorical, and TX excluded. Raw categories are preserved; category labels
+and a staging edition are not inferred. The user subsequently confirmed NSTAGE is derived from T/N/M. The prospective
+baseline keeps categorical T, N and M and omits only the derived NSTAGE field.
+This resolves the nonredundant staging policy without recoding stage values.
+
 Every column in `baselines.fusion_clinical_columns` must be selected or accounted
-for by confirmed staging redundancy. Use either T/N/M components or a confirmed
-composite staging representation. For example, dropping `NSTAGE` requires a
+for by confirmed staging redundancy. Establish whether NSTAGE duplicates T/N/M before
+freezing the requested nonredundant representation. Its name alone is not
+evidence that it is a composite stage. For example, dropping `NSTAGE` requires a
 documented, confirmed relationship to the retained stage components. The local
 dictionary template does not establish that relationship. A string indicating
 an unconfirmed source is not adequate scientific evidence for freezing the

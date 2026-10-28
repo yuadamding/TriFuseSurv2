@@ -4,26 +4,26 @@
   "status": "draft",
   "scope": "Prospective development comparison; not clinical qualification or external validation",
   "blocking_items": [
-    "OS time origin and censoring rule unconfirmed",
-    "Clinical code dictionary and staging interpretation unconfirmed",
-    "Whole-cohort flagged-case review incomplete",
-    "Pilot optimizer and checkpoint acceptance pending",
     "Common substantive training budget not yet justified by pilot/learning curves"
   ],
   "endpoint_definition": {
-    "status": "partially_confirmed",
+    "status": "confirmed",
     "endpoint": "OS",
     "time_column": "OS.TIME",
     "event_column": "OS.EVENT",
     "time_unit": "days",
-    "event_definition": "1 = death (user confirmation); 0 is the observed non-event code",
-    "time_origin": null,
-    "censoring_rule": null,
-    "confirmation_source": "User response: opscc_survival_time_event.csv; Unit in days, 1 as decease",
-    "source_csv_sha256": "0ad9f578d63cb8e1968f9b6360a26c6f86f5a6fdc1c17b715cfdff2fffd6cc5e"
+    "event_definition": "1 = death; 0 = right-censored",
+    "time_origin": "diagnosis",
+    "censoring_rule": "For OS.EVENT=0, right-censor at the supplied OS.TIME from diagnosis. The user describes follow-up as \"censoring till now\"; the hash-bound supplied durations remain unchanged.",
+    "confirmation_source": "User responses: \"Unit in days, 1 as decease\" and \"diagnosis, censoring till now\".",
+    "source_csv_sha256": "0ad9f578d63cb8e1968f9b6360a26c6f86f5a6fdc1c17b715cfdff2fffd6cc5e",
+    "confirmation_date_local": "2026-10-28",
+    "administrative_cutoff_date": null,
+    "administrative_cutoff_note": "No explicit calendar cutoff was supplied. Do not substitute the conversation date or extend observed durations using the system clock.",
+    "duration_policy": "Use OS.TIME as supplied in the frozen source CSV; no recalculation or follow-up extension."
   },
   "cohort": {
-    "status": "inventory_reconciled_review_pending",
+    "status": "qualified_for_development",
     "prepared": 613,
     "eligible": 519,
     "paired_missing_os_exclusions": 94,
@@ -40,7 +40,17 @@
     },
     "eligible_metadata_sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e",
     "outcomes_file_sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd",
-    "eligibility_changes": []
+    "eligibility_changes": [],
+    "computational_review": {
+      "policy": "computational_development_metadata_review_v1",
+      "qualification_sha256": "55a539798df389f513d726639374c560d84cb33f4d0c80b84e95ed1d152d8013",
+      "prepared_cases_reviewed": 613,
+      "compartments_reviewed": 2452,
+      "queued_cases_with_dispositions": 525,
+      "ratio_cases_reviewed": 20,
+      "original_visual_review_fields_preserved": true,
+      "clinical_qualification": "not_established"
+    }
   },
   "evaluation": {
     "endpoint": "OS",
@@ -91,7 +101,7 @@
       365,
       1095
     ],
-    "horizon_status": "training_validation_metadata_support_passed; endpoint_definition_and_final_protocol_pending",
+    "horizon_status": "training_validation_metadata_support_passed; endpoint_definition_confirmed; final_protocol_pending",
     "risk_definition": "1-S(primary_horizon)",
     "concordance_tau": 730,
     "ibs_times": [
@@ -248,10 +258,17 @@
       720,
       730,
       1095
-    ]
+    ],
+    "pilot_acceptance": {
+      "status": "passed_engineering_acceptance",
+      "required_criteria_passed": 18,
+      "pilot_report_sha256": "ea7fea33961ec8f871e6c58cd5345fc09c4e920e0c927bf6eb9eed9320893309",
+      "metadata_reconciliation_sha256": "5427b7a2dd71b5240fea7af71e3de2d9d831e2e117d6806f59678934df060a11",
+      "does_not_establish_convergence": true
+    }
   },
   "baselines": {
-    "status": "draft",
+    "status": "ready_for_separate_baseline_freeze",
     "metadata_sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e",
     "split_files_sha256": {
       "train": "8605c4bfbd9921380706b8afc61e4173ce53d975668679628771daf9b615950f",
@@ -273,15 +290,14 @@
       "HPV"
     ],
     "clinical": {
-      "status": "proposed_pending_coding_confirmation",
-      "prediction_time": null,
-      "coding_source": null,
+      "status": "confirmed",
+      "prediction_time": "pretreatment",
+      "coding_source": "User approval on 2026-10-28 of AGE continuous, coded fields categorical and TX excluded; retain the original source categories without semantic recoding.",
       "numeric": [
         "AGE"
       ],
       "categorical": [
         "PATHOLOGY",
-        "NSTAGE",
         "SEX",
         "RACE",
         "T",
@@ -292,16 +308,42 @@
         "ALCOHOL",
         "HPV"
       ],
-      "redundant_columns": {},
-      "staging_decision": null,
-      "coding_notes": "Preserve raw category distinctions including N2A/N2B/N2C and T4B. Meanings and nd/ND handling remain unconfirmed. Choose a documented nonredundant stage representation before fit."
+      "redundant_columns": {
+        "NSTAGE": {
+          "confirmed": true,
+          "represented_by": [
+            "T",
+            "N",
+            "M"
+          ],
+          "justification": "User confirmed on 2026-10-28 that NSTAGE is derived from T/N/M. Retain categorical T, N and M and omit their derived NSTAGE column to avoid redundant staging."
+        }
+      },
+      "staging_decision": "Use categorical T, N and M; omit the user-confirmed derived NSTAGE column. Preserve the other approved clinical inputs and raw categories.",
+      "coding_notes": "Raw categorical encoding is approved. Preserve distinctions including N2A/N2B/N2C, T4B and nd/ND. User confirmed NSTAGE is derived from T/N/M; omit only that redundant field. No staging edition or other category meanings are inferred.",
+      "encoding_status": "approved",
+      "staging_relationship_status": "confirmed",
+      "staging_edition": null,
+      "nstage_meaning": "derived from T/N/M (user confirmed)"
     },
     "geometry": {
-      "status": "pending_whole_cohort_review",
-      "manifest_inventory_sha256": null,
+      "accepted_limitations": [
+        "Original CT and RTSTRUCT sources are unavailable in this input delivery.",
+        "Stored CT was already normalized/cropped; original preprocessing history is unresolved.",
+        "Derived contours are unreviewed; aligned QC does not establish anatomical or clinical accuracy.",
+        "Empty or failed legacy contour QC means unavailable annotation, not known disease absence.",
+        "The intensity threshold is a development tissue candidate and makes no HU interpretation.",
+        "These inputs are development-only and do not establish clinical performance or an untouched evaluation cohort.",
+        "Qualification is computational metadata review: no new CT/mask-byte, 3D support, HU, or anatomical verification.",
+        "Source-boundary-limited shells and flagged reference/model volume changes are retained under the unchanged common-grid policy; missing source tissue is not reconstructed.",
+        "Reference geometry remains valid only where its recorded validity mask is true; unavailable laterality and anatomical node counts are not replaced with observed zeros.",
+        "The six displayed-panel inspections are limited evidence; the original visual/clinical review fields remain pending or not established.",
+        "Eligibility is the existing OS-valid inventory; unavailable compartments are masked rather than converted to disease absence or used as patient exclusions."
+      ],
       "manifest_column": "region_manifest_path",
+      "manifest_inventory_sha256": "4205ccd31e36905c5a04d5d973451a4201b941fd7428db6c1a34a2b1e9da092f",
       "scan_column": "scan_id",
-      "accepted_limitations": []
+      "status": "qualified_for_development"
     },
     "alpha_grid": [
       0.01,
