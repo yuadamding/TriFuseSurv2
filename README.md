@@ -105,6 +105,20 @@ snapshot showed one unscheduled Pending Pod, zero Running/Ready H100s and no
 training started. Admission, bundle readback and all 85 actual-host controller
 tests passed. Numerical qualification and both fresh fits await worker startup;
 the common cap and scientific comparison remain unassessed.
+The [new qualification and partial-trace report](docs/budget_c_qualification_20261028.md)
+records budget C running on one verified H100 at October 28, 2026, 10:16 PM CDT.
+Both full production Swin checks passed at scale 32,768. The separate 10:20 PM
+CDT F2 observation contains two complete epochs, 91/92 successful updates and
+one AMP skip; its zero-skip budget acceptance is unmet. The bound run continues
+unchanged, and the common cap remains unresolved.
+The [prospective mismatch implementation](docs/mismatched_routing_implementation.md)
+adds the specified availability-cycle intervention with actual-mask coverage
+bound to prediction artifacts. Ordinary F3 model behavior passed bitwise
+historical CPU comparisons; the full source suite passed 358 tests and 337
+subtests. Intervention production H100 qualification remains pending.
+The [new principal and baseline release candidates](docs/study_release_preparation_20261028.md)
+retain exact prepared inputs and fixed analyses while leaving accepted-cap,
+source, numerical-policy and execution-release fields unresolved.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued

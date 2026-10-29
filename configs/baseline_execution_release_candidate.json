@@ -1,0 +1,234 @@
+{
+  "candidate_id": "trifusesurv2-baseline-release-preparation-c-v1",
+  "clinical_ingestion_expectation": {
+    "categorical_columns": [
+      "PATHOLOGY",
+      "SEX",
+      "RACE",
+      "T",
+      "N",
+      "M",
+      "KFCF",
+      "SMOKE",
+      "ALCOHOL",
+      "HPV"
+    ],
+    "categorical_conversion": "verbatim strings before pandas numeric/NA inference",
+    "categorical_value_policy": {
+      "constant_training_columns": "drop, including constant missing/unseen indicators",
+      "missing_and_unseen": "separate indicators; no reserved category strings",
+      "missing_values": "None, pandas/NumPy missing values, empty or whitespace-only strings",
+      "normalization": "preserve_nonblank_strings_verbatim",
+      "vocabulary_fit_scope": "training_only"
+    },
+    "float_precision": "round_trip",
+    "numeric_columns": [
+      "AGE"
+    ],
+    "numeric_conversion": "verbatim strings before existing finite numeric validation"
+  },
+  "created_at_utc": "2026-10-29T03:21:31.379111+00:00",
+  "current_budget_candidate": {
+    "T_max": 12,
+    "common_cap": "unassessed",
+    "epochs_per_mode": 12,
+    "initial_scale": 32768,
+    "job": "trifusesurv2-budget-development-20261028c",
+    "new_policy_not_accepted_for_principal": true,
+    "numerical_policy_sha256": "5a4595bd4f89d76d3ba535c1faa9dc9747b0be9a223f93c87ad3f230df252c7a",
+    "plan_sha256": "3fadfbda88ede8abf61063084d9d531d7344047d4786858205ba1643a17f90be",
+    "qualification_metadata_acceptance_sha256": "ab8d6b44a2121e6b38b4e6f5b16edbca5ccb5b69f47e3127b5f0c16c492aa834",
+    "qualification_scope": "fabricated_production_Swin_survival_NLL_at_bound_FP16_init32768_only",
+    "raw_production_qualification_sha256": "4f9727cc0f7b56796b26f49be959d8ed992331c559c1e781125baff6becc22e1",
+    "real_cohort_numerical_observation": {
+      "at_utc": "2026-10-29T03:20:33.009114+00:00",
+      "attempted": 92,
+      "complete_epoch_rows": 2,
+      "mode": "F2",
+      "observation_sha256": "9244d66e14dc44f7b6d8e3da78b98a89fd9cd2d2283c107ce64b78e7d4583478",
+      "skipped": 1,
+      "successful": 91
+    },
+    "source": {
+      "commit_sha": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+      "source_tree_sha256": "43db0d27b34ff38ebd90d2c13193cdd968680fcc410d4e2ac87f0a8e9ec06e1b"
+    },
+    "uid": "e8c1468d-1b19-4f60-b922-7bf2a1541587",
+    "zero_skip_acceptance": "unmet_in_observed_F2_trace"
+  },
+  "environment_preparation": {
+    "dependency_lock": {
+      "bytes": 5700,
+      "sha256": "248537fa00118cee03d61aa2bda6fb1a3074704341df6d43c4eb5e694a23ba31"
+    },
+    "environment_worker_qualification_sha256": null,
+    "existing_candidate_environment_claim": "not_created_or_qualified",
+    "existing_candidate_prefix": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/environments/baseline-v2",
+    "locked_wheels": 16,
+    "new_execution_prefix": null,
+    "requires_same_interpreter_reader_and_dependency_qualification": true
+  },
+  "execution_authorized_by_this_file": false,
+  "frozen_statistical_recipe": {
+    "alpha_grid": [
+      0.01,
+      0.1,
+      1,
+      10,
+      100
+    ],
+    "bytes": 9365,
+    "candidate_fits": 10,
+    "exact_alpha_tie": "larger_alpha",
+    "file": "configs/baseline_study_spec.json",
+    "heldout_selection": false,
+    "modes": [
+      "C0",
+      "C1"
+    ],
+    "preprocessing_fit_scope": "training_only",
+    "selected_final_models": 2,
+    "selection": "validation_reference_IBS",
+    "sha256": "a6d129c091666955ef997fc950c218fcabc64a5566ebfdb9183357dee850bf7b",
+    "ties": "efron",
+    "train_plus_validation_refit": false
+  },
+  "historical_guarded_candidate": {
+    "bundle_binding_sha256": "2db5122e7006f7c36555747b2ecd5d55fc882358685341c9a8bddeab1e39381c",
+    "candidate_worker_guard": "unconditional; preserve candidate unchanged",
+    "clinical_cell_identity": {
+      "bytes": 4100,
+      "sha256": "f831982d1c1eb55750726ed1f39f28d05e2af2cacd500d41f1f0f5a66d107ef8"
+    },
+    "clinical_cells_verified": 4862,
+    "development_patients_verified": 442,
+    "plan_sha256": "c32c0bd4f2eeb55ea0d2ec90674a26054499a836baceef364e9de279460f1925",
+    "prepared_candidate_is_execution_release": false,
+    "source": {
+      "commit_sha": "038296466f5ac0baa9e5d84c9dc0e078049d65a5",
+      "source_tree_sha256": "c40782445575be0e3338971c03f31764080d3ad77db60e5b9b6ec60ed7603806"
+    },
+    "whole_CSV_bytes_verified": true
+  },
+  "inputs": {
+    "geometry_qualification": {
+      "bytes": 6605,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/geometry_qualification.json",
+      "sha256": "55a539798df389f513d726639374c560d84cb33f4d0c80b84e95ed1d152d8013"
+    },
+    "manifest_inventory": {
+      "bytes": 129753,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/manifest_inventory.json",
+      "sha256": "4205ccd31e36905c5a04d5d973451a4201b941fd7428db6c1a34a2b1e9da092f"
+    },
+    "metadata": {
+      "bytes": 1142804,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/eligible_metadata.csv",
+      "sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e"
+    },
+    "outcomes": {
+      "bytes": 11631,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/outcomes.csv",
+      "sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd"
+    },
+    "protocol_review": {
+      "bytes": 559,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/PROTOCOL_REVIEW.json",
+      "sha256": "4c9f8792cf4d3cd8efc1bef70a5a0248d43a4ff2323deda1181bed160730a9d5"
+    },
+    "study_spec": {
+      "bytes": 9365,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/baseline_study_spec.json",
+      "sha256": "a6d129c091666955ef997fc950c218fcabc64a5566ebfdb9183357dee850bf7b"
+    },
+    "test_ids": {
+      "bytes": 462,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/splits/fold_00/test_ids.txt",
+      "sha256": "27bc064073a210938d1883c1fcb05ace921cac82b35d5420252052c80483a1d4"
+    },
+    "train_ids": {
+      "bytes": 2190,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/splits/fold_00/train_ids.txt",
+      "sha256": "8605c4bfbd9921380706b8afc61e4173ce53d975668679628771daf9b615950f"
+    },
+    "val_ids": {
+      "bytes": 462,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/baseline-development-b/inputs/splits/fold_00/val_ids.txt",
+      "sha256": "ac4ee1490d8ca4d0e342591c18738b444b5152b59716f80957f5b85ca4321e5c"
+    }
+  },
+  "pending_actions": [
+    "Accepted budget and frozen principal protocol must bind this separate fresh release.",
+    "Generate a new execution worker and bundle; never activate the guarded candidate by changing its status.",
+    "Qualify the locked environment and literal CSV reader in the actual worker interpreter.",
+    "Use fresh lifecycle/admission/cleanup bindings under the same one-H100 scheduling sequence."
+  ],
+  "release_evidence_required": {
+    "accepted_common_epoch_cap": null,
+    "accepted_numerical_policy_sha256": null,
+    "accepted_production_qualification_sha256": null,
+    "accepted_source_commit": null,
+    "accepted_source_tree_sha256": null,
+    "complete_cosine_T_max": null,
+    "final_principal_specification_sha256": null,
+    "fresh_admission_review_sha256": null,
+    "fresh_controller_binding_sha256": null,
+    "fresh_job_identity": null,
+    "latest_execution_owner_cleanup_sha256": null,
+    "qualified_complete_paired_budget_assessment_sha256": null
+  },
+  "release_rule": "All release fields require actual verified artifact bindings under a new frozen principal version. A status-field edit or synthetic qualification alone cannot release execution.",
+  "resource_sequence": {
+    "PVC": "yding4-gpu-home",
+    "PVC_subpath": "TriFuseSurv2/common-grid-h100-20261027",
+    "automatic_retries": 0,
+    "maximum_H100s_including_Pending": 1,
+    "maximum_concurrent_jobs_including_Pending": 1,
+    "pinned_image": "hpcharbor.mdanderson.edu/yding41/radiomics@sha256:bd8ad6777cbf704fbee7a1942f09e6a704ee718cf8bd198a7f65a0929cb6e161",
+    "scheduler": "Kubernetes",
+    "whole_job_deadline": null,
+    "worker_visible_root": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027"
+  },
+  "schema_version": 1,
+  "source_files": {
+    "scripts/fit_tabular_baselines.py": {
+      "bytes": 206,
+      "sha256": "9966a62430089d2a0763422941c531b56cd9f3ad469d514b838a650902a9d7f6"
+    },
+    "src/trifusesurv2/baselines/cox.py": {
+      "bytes": 6096,
+      "sha256": "9f68337ef388676afd50edf6e3ee39309fba2aee1e7c4bef32abe1426a4b2507"
+    },
+    "src/trifusesurv2/baselines/features.py": {
+      "bytes": 12010,
+      "sha256": "27c4214038f7e757742de23d50c41fe8ee4661b45ab8a067caa6dd2888adfcfd"
+    },
+    "src/trifusesurv2/baselines/runner.py": {
+      "bytes": 12299,
+      "sha256": "e21f961c35dd55ca9988fca26173413048c90e8ae21382f73423c46303e4e361"
+    },
+    "src/trifusesurv2/evaluation/curves.py": {
+      "bytes": 5467,
+      "sha256": "8a18e9654f32b237f166d463b29a45f10ae6212a2761317e4e48848ad9f777e5"
+    },
+    "src/trifusesurv2/evaluation/paired.py": {
+      "bytes": 22763,
+      "sha256": "738e218a25366172b80a333d70c72beff68a652bdf9a89b6894f735d251b34c9"
+    }
+  },
+  "status": "prepared_not_frozen_not_released",
+  "worker_execution": {
+    "H100_reservation": 1,
+    "compute": "CPU",
+    "concurrent_cap_including_Pending": 1,
+    "cpu": 24,
+    "historical_template_lineage": "Use reviewed institutional approved image/PVC/security profile, with fresh exact server admission and actual Pod checks; historical admission is not a new live binding.",
+    "memory": "200Gi",
+    "new_bundle_binding_sha256": null,
+    "new_job_name": null,
+    "new_source_commit": null,
+    "new_worker_source_sha256": null,
+    "principal_protocol_binding_sha256": null,
+    "reader_qualification_sha256": null
+  }
+}

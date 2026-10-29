@@ -1,16 +1,19 @@
 """Synthetic topology/optimizer fixtures; no real patient forward pass or fit."""
 from collections import OrderedDict
 from copy import deepcopy
+import ast
 import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import torch
+import numpy as np
 from torch import nn
 
 from trifusesurv2.encoders.clinical import SemanticClinicalTokenEncoder
@@ -23,16 +26,31 @@ mapping = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(mapping)
 
 
-def synthetic_checkpoint():
-    with patch.object(sys, "argv", ["fixture", "--meta_csv", "unused.csv", "--no_radiomics",
+def synthetic_checkpoint(*, routing_intervention=False):
+    arguments = ["fixture", "--meta_csv", "unused.csv", "--no_radiomics",
                                     "--img_size", "32", "32", "32", "--feature_size", "12",
                                     "--depths", "1", "1", "1", "1", "--img_token_dim", "8",
                                     "--v2_model_dim", "16", "--v2_num_heads", "4",
-                                    "--v2_transformer_layers", "1", "--no_ema", "--no_swa"]):
+                                    "--v2_transformer_layers", "1", "--no_ema", "--no_swa"]
+    if routing_intervention:
+        from trifusesurv2.models.routing_intervention import ROUTING_INTERVENTION_ID
+        arguments.remove('--no_radiomics')
+        arguments += ["--routing_intervention", ROUTING_INTERVENTION_ID]
+    with patch.object(sys, "argv", arguments):
         args = train.parse_args()
     code, _ = mapping.construction_statements(train)
+    radiomics, rad_dim = None, 0
+    if routing_intervention:
+        from trifusesurv2.encoders.radiomics import HabitatRadiomicsTokenEncoder, GroupPCASpec
+        from trifusesurv2.models.routing_intervention import REGIONAL_ORDER
+        rad_dim = 4
+        radiomics = HabitatRadiomicsTokenEncoder(group_names=REGIONAL_ORDER,
+            pca_specs={name: GroupPCASpec(name=name, input_dim=4, output_dim=4,
+                lower=np.full(4, -1.), upper=np.ones(4), mean=np.zeros(4), scale=np.ones(4),
+                pca_mean=np.zeros(4), components=np.eye(4), explained_variance_ratio=np.full(4, .25))
+                for name in REGIONAL_ORDER}, patient_vectors={}, presence_map={})
     namespace = dict(train.__dict__)
-    namespace.update(args=args, fold=0, fold_num_time_bins=3, clin_dim=0, rad_dim=0,
+    namespace.update(args=args, fold=0, fold_num_time_bins=3, clin_dim=0, rad_dim=rad_dim,
                      mode=train._image_encoder_mode(args), device=torch.device("cpu"))
     exec(code, namespace)
     model = namespace["base_model"]
@@ -61,12 +79,16 @@ def synthetic_checkpoint():
                 "fusion_mode": args.fusion_mode, "num_time_bins": 3,
                 "time_bin_width_days": args.time_bin_width_days,
                 "parameters": sum(p.numel() for p in model.parameters()),
-                "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)}
-    checkpoint = {"args": vars(args), "source_identity": source, "num_time_bins": 3,
+                "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
+                **train._routing_intervention_contract(args)}
+    saved_arguments = dict(vars(args))
+    if saved_arguments.get('routing_intervention') is None:
+        saved_arguments.pop('routing_intervention', None)
+    checkpoint = {"args": saved_arguments, "source_identity": source, "num_time_bins": 3,
                   "model_state": model.state_dict(), "optimizer_state": optimizer.state_dict(),
                   "encoders": {"model_version": "v2", "fusion_mode": args.fusion_mode,
                                "clinical": SemanticClinicalTokenEncoder(OrderedDict()),
-                               "radiomics": None, "clinical_token_dim": 0, "radiomics_token_dim": 0,
+                               "radiomics": radiomics, "clinical_token_dim": 0, "radiomics_token_dim": rad_dim,
                                "model_contract": contract}}
     return checkpoint, model, groups
 
@@ -85,6 +107,63 @@ class CheckpointOptimizerMappingTest(unittest.TestCase):
         self.assertEqual(names, expected)
         self.assertEqual(evidence["forward_passes"], 0)
         self.assertTrue(proof["serialized_ids_match_reconstructed_optimizer"])
+
+    def test_new_constructor_and_exact_helper_bindings_are_recorded(self):
+        _, proof = mapping.construction_statements(train)
+        self.assertEqual(proof['construction_ast_sha256'], mapping.ROUTING_CONSTRUCTION_AST_SHA256)
+        dependencies = proof['routing_construction_dependencies']
+        self.assertEqual(dependencies['trainer_helper_ast_sha256'], mapping.ROUTING_TRAINER_HELPER_AST_SHA256)
+        self.assertEqual(dependencies['metadata_helper_ast_sha256'], mapping.ROUTING_METADATA_HELPER_AST_SHA256)
+        self.assertEqual(dependencies['metadata_source_sha256'], mapping.file_sha256(dependencies['metadata_source_path']))
+
+    def test_helper_digest_is_stable_across_only_empty_type_parameter_fields(self):
+        function = ast.parse('def reviewed(value):\n    return value\n').body[0]
+        digest = mapping.function_ast_digest(function)
+        function._fields = tuple(key for key in function._fields if key != 'type_params') + ('type_params',)
+        function.type_params = []
+        self.assertEqual(mapping.function_ast_digest(function), digest)
+        function.type_params = [ast.Name(id='DifferentGenericType', ctx=ast.Load())]
+        self.assertNotEqual(mapping.function_ast_digest(function), digest)
+
+    def test_legacy_constructor_remains_supported_without_routing_helpers(self):
+        source = Path(train.__file__).read_text()
+        self.assertEqual(source.count('            **_routing_model_kwargs(args),'), 1)
+        legacy = source.replace('            **_routing_model_kwargs(args),\n', '')
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'legacy_train.py'; path.write_text(legacy)
+            _, proof = mapping.construction_statements(SimpleNamespace(__file__=str(path)))
+        self.assertEqual(proof['construction_ast_sha256'], mapping.SUPPORTED_CONSTRUCTION_AST_SHA256)
+        self.assertNotIn('routing_construction_dependencies', proof)
+
+    def test_changed_constructor_or_dependency_does_not_bypass_the_reviewed_adapter(self):
+        source = Path(train.__file__).read_text()
+        for change in ('constructor', 'helper'):
+            if change == 'constructor':
+                changed = source.replace('            **_routing_model_kwargs(args),',
+                                         '            **_routing_model_kwargs(args), arbitrary_flag=True,')
+                expected = 'Construction AST differs'
+            else:
+                changed = source.replace('return {"routing_intervention": metadata["routing_intervention"]} if metadata else {}',
+                                         'return {"routing_intervention": None}')
+                expected = 'helper AST differs'
+            self.assertNotEqual(source, changed)
+            with self.subTest(change=change), TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'changed_train.py'; path.write_text(changed)
+                with self.assertRaisesRegex(ValueError, expected):
+                    mapping.construction_statements(SimpleNamespace(__file__=str(path)))
+
+    def test_intervention_checkpoint_reconstruction_preserves_and_checks_its_identity(self):
+        from trifusesurv2.models.routing_intervention import ROUTING_INTERVENTION_ID
+        checkpoint, _, _ = synthetic_checkpoint(routing_intervention=True)
+        model, proof = mapping.reconstruct_model(checkpoint, train)
+        self.assertEqual(model.routing_intervention, ROUTING_INTERVENTION_ID)
+        self.assertEqual(proof['checkpoint_routing_metadata']['routing_intervention'], ROUTING_INTERVENTION_ID)
+        for location in ('args', 'contract'):
+            bad = deepcopy(checkpoint)
+            fields = bad['args'] if location == 'args' else bad['encoders']['model_contract']
+            fields['routing_intervention_design_sha256'] = 'wrong'
+            with self.subTest(location=location), self.assertRaises(ValueError):
+                mapping.reconstruct_model(bad, train)
 
     def test_unsupported_policy_and_incomplete_state_fail(self):
         for key, value in (("use_lora", True), ("model_version", "v1"), ("allow_partial_resume", True)):

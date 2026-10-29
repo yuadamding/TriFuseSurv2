@@ -158,8 +158,10 @@ criterion remain unchanged; this control cannot rescue an unfavorable core.
 ## Required implementation qualification and limits
 
 Before fitting, use a new explicit intervention identifier and bind the design
-hash in saved contracts and exports. The existing runtime has no implementation
-of this new rule. Required tests must compare actual local attention masks,
+hash in saved contracts and exports. At design freeze the runtime had no implementation
+of this new rule. The later [implementation record](mismatched_routing_implementation.md)
+provides the CPU runtime, contract/export and compatibility evidence; production
+H100 qualification remains required. Required tests must compare actual local attention masks,
 context names and outputs, verify all 256 availability pairs and singleton
 fallback, and establish same-seed parameter/RNG identity and unchanged F3
 execution. Check batch independence and identical train/eval routing behavior.

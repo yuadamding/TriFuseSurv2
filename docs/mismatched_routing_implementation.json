@@ -1,0 +1,155 @@
+{
+  "active_C_scientific_source_commit": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+  "active_C_sources_or_policy_changed": false,
+  "at_utc": "2026-10-29T03:33:57.583456+00:00",
+  "checkpoint_constructor_adapter": {
+    "CPython310_and312_metadata_binding_checks": "passed",
+    "active_checkpoint_through_legacy_adapter": "rejected",
+    "actual_intervention_lazy_reconstruction_and_provenance": "passed_fabricated_fixture",
+    "exact_constructor_dependency_helper_AST_and_metadata_bindings": true,
+    "legacy_construction_AST_sha256": "fa777fcf8671ab33730c92baf4b7f3356557ba85c2423a11e59f876c19099f57",
+    "prospective_construction_AST_sha256": "b3df244daf21b7d633d3a9a332d58f4a17aa5ba52b3e78421674a6f1507b8cfa",
+    "unknown_constructor_or_helper_drift": "rejected"
+  },
+  "contracts_exports": {
+    "actual_coverage_CSV_bound_to_prediction_checkpoint_contract": true,
+    "coverage_phase": "selected_weights_train_eval_val_test; not every training forward",
+    "default_inactive_canonical_and_checkpoint_shape_preserved": true,
+    "exact_patient_order_and_fallbacks_retained": true,
+    "full_fabricated_CPU_fold": {
+      "epochs": 1,
+      "fabricated_cases": 5,
+      "reserved_test_membership": 1,
+      "scope": "small32x32x32_F32_CPU_fabricated_engineering_fixture; no production numerical qualification",
+      "selected_curve_export_splits": [
+        "train_eval",
+        "validation"
+      ],
+      "skipped_updates": 0,
+      "successful_CPU_updates": 2,
+      "test_data_loaded": false,
+      "train": 3,
+      "validation": 2
+    },
+    "immutable_fields": [
+      "routing_intervention",
+      "routing_intervention_design_sha256",
+      "routing_intervention_export_label"
+    ],
+    "mixed_pattern_actual_export": {
+      "active_edges": 5,
+      "effective_mismatched_edges": 4,
+      "identity_fallback_edges": 1,
+      "patients": 2,
+      "source": "actual_v2_forward_with_fixed_fabricated_backbone"
+    },
+    "same_shape_cross_routing_checkpoint_weights_rejected": true
+  },
+  "design_sha256": "c9c30676ca2059ead03f4ec7584fe0a688e7b7c9e916bd02ccc6956072ea66df",
+  "export_label": "F3_mismatch_availability_cycle_v1",
+  "full_regression": {
+    "execution": "local_CPU_fabricated_engineering",
+    "failures": 0,
+    "log_sha256": "d7cb5b70736e6c28dbfceb5c47d3b91c07af289cf23b16e24107293075ddee52",
+    "new_GPU_work": false,
+    "real_patient_fits": 0,
+    "seconds": 79.1,
+    "subtests_passed": 337,
+    "tests_passed": 358,
+    "warnings": 73
+  },
+  "fusion_mode": "F3",
+  "historical_F3_compatibility": {
+    "availability_patterns_each": 256,
+    "checks": [
+      "initial_parameters",
+      "construction_RNG",
+      "outputs_and_aux",
+      "forward_RNG",
+      "named_parameter_gradients"
+    ],
+    "model_classes": 2,
+    "scenarios": 18,
+    "scope_limit": "Does not establish production numerical qualification or blanket cross-source artifact acceptance.",
+    "seeds": [
+      42,
+      142,
+      242
+    ],
+    "status": "bitwise_passed_CPU_models_only"
+  },
+  "historical_candidate_policy_files_unchanged": true,
+  "implementation_files": {
+    "scripts/checkpoint_optimizer_mapping.py": "b536f5b8abd25b12b26b178d432ea40e3f87060dab6243c255f8fd8f3d4b6ca1",
+    "scripts/qualify_swin_survival.py": "9ebdf691644d5c5fb0571e1bbca66a261d49e8c559e0cc467c407ae1d22d6b90",
+    "src/trifusesurv2/models/contour_habitat_survival.py": "65f279cec9d9253c23d8de1265898183826b7c504d86c326f94fa77d6bcc6102",
+    "src/trifusesurv2/models/habitat_survival.py": "0f9510c312213c36b41af97a3f5bf3124418547e9a8a324baf28daf745922bd1",
+    "src/trifusesurv2/models/routing_intervention.py": "0ec4340e5575fda20c92de66ae1135184aa3450575df7b63bfca78843593d851",
+    "src/trifusesurv2/multimodal_survival/train.py": "89c7f76e4b8f95b616bdbfaef94dbaf1891c4781c728fd955e5ecf65e9f05945",
+    "src/trifusesurv2/utils/experiment.py": "0f797e74ec5a5d913c2283fc867a7583af7f2e74b56efd88e47c2d7946bc1354",
+    "tests/test_checkpoint_optimizer_mapping.py": "c0f0258c8a3334c7462b3a91823a8515973f60a4fd9182d78a86ca30b3c78442",
+    "tests/test_mismatched_routing.py": "559f73af0c24f92a3deedd768f9c945e6727489b36bf9aadb95561fdd9bcf545",
+    "tests/test_routing_intervention_contracts.py": "d38e680c1b42fd981ff663b16c9bbfd564b0e38f50bb573ae5a2e0ed8de720ea",
+    "tests/test_swin_survival_qualification.py": "e3a3c7a02d3bb3cec3a8ba153f4545feea4778f606b2876348fe618e355fd110"
+  },
+  "inactive_default": null,
+  "intervention_id": "anatomical_mismatch_availability_cycle_v1",
+  "new_qualifier": {
+    "actual_tiny_CPU_comparison": {
+      "flag": "--comparison routing-intervention",
+      "full_and_final_partial_boundaries": [
+        2,
+        3
+      ],
+      "fusion_mode_both": "F3",
+      "initial_model_and_RNG_states_identical": true,
+      "intervention_effective_wrong_edges": 12,
+      "matched_effective_wrong_edges": 0,
+      "post_update_eval_mask_observations_each": 1,
+      "production_H100_qualification": "pending_existing_one_H100_execution_sequence",
+      "scope": "actual tiny fabricated CT/Swin survival-NLL on local CPU only",
+      "settings_keys": [
+        "F3",
+        "F3_mismatch_availability_cycle_v1"
+      ],
+      "skips_each": 0,
+      "training_mask_observations_each": 3,
+      "updates_each": 2
+    },
+    "comparison_flag": "routing-intervention",
+    "historical_C_fixture_pass_releases_intervention": false,
+    "legacy_schema_version_preserved": 1,
+    "new_source_policy_addendum_required": true,
+    "production_H100_status": "pending",
+    "schema_version": 2
+  },
+  "next_execution_gate": "Use accepted numerical policy/source and a new source-bound full matched/intervention H100 qualifier after existing one-H100 execution and scientific-release gates permit it.",
+  "primary_analysis_changed": false,
+  "prospective_branch": "feat/mismatch-availability-cycle-20261028",
+  "receipt_sha256": {
+    "contracts_exports_coverage": "93c7eb088a1f80c7af9ea5d9c5a6190841491903f3027871558afca4b01aba1a",
+    "historical_F3_parity": "ef4d8d2d633b3b063c636a12070d8c9c63614af31c2961825ade2e961b1b1c22",
+    "qualifier_and_mapper": "0e9e52f2a8c873d5f32126365b4dab5b4787b9c1d23b71c59d904d96c3cfeedd",
+    "runtime": "82024fac2f8e47ba52875af0012059ed5da427f50b564f67f90e5e5c2e0459ca"
+  },
+  "reviewed_source_base_commit": "62f3f4114976258e996f3a8b46d613df84704d63",
+  "runtime": {
+    "actual_mask_patterns": 256,
+    "added_parameters": 0,
+    "checks": [
+      "actual_local_masks_attention_preglobal_outputs",
+      "bijective_assignment_access_and_exposure",
+      "singleton_fallback",
+      "batch_independence",
+      "train_eval_same_rule",
+      "blocked_key_local_isolation"
+    ],
+    "existing_fusion_tests_passed": 8,
+    "feature_outcome_ID_seed_inputs_to_assignment": false,
+    "new_runtime_tests_passed": 9
+  },
+  "schema_version": 1,
+  "scientific_result": "not_available",
+  "status": "implemented_CPU_engineering_qualified_production_intervention_H100_pending",
+  "worthwhile_absolute_IBS_reduction": 0.005
+}

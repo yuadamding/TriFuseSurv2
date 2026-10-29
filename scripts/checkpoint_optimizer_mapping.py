@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import hashlib
 import importlib
 import importlib.metadata
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -18,6 +20,73 @@ import sys
 # Reviewed construction block shared by the frozen 614d7fb pilot and the
 # prospective source. A changed constructor requires reviewing this adapter.
 SUPPORTED_CONSTRUCTION_AST_SHA256 = "fa777fcf8671ab33730c92baf4b7f3356557ba85c2423a11e59f876c19099f57"
+ROUTING_CONSTRUCTION_AST_SHA256 = "b3df244daf21b7d633d3a9a332d58f4a17aa5ba52b3e78421674a6f1507b8cfa"
+ROUTING_TRAINER_HELPER_AST_SHA256 = {
+    "_routing_model_kwargs": "bc90d27cfd36e8145369a942aac1cb6dba35a37860cc7739a73ec4ee8b993c9e",
+    "_routing_intervention_contract": "d06657e2f95a20f6805149d5ab82e50a39d38e432303a41dcb74eccb3e104a53",
+}
+ROUTING_METADATA_HELPER_AST_SHA256 = {
+    "validate_routing_intervention": "a464d1277d3b4b1dc07e48166499f8a7bb6f298e75f564d5d7ed047a8cc18e0f",
+    "routing_intervention_metadata": "244d63c44f278f0460fed9867ccd83b0f7e858ea82d3277794bbd72bc6259b20",
+}
+
+
+def function_ast_digest(node):
+    # Python 3.12 added empty type_params to ordinary function ASTs. Removing
+    # only that empty field preserves the reviewed 3.10 semantics and digest;
+    # a real generic declaration remains distinct and unsupported.
+    compatible = copy.deepcopy(node)
+    for value in ast.walk(compatible):
+        if hasattr(value, 'type_params') and value.type_params == []:
+            delattr(value, 'type_params')
+    return hashlib.sha256(ast.dump(compatible, include_attributes=False).encode()).hexdigest()
+
+
+def reviewed_function_digests(module, expected):
+    values = {}
+    for name, digest in expected.items():
+        candidates = [node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == name]
+        if len(candidates) != 1:
+            raise ValueError("Reviewed routing constructor helper is missing: " + name)
+        observed = function_ast_digest(candidates[0])
+        if observed != digest:
+            raise ValueError("Routing constructor helper AST differs from the reviewed adapter: " + name)
+        values[name] = observed
+    return values
+
+
+def routing_construction_dependencies(trainer, module):
+    """Bind the newly introduced constructor's exact metadata-only helpers."""
+    helpers = reviewed_function_digests(module, ROUTING_TRAINER_HELPER_AST_SHA256)
+    for name in helpers:
+        function = getattr(trainer, name, None)
+        if not inspect.isfunction(function) or Path(inspect.getsourcefile(function)).resolve() != Path(trainer.__file__).resolve():
+            raise ValueError("Routing constructor helper escaped the selected trainer: " + name)
+    metadata = getattr(trainer, "routing_intervention_metadata", None)
+    if not inspect.isfunction(metadata):
+        raise ValueError("The reviewed routing metadata helper is unavailable")
+    metadata_path = Path(inspect.getsourcefile(metadata)).resolve()
+    expected_path = Path(trainer.__file__).resolve().parents[1] / "models" / "routing_intervention.py"
+    if metadata_path != expected_path or metadata_path.is_symlink() or not metadata_path.is_file():
+        raise ValueError("Routing metadata helper escaped the selected package")
+    metadata_module = ast.parse(metadata_path.read_text(), filename=str(metadata_path))
+    metadata_helpers = reviewed_function_digests(metadata_module, ROUTING_METADATA_HELPER_AST_SHA256)
+    for name in metadata_helpers:
+        function = getattr(trainer, name, None)
+        if not inspect.isfunction(function) or Path(inspect.getsourcefile(function)).resolve() != metadata_path:
+            raise ValueError("Imported routing metadata helper differs: " + name)
+    constants = {"ROUTING_INTERVENTION_ID": "anatomical_mismatch_availability_cycle_v1",
+                 "ROUTING_DESIGN_SHA256": "c9c30676ca2059ead03f4ec7584fe0a688e7b7c9e916bd02ccc6956072ea66df",
+                 "ROUTING_EXPORT_LABEL": "F3_mismatch_availability_cycle_v1"}
+    if any(getattr(trainer, name, None) != value for name, value in constants.items()):
+        raise ValueError("Routing constructor metadata constants differ from the reviewed design")
+    if getattr(trainer, "ROUTING_METADATA_KEYS", None) != (
+            "routing_intervention", "routing_intervention_design_sha256", "routing_intervention_export_label"):
+        raise ValueError("Routing constructor metadata field inventory differs")
+    return {"trainer_helper_ast_sha256": helpers, "metadata_helper_ast_sha256": metadata_helpers,
+            "helper_AST_canonicalization": "CPython_3_10_fields_ignoring_only_empty_type_params",
+            "metadata_source_path": str(metadata_path), "metadata_source_sha256": file_sha256(metadata_path),
+            "design": constants}
 
 
 def file_sha256(path):
@@ -95,13 +164,19 @@ def construction_statements(trainer):
     ast.fix_missing_locations(block)
     canonical = ast.dump(block, include_attributes=False)
     digest = hashlib.sha256(canonical.encode()).hexdigest()
-    if digest != SUPPORTED_CONSTRUCTION_AST_SHA256:
+    routing = None
+    if digest == ROUTING_CONSTRUCTION_AST_SHA256:
+        routing = routing_construction_dependencies(trainer, module)
+    elif digest != SUPPORTED_CONSTRUCTION_AST_SHA256:
         raise ValueError("Construction AST differs from the reviewed frozen-pilot adapter.")
-    return compile(block, str(path), "exec"), {
+    evidence = {
         "trainer_path": str(path.resolve()), "trainer_sha256": file_sha256(path),
         "construction_ast_sha256": digest,
         "construction_first_line": selected[0].lineno, "construction_last_line": selected[-1].end_lineno,
     }
+    if routing is not None:
+        evidence["routing_construction_dependencies"] = routing
+    return compile(block, str(path), "exec"), evidence
 
 
 def reconstruct_model(checkpoint, trainer):
@@ -146,6 +221,12 @@ def reconstruct_model(checkpoint, trainer):
             or contract.get("time_bin_width_days") != arguments.get("time_bin_width_days")):
         raise ValueError("Time bins/fusion configuration disagrees with the serialized model contract.")
     code, evidence = construction_statements(trainer)
+    if "routing_construction_dependencies" in evidence:
+        routing = trainer._checkpoint_routing_metadata(checkpoint)
+        evidence["checkpoint_routing_metadata"] = routing
+    elif any(arguments.get(key) is not None or contract.get(key) is not None for key in
+             ("routing_intervention", "routing_intervention_design_sha256", "routing_intervention_export_label")):
+        raise ValueError("The legacy construction adapter cannot reconstruct a routing-intervention checkpoint")
     args = argparse.Namespace(**arguments)
     namespace = dict(trainer.__dict__)
     namespace.update(args=args, fold=0, fold_num_time_bins=int(checkpoint["num_time_bins"]),

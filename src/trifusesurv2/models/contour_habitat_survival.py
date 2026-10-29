@@ -106,6 +106,7 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
         clinical_groups: "dict[str, tuple[str, ...]] | None" = None,
         habitat_clinical_context: "dict[str, tuple[str, ...]] | None" = None,
         fusion_mode: str = "F3",
+        routing_intervention: str | None = None,
     ):
         super().__init__()
         self.backbone = backbone
@@ -134,7 +135,9 @@ class ContourAwareHabitatSurvivalModel(nn.Module):
             clinical_groups=clin_groups,
             habitat_clinical_context=habitat_clinical_context,
             fusion_mode=self.fusion_mode,
+            routing_intervention=routing_intervention,
         )
+        self.routing_intervention = self.habitat_model.routing_intervention
 
     def hazards_to_risk(self, hazards_logits: torch.Tensor, horizon_days: float) -> torch.Tensor:
         """Convert discrete-time hazard logits to cumulative risk at a horizon.

@@ -43,6 +43,11 @@ from trifusesurv2.utils.experiment import (
 from trifusesurv2.preprocessing.identifiers import read_identifier_csv, resolve_identifier_column, require_identifier
 
 from trifusesurv2.models.swinunetr_backbone_utils import load_swinunetr_pretrained
+from trifusesurv2.models.routing_intervention import (
+    ROUTING_INTERVENTION_ID, ROUTING_DESIGN_SHA256, ROUTING_EXPORT_LABEL,
+    REGIONAL_ORDER, availability_cycle_assignment,
+    routing_intervention_metadata, validate_routing_intervention,
+)
 from trifusesurv2.models.swinunetr_shared_roi_token_backbone import soft_shell_around_mask
 from trifusesurv2.models.survival_model import (
     SwinUNETRTokenMoEDiscrete,
@@ -71,7 +76,7 @@ from trifusesurv2.encoders.clinical import (
 from trifusesurv2.encoders.radiomics import HabitatRadiomicsTokenEncoder
 from trifusesurv2.utils.data import NodeTopologyScaler, PreprocessedContourAwareDataset, PreprocessedHabitatSurvivalDataset
 from trifusesurv2.utils.data import resolve_preprocessed_case_path
-from trifusesurv2.schema import NODE_TOPOLOGY_FEATURES
+from trifusesurv2.schema import IMAGE_HABITATS, NODE_TOPOLOGY_FEATURES
 from trifusesurv2 import __version__ as TRIFUSESURV2_VERSION
 
 ROI_FOCUS_ROI_NAMES = ("pt", "ln", "pt_peri", "pt_localizer", "ln_localizer")
@@ -688,8 +693,8 @@ def _drop_optional_modality(
     return tokens * new_pres.unsqueeze(-1).to(tokens.dtype), new_pres
 
 
-def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_alpha: float = 0.0):
-    """Dispatch model forward for evaluation (no gate, no aux)."""
+def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_alpha: float = 0.0, return_aux: bool = False):
+    """Dispatch evaluation; the explicit intervention export may request actual masks."""
     x = payload["x"].to(device, non_blocking=True)
 
     if _is_v2_model(model):
@@ -716,8 +721,11 @@ def _model_forward_eval(model, payload, device, autocast_ctx, *, teacher_force_a
                 topology_presence=_prep_optional_token_tensor(payload, "topology_presence", device) if topology_enabled else None,
                 teacher_force_alpha=float(teacher_force_alpha),
                 **_region_forward_kwargs(payload, device),
+                **({"return_aux": True} if return_aux else {}),
             )
     else:
+        if return_aux:
+            raise ValueError("Routing mask coverage requires the v2 model")
         clin = _prep_optional_tensor(payload, "clin", device)
         rad = _prep_optional_tensor(payload, "rad", device)
         with autocast_ctx():
@@ -1359,10 +1367,197 @@ def predict_risk_scores(
     return out
 
 
+ROUTING_METADATA_KEYS = (
+    "routing_intervention", "routing_intervention_design_sha256", "routing_intervention_export_label",
+)
+
+
+ROUTING_COVERAGE_SCHEMA = {
+    "schema_version": 1, "source": "actual_model_prelocal_masks_and_local_attention_masks",
+    "patient_key": "literal_prediction_patient_ID", "anatomical_order": list(REGIONAL_ORDER),
+    "required_export_splits": ["train", "val", "test_if_not_development_only"],
+    "membership": "exact_split_prediction_inventory_including_identity_fallbacks",
+    "binding": "coverage_CSV_SHA256_in_prediction_sidecar_with_model_contract_and_checkpoint_SHA256",
+}
+
+
+def _routing_coverage_rows(aux, patient_ids) -> Dict[str, Dict[str, Any]]:
+    """Audit actual local masks and retain outcome-free per-patient intervention exposure."""
+    expected = routing_intervention_metadata(ROUTING_INTERVENTION_ID)
+    if _validated_routing_metadata(aux, label="actual routing coverage") != expected:
+        raise ValueError("Actual routing coverage does not identify the declared intervention")
+    q, r = aux.get("routing_prelocal_image_presence"), aux.get("routing_prelocal_radiomics_presence")
+    assignment = aux.get("routing_assignment")
+    if not torch.is_tensor(q) or not torch.is_tensor(r):
+        raise ValueError("Actual routing coverage is missing prelocal mask tensors")
+    expected_assignment = availability_cycle_assignment(q, r)
+    if (not torch.is_tensor(assignment) or assignment.dtype != torch.long
+            or assignment.shape != expected_assignment.shape or not torch.equal(assignment, expected_assignment)):
+        raise ValueError("Actual routing assignment differs from the specified availability rule")
+    presence = aux.get("habitat_presence")
+    nominal, effective = aux.get("local_context_routing"), aux.get("local_context_mask")
+    batch = len(patient_ids); regional = [IMAGE_HABITATS.index(name) for name in REGIONAL_ORDER]
+    if (q.shape[0] != batch or not torch.is_tensor(presence) or presence.dtype != torch.bool
+            or tuple(presence.shape) != (batch, len(IMAGE_HABITATS))
+            or not torch.equal(presence[:, regional], q)
+            or not torch.is_tensor(nominal) or not torch.is_tensor(effective)
+            or nominal.dtype != torch.bool or effective.dtype != torch.bool
+            or nominal.ndim != 3 or nominal.shape != effective.shape
+            or tuple(nominal.shape[:2]) != (batch, len(IMAGE_HABITATS)) or nominal.shape[2] < 5):
+        raise ValueError("Actual routing coverage mask dimensions or image presence disagree")
+    radiomics_edges = torch.nn.functional.one_hot(assignment, num_classes=4).bool()
+    if (not torch.equal(nominal[:, regional, 1:5], radiomics_edges)
+            or not torch.equal(effective[:, regional, 1:5], radiomics_edges & r[:, None, :])
+            or bool(nominal[:, [0, 5], 1:5].any()) or bool(effective[:, [0, 5], 1:5].any())
+            or not bool(nominal[:, :, 0].all()) or not bool(nominal[:, :, 5:].all())
+            or not torch.equal(effective[:, :, 0], presence)
+            or not torch.equal(effective[:, :, 5:], effective[:, :1, 5:].expand(-1, len(IMAGE_HABITATS), -1))):
+        raise ValueError("Undeclared local routing-mask differences in actual prediction coverage")
+    names = aux.get("routing_context_names")
+    if (not isinstance(names, list) or len(names) != len(IMAGE_HABITATS)
+            or any(row[:5] != ["image:" + habitat, *("radiomics:" + name for name in REGIONAL_ORDER)]
+                   or len(row) != nominal.shape[2] for row, habitat in zip(names, IMAGE_HABITATS))):
+        raise ValueError("Actual routing coverage context identities differ")
+    q, r, assignment = q.detach().cpu(), r.detach().cpu(), assignment.detach().cpu()
+    rows = {}
+    for index, pid in enumerate(patient_ids):
+        if not isinstance(pid, str) or not pid or pid in rows:
+            raise ValueError("Routing coverage requires unique literal prediction patient IDs")
+        active = q[index] & r[index]
+        changed = assignment[index] != torch.arange(4)
+        row = {"Patient_ID": pid, "image_presence": "".join(str(int(v)) for v in q[index]),
+               "radiomics_presence": "".join(str(int(v)) for v in r[index]),
+               **{name + "_key": REGIONAL_ORDER[int(assignment[index, j])] for j, name in enumerate(REGIONAL_ORDER)},
+               "active_regional_edges": int(active.sum()),
+               "effective_mismatched_edges": int((active & changed).sum()),
+               "active_identity_fallback_edges": int((active & ~changed).sum())}
+        row["patient_has_effective_mismatch"] = int(row["effective_mismatched_edges"] > 0)
+        rows[pid] = row
+    return rows
+
+
+def _write_routing_coverage(path, rows, patient_ids, *, split, checkpoint_sha256, model_contract_sha256):
+    """Join coverage to the exact prediction order and hash the observed mask artifact."""
+    from trifusesurv2.evaluation.curves import file_sha256
+    if set(rows) != set(patient_ids) or len(rows) != len(patient_ids):
+        raise ValueError("Routing mask coverage does not match the complete prediction inventory")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ordered = [rows[pid] for pid in patient_ids]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(ordered[0]))
+        writer.writeheader(); writer.writerows(ordered)
+    strata = {}
+    for row in ordered:
+        key = row["image_presence"] + "|" + row["radiomics_presence"]
+        value = strata.setdefault(key, {"patients": 0, "patients_with_effective_mismatch": 0,
+                                       "active_regional_edges": 0, "effective_mismatched_edges": 0,
+                                       "active_identity_fallback_edges": 0})
+        value["patients"] += 1
+        value["patients_with_effective_mismatch"] += row["patient_has_effective_mismatch"]
+        for field in ("active_regional_edges", "effective_mismatched_edges", "active_identity_fallback_edges"):
+            value[field] += row[field]
+    return {"schema": ROUTING_COVERAGE_SCHEMA, "split": split, "artifact": path.name,
+            "csv_sha256": file_sha256(path), "patients": len(ordered),
+            "phase": "train_eval" if split == "train" else split + "_eval",
+            "forward_observations_per_patient": 1,
+            "scope": "selected_weights_evaluation_masks; not a record of every training forward",
+            "patients_with_effective_mismatch": sum(row["patient_has_effective_mismatch"] for row in ordered),
+            "patients_without_effective_mismatch": sum(not row["patient_has_effective_mismatch"] for row in ordered),
+            "active_regional_edges": sum(row["active_regional_edges"] for row in ordered),
+            "effective_mismatched_edges": sum(row["effective_mismatched_edges"] for row in ordered),
+            "active_identity_fallback_edges": sum(row["active_identity_fallback_edges"] for row in ordered),
+            "joint_availability_strata": strata, "checkpoint_sha256": checkpoint_sha256,
+            "model_contract_sha256": model_contract_sha256}
+
+
+def _routing_intervention_contract(args) -> Dict[str, Any]:
+    """An inactive setting retains the historical contract and export shape."""
+    value = getattr(args, "routing_intervention", None)
+    value = validate_routing_intervention(value, fusion_mode=getattr(args, "fusion_mode", "F3"))
+    if value is None:
+        if any(getattr(args, key, None) is not None for key in ROUTING_METADATA_KEYS[1:]):
+            raise ValueError("Inactive routing intervention cannot carry a design hash or export label")
+        return {}
+    if (getattr(args, "model_version", None) != "v2"
+            or getattr(args, "region_mode", None) != "verified"
+            or getattr(args, "comparison_recipe", None) != "principal"):
+        raise ValueError("Routing intervention requires the F3 v2 verified principal configuration")
+    metadata = routing_intervention_metadata(value)
+    for key, expected in metadata.items():
+        if getattr(args, key, expected) != expected:
+            raise ValueError("Routing intervention metadata differs from the fixed design: " + key)
+    return metadata
+
+
+def _routing_model_kwargs(args) -> Dict[str, Any]:
+    metadata = _routing_intervention_contract(args)
+    return {"routing_intervention": metadata["routing_intervention"]} if metadata else {}
+
+
+def _routing_metadata_fields(value) -> Dict[str, Any]:
+    return {key: value[key] for key in ROUTING_METADATA_KEYS if key in value}
+
+
+def _validated_routing_metadata(value, *, label) -> Dict[str, Any]:
+    """Reject changed or incomplete provenance rather than relabel same-shape weights."""
+    observed = _routing_metadata_fields(value)
+    expected = routing_intervention_metadata(observed.get("routing_intervention"))
+    if observed != expected:
+        raise ValueError("Routing intervention provenance differs in " + label)
+    return expected
+
+
+def _validated_routing_contract(value, *, label) -> Dict[str, Any]:
+    observed = _validated_routing_metadata(value, label=label)
+    if observed:
+        if value.get("fusion_mode") != "F3":
+            raise ValueError("Routing intervention contract must retain fusion_mode=F3")
+        settings = (value.get("experiment_spec") or {}).get("settings") or {}
+        if (_validated_routing_metadata(settings, label=label + " settings") != observed
+                or _routing_intervention_contract(argparse.Namespace(**settings)) != observed):
+            raise ValueError("Routing intervention contract and experiment settings disagree")
+    return observed
+
+
+def _checkpoint_routing_metadata(checkpoint) -> Dict[str, Any]:
+    args = checkpoint.get("args") or {}
+    observed = _validated_routing_metadata(args, label="checkpoint arguments")
+    embedded = (checkpoint.get("encoders") or {}).get("model_contract") or {}
+    contract = _validated_routing_contract(embedded, label="embedded model contract")
+    inference = _validated_routing_metadata(checkpoint, label="inference checkpoint")
+    if observed or contract:
+        if observed != contract or inference:
+            raise ValueError("Routing intervention checkpoint arguments and embedded contract disagree")
+        if _routing_intervention_contract(argparse.Namespace(**args)) != observed:
+            raise ValueError("Routing intervention checkpoint configuration disagrees")
+        return observed
+    if inference:
+        if checkpoint.get("purpose") != "selected inference weights; not an optimizer-resume checkpoint":
+            raise ValueError("Routing intervention weights lack their bound checkpoint purpose")
+        from trifusesurv2.evaluation.curves import require_digest
+        require_digest(checkpoint.get("model_contract_sha256"), "model_contract_sha256")
+    return inference
+
+
+def _validate_routing_export_provenance(model, args, contract_path) -> Dict[str, Any]:
+    expected = _routing_intervention_contract(args)
+    actual = routing_intervention_metadata(getattr(_unwrap_model(model), "routing_intervention", None))
+    contract = {}
+    if contract_path is not None:
+        contract = _validated_routing_contract(json.loads(Path(contract_path).read_text()), label="export model contract")
+    if actual != expected or contract != expected:
+        raise ValueError("Routing intervention model, arguments and export contract disagree")
+    return expected
+
+
 @torch.no_grad()
 def restore_selected_curve_checkpoint(model, path):
     """Curve provenance requires an exact state restore, not a partial warmstart."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    expected = routing_intervention_metadata(getattr(_unwrap_model(model), "routing_intervention", None))
+    if _checkpoint_routing_metadata(checkpoint) != expected:
+        raise ValueError("Routing intervention selected checkpoint and model disagree")
     _unwrap_model(model).load_state_dict(checkpoint["model_state"], strict=True)
 
 
@@ -1370,12 +1565,21 @@ def restore_selected_curve_checkpoint(model, path):
 def persist_selected_inference_weights(model, path, *, source_checkpoint, contract_path, weights):
     """Persist the actual averaged inference state, including for lightweight runs."""
     from trifusesurv2.evaluation.curves import file_sha256
+    routing = routing_intervention_metadata(getattr(_unwrap_model(model), "routing_intervention", None))
+    observed = _validated_routing_contract(json.loads(Path(contract_path).read_text()), label="inference model contract")
+    if observed != routing:
+        raise ValueError("Routing intervention model and inference contract disagree")
+    if routing:
+        source = torch.load(source_checkpoint, map_location="cpu", weights_only=False)
+        if _checkpoint_routing_metadata(source) != routing:
+            raise ValueError("Routing intervention source checkpoint and inference model disagree")
+        del source
     state = {"model_state": {name: value.detach().cpu().clone()
                              for name, value in _unwrap_model(model).state_dict().items()},
              "weights": weights, "source_checkpoint_sha256": file_sha256(source_checkpoint),
              "model_contract_sha256": file_sha256(contract_path),
              "source_identity": source_identity(),
-             "purpose": "selected inference weights; not an optimizer-resume checkpoint"}
+             "purpose": "selected inference weights; not an optimizer-resume checkpoint", **routing}
     with Path(path).open("xb") as handle:
         torch.save(state, handle)
     return Path(path)
@@ -1391,12 +1595,26 @@ def export_survival_curves(
         raise ValueError('Development-only execution forbids held-out test curve export.')
     from trifusesurv2.evaluation.curves import file_sha256, hazards_to_survival, write_survival_curves
 
+    routing = _validate_routing_export_provenance(model, args, contract_path)
+    if routing:
+        selected = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if _checkpoint_routing_metadata(selected) != routing:
+            raise ValueError("Routing intervention selected checkpoint and export model disagree")
+        del selected
     model.eval()
-    hazards = {}
+    hazards, routing_rows = {}, {}
     for batch in loader:
         payload = _unpack_surv_batch(batch)
-        logits = _model_forward_eval(model, payload, device, autocast_ctx,
-                                     teacher_force_alpha=float(teacher_force_alpha))
+        if routing:
+            logits, aux = _model_forward_eval(model, payload, device, autocast_ctx,
+                teacher_force_alpha=float(teacher_force_alpha), return_aux=True)
+            observed = _routing_coverage_rows(aux, payload["pid"])
+            if set(routing_rows).intersection(observed):
+                raise ValueError("duplicate routing-coverage patient")
+            routing_rows.update(observed)
+        else:
+            logits = _model_forward_eval(model, payload, device, autocast_ctx,
+                                         teacher_force_alpha=float(teacher_force_alpha))
         logits = _extract_endpoint_logits(logits, str(args.endpoint))
         values = torch.sigmoid(logits.float()).detach().cpu().numpy()
         for i, pid in enumerate(payload["pid"]):
@@ -1413,17 +1631,22 @@ def export_survival_curves(
     times = sorted(set([0.0, float(args.risk_horizon_days), *requested,
                         *(float(i + 1) * width for i in range(matrix.shape[1]))]))
     probabilities = hazards_to_survival(matrix, times, width)
+    coverage = {}
+    if routing:
+        coverage["routing_intervention_coverage"] = _write_routing_coverage(
+            Path(output_path).with_suffix(".routing.csv"), routing_rows, ids, split=split,
+            checkpoint_sha256=file_sha256(checkpoint_path), model_contract_sha256=file_sha256(contract_path))
     return write_survival_curves(
         output_path, patient_ids=ids, observed_times=outcome_frame[args.time_col],
         events=outcome_frame[args.event_col], evaluation_times=times,
         survival_probabilities=probabilities, split=split, fold=int(fold),
-        seed=int(args.seed), mode=str(args.fusion_mode), endpoint=str(args.endpoint),
+        seed=int(args.seed), mode=routing.get("routing_intervention_export_label", str(args.fusion_mode)), endpoint=str(args.endpoint),
         checkpoint_sha256=file_sha256(checkpoint_path), model_contract_sha256=file_sha256(contract_path),
         risk_horizon=float(args.risk_horizon_days), metadata={
             "weights": weights, "interpolation": "piecewise_exponential_within_hazard_bin",
             "time_bin_width_days": width, "num_time_bins": int(matrix.shape[1]),
             "hazard_probability_clip": [1e-7, 1.0 - 1e-7],
-            "source_identity": source_identity(),
+            "source_identity": source_identity(), **routing, **coverage,
         },
     )
 
@@ -1494,7 +1717,8 @@ def select_export_candidate(candidates: Dict[str, Dict[str, Any]], metric_name: 
 
 def finalize_development_fold(model, unwrapped, val_loader, val_frame, device, *, args, fold, fold_dir,
                               ckpt_last, ckpt_best, contract_path, ema, swa, autocast_ctx,
-                              num_time_bins, train_max_time_days, reserved_test_ids):
+                              num_time_bins, train_max_time_days, reserved_test_ids,
+                              train_loader=None, train_frame=None):
     """Select weights using validation only; this interface has no test data."""
     teacher_force = _survival_teacher_force_alpha(_teacher_force_alpha_for_epoch(int(args.epochs), args), args)
 
@@ -1531,8 +1755,16 @@ def finalize_development_fold(model, unwrapped, val_loader, val_frame, device, *
                     fold=fold, split='val', checkpoint_path=checkpoint, contract_path=contract_path, weights=selected,
                     autocast_ctx=autocast_ctx, teacher_force_alpha=teacher_force,
                     output_path=fold_dir / 'val_survival_curves_export.csv')
+                if getattr(args, "routing_intervention", None):
+                    if train_loader is None or train_frame is None:
+                        raise ValueError("Routing intervention requires actual training-split mask coverage")
+                    export_survival_curves(model, train_loader, device, outcome_frame=train_frame, args=args,
+                        fold=fold, split='train', checkpoint_path=checkpoint, contract_path=contract_path,
+                        weights=selected, autocast_ctx=autocast_ctx, teacher_force_alpha=teacher_force,
+                        output_path=fold_dir / 'train_survival_curves_export.csv')
         record = {'schema_version': 1, 'evaluation_scope': 'development_only', 'test_evaluation': 'not_run',
             'test_exports': [], 'fold': int(fold), 'seed': int(args.seed), 'fusion_mode': args.fusion_mode,
+            **_routing_intervention_contract(args),
             'selected_weights': selected, 'selected_checkpoint': str(checkpoint),
             'selection_metric': str(args.report_metric), 'validation_report_metric_value': float(selected_metric),
             'selection_policy': str(args.export_policy), 'reserved_test_ids': list(reserved_test_ids),
@@ -2487,6 +2719,14 @@ def save_checkpoint(
     encoders: Optional[Dict[str, Any]] = None,
 ):
     ck_args = dict(vars(args))
+    routing = _routing_intervention_contract(args)
+    actual = routing_intervention_metadata(getattr(_unwrap_model(model), "routing_intervention", None))
+    if actual != routing:
+        raise ValueError("Routing intervention checkpoint model and arguments disagree")
+    if routing:
+        ck_args.update(routing)
+    else:
+        ck_args.pop("routing_intervention", None)
     if ck_args.get("amp_init_scale") is None:
         ck_args.pop("amp_init_scale", None)
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
@@ -2504,6 +2744,7 @@ def save_checkpoint(
     }
     if encoders is not None:
         state["encoders"] = encoders
+    _checkpoint_routing_metadata(state)
     if include_training_state:
         state["optimizer_state"] = optimizer.state_dict()
         state["scaler_state"] = (scaler.state_dict() if scaler is not None else None)
@@ -2935,6 +3176,9 @@ def run_one_fold(
 ) -> Dict[str, Any]:
     args.id_col = resolve_identifier_column(meta.columns, args.id_col)
     _validate_comparison_recipe(args)
+    _routing_intervention_contract(args)
+    if getattr(args, "routing_intervention", None) and not bool(getattr(args, "export_survival_curves", False)):
+        raise ValueError("Routing intervention fitting requires --export_survival_curves for actual per-patient mask coverage")
     set_seed(args.seed + 100 * int(fold), deterministic=bool(getattr(args, "deterministic", False)))
     _assert_split_disjoint(int(fold), split)
     data_root = str(Path(args.meta_csv).parent)
@@ -3225,6 +3469,7 @@ def run_one_fold(
         base_model = ContourAwareHabitatSurvivalModel(
             backbone=v2_backbone,
             fusion_mode=args.fusion_mode,
+            **_routing_model_kwargs(args),
             num_time_bins=int(fold_num_time_bins),
             time_bin_width_days=float(args.time_bin_width_days),
             radiomics_token_dim=int(rad_dim),
@@ -3306,6 +3551,9 @@ def run_one_fold(
     if clinical_type_policy == LEGACY_TYPE_POLICY:
         # Absence of this new opt-in setting retains the legacy contract shape.
         vars(contract_args).pop('clinical_type_policy', None)
+    prospective_routing_contract = _routing_intervention_contract(args)
+    prospective_routing_coverage = ({"routing_intervention_coverage_schema": ROUTING_COVERAGE_SCHEMA}
+                                    if prospective_routing_contract else {})
     prospective_type_contract = ({'clinical_type_policy': clin_enc.type_policy}
                                  if clinical_type_policy == APPROVED_TYPE_POLICY else {})
     experiment_spec = canonical_experiment_spec(contract_args, runtime={
@@ -3315,7 +3563,7 @@ def run_one_fold(
         "optimizer": {"class": "AdamW", "betas": [0.9, 0.999], "eps": 1e-8},
         "scheduler": {"class": "CosineAnnealingLR", "T_max": scheduler_t_max(args), "eta_min": float(args.min_lr)},
         "contour_warmstart_sha256": file_sha256(contour_ckpt) if contour_ckpt and Path(contour_ckpt).is_file() else None,
-        **prospective_type_contract,
+        **prospective_type_contract, **prospective_routing_contract, **prospective_routing_coverage,
     })
     model_contract = {
         "schema_version": 2,
@@ -3331,7 +3579,7 @@ def run_one_fold(
         "test_ids": list(split['test']) if development_only else te_df[args.id_col].astype(str).tolist(),
         "evaluation_scope": 'development_only' if development_only else 'train_validation_test',
         "clinical_column_policy": clin_enc.column_policy if v2_requested else {"columns": list(args.clinical_cols)},
-        **prospective_type_contract,
+        **prospective_type_contract, **prospective_routing_contract, **prospective_routing_coverage,
         "metadata_sha256": file_sha256(args.meta_csv),
         "region_manifest_sha256": {pid: file_sha256(m["_manifest_path"]) for pid, m in (region_manifests or {}).items()},
         "radiomics_csv_sha256": file_sha256(_v2_radiomics_csv_path(args)) if v2_requested and args.use_radiomics else None,
@@ -3755,6 +4003,7 @@ def run_one_fold(
             ckpt_last=ckpt_last, ckpt_best=ckpt_best, contract_path=contract_path,
             ema=ema, swa=swa, autocast_ctx=autocast_ctx, num_time_bins=fold_num_time_bins,
             train_max_time_days=fold_max_time, reserved_test_ids=split['test'],
+            **({"train_loader": tr_eval_loader, "train_frame": tr_eval_df} if prospective_routing_contract else {}),
         )
 
     final_eval_teacher_force_alpha = _survival_teacher_force_alpha(
@@ -3937,6 +4186,7 @@ def run_one_fold(
     )
     risk_metadata_base = {
         "comparison_recipe": args.comparison_recipe,
+        **prospective_routing_contract,
         "experiment_spec_sha256": model_contract["experiment_spec_sha256"],
         "model_contract_schema_version": model_contract["schema_version"],
         "fold": int(fold),
@@ -4037,7 +4287,10 @@ def run_one_fold(
                     _eval_model, fold_dir / f"selected_{export_suffix}_inference.pt",
                     source_checkpoint=selected_checkpoint, contract_path=contract_path, weights=export_suffix,
                 )
-            for split_name, split_loader, split_frame in (("val", va_loader, va_df), ("test", te_loader, te_df)):
+            export_splits = [("val", va_loader, va_df), ("test", te_loader, te_df)]
+            if prospective_routing_contract:
+                export_splits.insert(0, ("train", tr_eval_loader, tr_eval_df))
+            for split_name, split_loader, split_frame in export_splits:
                 export_survival_curves(
                     _eval_model, split_loader, device, outcome_frame=split_frame, args=args,
                     fold=fold, split=split_name, checkpoint_path=selected_checkpoint,
@@ -4435,6 +4688,8 @@ def parse_args():
     p.add_argument("--model_version", type=str, default="v2", choices=["v1", "v2"],
                    help="v2 default: habitat-aligned cross-attention; v1: SwinUNETR+MoE late-fusion")
     p.add_argument("--fusion_mode", choices=["F0", "F1", "F2", "F3", "F4", "legacy"], default="F3")
+    p.add_argument("--routing_intervention", choices=[ROUTING_INTERVENTION_ID], default=None,
+                   help="Prospective availability-matched wrong routing control; F3 verified principal only.")
     p.add_argument("--comparison_recipe", choices=["principal", "robustness"], default="principal",
                    help="Principal comparisons disable both image-token dropout paths; robustness is a separate factor.")
     p.add_argument("--region_mode", choices=["verified", "legacy"], default="verified")
@@ -4475,6 +4730,7 @@ def parse_args():
     )
 
     args = p.parse_args()
+    vars(args).update(_routing_intervention_contract(args))
     args.amp_init_scale = _validated_amp_init_scale(args.amp_init_scale)
     if args.amp_init_scale is not None and (not args.amp or str(args.device).strip().lower() == "cpu"):
         raise ValueError("amp_init_scale requires enabled CUDA AMP")
@@ -4747,6 +5003,7 @@ def main():
             id_col=args.id_col,
             endpoint=str(args.endpoint),
             risk_horizon_days=float(args.risk_horizon_days),
+            **({"metadata": _routing_intervention_contract(args)} if getattr(args, "routing_intervention", None) else {}),
         )
 
     test_c = []
@@ -4760,6 +5017,7 @@ def main():
 
     summary = {
         "exp_name": args.exp_name,
+        **_routing_intervention_contract(args),
         "fusion_mode": args.fusion_mode,
         "region_mode": args.region_mode,
         "deployment_mode": args.deployment_mode,

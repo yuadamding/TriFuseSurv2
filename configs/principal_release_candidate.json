@@ -1,0 +1,609 @@
+{
+  "candidate_id": "trifusesurv2-principal-release-preparation-c-v1",
+  "created_at_utc": "2026-10-29T03:21:31.379111+00:00",
+  "current_budget_candidate": {
+    "T_max": 12,
+    "common_cap": "unassessed",
+    "epochs_per_mode": 12,
+    "initial_scale": 32768,
+    "job": "trifusesurv2-budget-development-20261028c",
+    "new_policy_not_accepted_for_principal": true,
+    "numerical_policy_sha256": "5a4595bd4f89d76d3ba535c1faa9dc9747b0be9a223f93c87ad3f230df252c7a",
+    "plan_sha256": "3fadfbda88ede8abf61063084d9d531d7344047d4786858205ba1643a17f90be",
+    "qualification_metadata_acceptance_sha256": "ab8d6b44a2121e6b38b4e6f5b16edbca5ccb5b69f47e3127b5f0c16c492aa834",
+    "qualification_scope": "fabricated_production_Swin_survival_NLL_at_bound_FP16_init32768_only",
+    "raw_production_qualification_sha256": "4f9727cc0f7b56796b26f49be959d8ed992331c559c1e781125baff6becc22e1",
+    "real_cohort_numerical_observation": {
+      "at_utc": "2026-10-29T03:20:33.009114+00:00",
+      "attempted": 92,
+      "complete_epoch_rows": 2,
+      "mode": "F2",
+      "observation_sha256": "9244d66e14dc44f7b6d8e3da78b98a89fd9cd2d2283c107ce64b78e7d4583478",
+      "skipped": 1,
+      "successful": 91
+    },
+    "source": {
+      "commit_sha": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+      "source_tree_sha256": "43db0d27b34ff38ebd90d2c13193cdd968680fcc410d4e2ac87f0a8e9ec06e1b"
+    },
+    "uid": "e8c1468d-1b19-4f60-b922-7bf2a1541587",
+    "zero_skip_acceptance": "unmet_in_observed_F2_trace"
+  },
+  "execution_authorized_by_this_file": false,
+  "fixed_protocol": {
+    "analysis": {
+      "favorable_direction": "negative",
+      "interpretation": {
+        "evidence_for_at_least_worthwhile_effect": "Upper bound of conditional patient-bootstrap95%CI <= -0.005",
+        "evidence_for_improvement": "Upper bound of conditional patient-bootstrap95%CI <0",
+        "otherwise": "Report the estimate, interval, seedspread and uncertainty; no best-seed or significance-only conclusion",
+        "worthwhile_point_estimate": "Mean paired deltaIBS <= -0.005"
+      },
+      "key_secondary_metric": "training-reference IPCW concordance at tau=730 days using risk=1-S(730)",
+      "minimum_scientifically_worthwhile_absolute_reduction": 0.005,
+      "primary_comparison": "F3 minus F2, averaged across paired seeds 42,142,242",
+      "primary_metric": "IBS over 210-730 days",
+      "primary_metric_key": "ibs",
+      "supporting_metrics": [
+        "Brier score at365,730,1095 days where supported",
+        "Descriptive censoring-aware calibration"
+      ],
+      "threshold_confirmation": "User: use 0.005 as the minimum scientifically worthwhile effect",
+      "threshold_supersedes_previous_absolute_reduction": 0.01,
+      "uncertainty_scope": "Patient resampling conditional on fixed fitted models and training censoring reference; training seed variation separate",
+      "worthwhile_delta_threshold": -0.005
+    },
+    "baseline_matrix": {
+      "alphas": [
+        0.01,
+        0.1,
+        1,
+        10,
+        100
+      ],
+      "candidate_fits": 10,
+      "cox_ties": "efron",
+      "exact_tie": "larger_alpha",
+      "modes": [
+        "C0",
+        "C1"
+      ],
+      "refit_on_validation": false,
+      "seeds": [
+        "deterministic"
+      ],
+      "selected_final_models": 2,
+      "selection": "validation_reference_IBS"
+    },
+    "clinical": {
+      "columns": [
+        "PATHOLOGY",
+        "AGE",
+        "SEX",
+        "RACE",
+        "T",
+        "N",
+        "M",
+        "KFCF",
+        "SMOKE",
+        "ALCOHOL",
+        "HPV"
+      ],
+      "excluded": [
+        "NSTAGE",
+        "TX"
+      ],
+      "fit_scope": "training365only",
+      "literal_policy": "Keep nonblank categorical cells verbatim; whitespace-only missing; AGE strict numeric; missing/unseen distinct; no val/test vocabulary expansion.",
+      "type_policy": {
+        "categorical": {
+          "empty_training_vocabulary": "retain separate missing and unseen slots",
+          "missing_slot": "len(training_vocabulary)",
+          "missing_values": "None, pandas/NumPy missing values, empty or whitespace-only strings",
+          "normalization": "none; preserve case, spelling and nonblank whitespace",
+          "unseen_nonempty_is_present": true,
+          "unseen_slot": "len(training_vocabulary) + 1"
+        },
+        "columns": {
+          "AGE": "numeric",
+          "ALCOHOL": "categorical",
+          "HPV": "categorical",
+          "KFCF": "categorical",
+          "M": "categorical",
+          "N": "categorical",
+          "PATHOLOGY": "categorical",
+          "RACE": "categorical",
+          "SEX": "categorical",
+          "SMOKE": "categorical",
+          "T": "categorical"
+        },
+        "fit_split": "training_only",
+        "name": "approved_categorical_v1",
+        "numeric": {
+          "centering": "training_mean",
+          "constant_or_single_observation_scale": 1.0,
+          "invalid_nonempty_or_nonfinite": "error",
+          "missing_encoding": "standardized_zero_and_missing_indicator_one",
+          "near_constant_std_threshold": 1e-06,
+          "no_training_observations": {
+            "mean": 0.0,
+            "scale": 1.0
+          },
+          "scale": "training_sample_std_ddof_1"
+        },
+        "schema_version": 1,
+        "stage_representation": "literal_categorical_only_no_derived_aliases"
+      }
+    },
+    "cohort": {
+      "computational_review": {
+        "clinical_qualification": "not_established",
+        "compartments_reviewed": 2452,
+        "original_visual_review_fields_preserved": true,
+        "policy": "computational_development_metadata_review_v1",
+        "prepared_cases_reviewed": 613,
+        "qualification_sha256": "55a539798df389f513d726639374c560d84cb33f4d0c80b84e95ed1d152d8013",
+        "queued_cases_with_dispositions": 525,
+        "ratio_cases_reviewed": 20
+      },
+      "eligibility_changes": [],
+      "eligible": 519,
+      "eligible_metadata_sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e",
+      "id_column": "patient_id",
+      "outcomes_file_sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd",
+      "paired_missing_os_exclusions": 94,
+      "prepared": 613,
+      "split_counts": {
+        "test": 77,
+        "train": 365,
+        "val": 77
+      },
+      "split_files_sha256": {
+        "test": "27bc064073a210938d1883c1fcb05ace921cac82b35d5420252052c80483a1d4",
+        "train": "8605c4bfbd9921380706b8afc61e4173ce53d975668679628771daf9b615950f",
+        "val": "ac4ee1490d8ca4d0e342591c18738b444b5152b59716f80957f5b85ca4321e5c"
+      },
+      "status": "qualified_for_development"
+    },
+    "endpoint": {
+      "administrative_cutoff_date": null,
+      "administrative_cutoff_note": "No explicit calendar cutoff was supplied. Do not substitute the conversation date or extend observed durations using the system clock.",
+      "all_cause_mortality": true,
+      "ascertainment_source_detail": "Not supplied; user directed proceeding without further clarification.",
+      "censoring_rule": "For OS.EVENT=0, right-censor at the supplied OS.TIME from diagnosis. The user describes follow-up as \"censoring till now\"; the hash-bound supplied durations remain unchanged.",
+      "confirmation_date_local": "2026-10-28",
+      "confirmation_source": "User responses: \"Unit in days, 1 as decease\" and \"diagnosis, censoring till now\". User subsequently confirmed \"OS death from any cause\" and directed proceeding without the remaining source details.",
+      "duration_policy": "Use OS.TIME as supplied in the frozen source CSV; no recalculation or follow-up extension.",
+      "endpoint": "OS",
+      "event_column": "OS.EVENT",
+      "event_definition": "1 = death from any cause; 0 = right-censored",
+      "source_csv_sha256": "0ad9f578d63cb8e1968f9b6360a26c6f86f5a6fdc1c17b715cfdff2fffd6cc5e",
+      "status": "confirmed",
+      "time_column": "OS.TIME",
+      "time_origin": "diagnosis",
+      "time_unit": "days"
+    },
+    "evaluation": {
+      "bootstrap_min_valid_fraction": 0.95,
+      "bootstrap_replicates": 2000,
+      "bootstrap_seed": 20261028,
+      "calibration_bins": [
+        0,
+        0.2,
+        0.4,
+        0.6,
+        0.8,
+        1
+      ],
+      "candidate_horizons": [
+        365,
+        730,
+        1095
+      ],
+      "concordance_tau": 730,
+      "contrasts": [
+        [
+          "F2",
+          "F3"
+        ]
+      ],
+      "development_support_report_sha256": "18181479d8519461489436d6e3f55d425b8560cc4ae7e7ec6799d6d52630e181",
+      "endpoint": "OS",
+      "fallback_rule": "Before held-out model comparison, retain only horizons with positive training censoring survival, observed follow-up beyond the horizon and observed events in both train and validation. If 730 is unsupported, propose 365 in a new version before fitting/scoring; do not silently shorten after test results. Unsupported test metrics are unassessable, not retuned.",
+      "fold": 0,
+      "horizon_status": "training_validation_metadata_support_passed; endpoint_definition_confirmed; final_protocol_pending",
+      "ibs_interval_rule": "210-to-730 days, at 30-day steps plus 365 and 730. Lower bound is first 30-day grid point strictly above the larger training/validation minimum follow-up (10/194 days). Selected from development support before any held-out model predictions; no test-derived retuning.",
+      "ibs_times": [
+        210,
+        240,
+        270,
+        300,
+        330,
+        360,
+        365,
+        390,
+        420,
+        450,
+        480,
+        510,
+        540,
+        570,
+        600,
+        630,
+        660,
+        690,
+        720,
+        730
+      ],
+      "mode_seeds": {
+        "C0": [
+          "deterministic"
+        ],
+        "C1": [
+          "deterministic"
+        ],
+        "F2": [
+          42,
+          142,
+          242
+        ],
+        "F3": [
+          42,
+          142,
+          242
+        ]
+      },
+      "modes": [
+        "C0",
+        "C1",
+        "F2",
+        "F3"
+      ],
+      "outcome_inventory_sha256": "838c79f9687a442b3dbfd8e66ba4e11e076171a0baebdf0877695be45a42d15c",
+      "outcomes_file_sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd",
+      "primary_horizon": 730,
+      "reference_package": {
+        "name": "scikit-survival",
+        "version": "0.25.0"
+      },
+      "risk_definition": "1-S(primary_horizon)",
+      "secondary_horizons": [
+        365,
+        1095
+      ],
+      "seeds": [
+        42,
+        142,
+        242
+      ],
+      "split": "test",
+      "tied_tol": 1e-08
+    },
+    "exports": {
+      "native_bin_endpoints_included": true,
+      "required_binding": "Exact selected checkpoint/model contract file hashes, source, grid and complete literal patient inventory; finite monotone[0,1]survival.",
+      "risk_horizon_days": 730,
+      "schema": "Patient_ID,split,fold,seed,mode,endpoint,observed_time,event,evaluation_time,survival_probability,checkpoint_sha256,model_contract_sha256,risk_horizon,risk_score",
+      "splits": [
+        "val",
+        "test"
+      ],
+      "times_days": [
+        210,
+        240,
+        270,
+        300,
+        330,
+        360,
+        365,
+        390,
+        420,
+        450,
+        480,
+        510,
+        540,
+        570,
+        600,
+        630,
+        660,
+        690,
+        720,
+        730,
+        1095
+      ]
+    },
+    "failure_policy": {
+      "bootstrap": "Retain invaliddrawreasons; do not replace draws; fewerthan95%valid gives no interval.",
+      "incompatible_source_or_numerics": "Separate identified versions; do not pool silently.",
+      "incomplete_fit": "Preserve failed attempt. Record specific recovery decision; retain compatible accepted fits. No best-seed selection or silent omission.",
+      "unsupported_metrics": "Unassessable with exact cause; preservefits/predictions; no horizon retuning,patientdeletion,or refitting from test outcomes."
+    },
+    "initialization": {
+      "fresh_from_seed_per_fit": true,
+      "seed_policy": "seed+100*fold; fold0, paired42/142/242; same per-seed source and settings",
+      "warmstart": false
+    },
+    "input_measurement_files": {
+      "computational_dispositions": {
+        "bytes": 2264178,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/cohort-development-review-a/compartment_dispositions.csv",
+        "sha256": "d2ab68d6efd2307e95ff35762461858aa4b3be2beb79fd00efc3d2029420e582"
+      },
+      "development_builder_receipt": {
+        "bytes": 2150833,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/builder_receipt.json",
+        "sha256": "70d9398101e001a4d5cf585833435202cac767ccf44675edec31c97b557d2ab2"
+      },
+      "eligible_metadata": {
+        "bytes": 1142804,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/eligible_metadata.csv",
+        "sha256": "a7121f3b4258f33bd1189931c2a70f7e13b036017c1fe5235714105ff362292e"
+      },
+      "eligible_radiomics": {
+        "bytes": 4252896,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/eligible_radiomics.csv",
+        "sha256": "3a38702a4ac0248ea46829c592bff00e00d4804016697fb27fea8fca80eb7e82"
+      },
+      "fixed_outcomes": {
+        "bytes": 11631,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/endpoint-reconciliation/outcomes.csv",
+        "sha256": "0626de5668aa88564ed2837acbf53c4fd276fc591ae9a8e26279da527299d5fd"
+      },
+      "geometry_measurements": {
+        "bytes": 2204776,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/cohort-development-review-a/geometry_measurements.json",
+        "sha256": "c751c0e1c83e039c946d3ab8f911bb8b42304cdae3aed3f006d23a864563a3c5"
+      },
+      "geometry_qualification": {
+        "bytes": 6605,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/cohort-development-review-a/geometry_qualification.json",
+        "sha256": "55a539798df389f513d726639374c560d84cb33f4d0c80b84e95ed1d152d8013"
+      },
+      "manifest_inventory": {
+        "bytes": 129753,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/cohort-development-review-a/manifest_inventory.json",
+        "sha256": "4205ccd31e36905c5a04d5d973451a4201b941fd7428db6c1a34a2b1e9da092f"
+      },
+      "sampling_receipt": {
+        "bytes": 693629,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/development/development_receipt.json",
+        "sha256": "85f6e7911ddadff03cbb48c6187cf0aee279352dd6e42cfc0f89fae844f8d3f7"
+      },
+      "source_bindings": {
+        "bytes": 175608,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/cohort-development-review-a/source_bindings.json",
+        "sha256": "78fcad453e58c3f7cc7427be819a3d8973a9eb9a100b225493d9aa203fcbae1a"
+      }
+    },
+    "measurement_policy": {
+      "accepted_limitations": [
+        "Original CT and RTSTRUCT sources are unavailable in this input delivery.",
+        "Stored CT was already normalized/cropped; original preprocessing history is unresolved.",
+        "Derived contours are unreviewed; aligned QC does not establish anatomical or clinical accuracy.",
+        "Empty or failed legacy contour QC means unavailable annotation, not known disease absence.",
+        "The intensity threshold is a development tissue candidate and makes no HU interpretation.",
+        "These inputs are development-only and do not establish clinical performance or an untouched evaluation cohort.",
+        "Qualification is computational metadata review: no new CT/mask-byte, 3D support, HU, or anatomical verification.",
+        "Source-boundary-limited shells and flagged reference/model volume changes are retained under the unchanged common-grid policy; missing source tissue is not reconstructed.",
+        "Reference geometry remains valid only where its recorded validity mask is true; unavailable laterality and anatomical node counts are not replaced with observed zeros.",
+        "The six displayed-panel inspections are limited evidence; the original visual/clinical review fields remain pending or not established.",
+        "Eligibility is the existing OS-valid inventory; unavailable compartments are masked rather than converted to disease absence or used as patient exclusions."
+      ],
+      "clinical_anatomical_qualification": "not_established",
+      "reference_geometry_validity_required": true,
+      "unavailable_anatomy_is_absence": false,
+      "unavailable_values": "null plus original validity=false; model masking as qualified"
+    },
+    "optimizer": {
+      "batch_size": 1,
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "class": "AdamW",
+      "eps": 1e-08,
+      "grad_accumulation_steps": 8,
+      "parameter_group_options": {
+        "lr_backbone": 0.001,
+        "lr_clin": 0.0001,
+        "lr_head": 0.0001,
+        "lr_lora": 0.0005,
+        "lr_rad": 0.0001,
+        "wd_backbone": 0.0,
+        "wd_clin": 0.0005,
+        "wd_head": 0.001,
+        "wd_lora": 0.0,
+        "wd_rad": 0.001
+      },
+      "partial_final_accumulation": true,
+      "planned_opportunities_per_epoch": 46,
+      "successful_updates": "Measured independently; qualification updates excluded."
+    },
+    "per_fit_completion": [
+      "exactsource/settings/splits",
+      "finite_required_losses_and_model_optimizer_state",
+      "named_parameter_update_evidence",
+      "complete_optimization_exposure",
+      "validation_selection_and_ties",
+      "saved_encoders_contract_checkpoint",
+      "complete_frozen_grid_curves"
+    ],
+    "radiomics_config_sha256": "d5c7b075b394dca62244360d289b5eb9cd1e745fbb1878c169d7874956e88099",
+    "sampling_policy_id": "40477d46fc753d18d3eae9858203a806af13e1c2c442764b4d0b4c316b617613",
+    "selection": {
+      "direction": "minimize",
+      "metric": "validation_nll",
+      "ties": "best.pt retains first strict minimum; final export uses fixed candidate priority last, ema, swa, best (only enabled candidates), matching pilot"
+    },
+    "split_files": {
+      "test": {
+        "bytes": 462,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/splits/fold_00/test_ids.txt",
+        "sha256": "27bc064073a210938d1883c1fcb05ace921cac82b35d5420252052c80483a1d4"
+      },
+      "train": {
+        "bytes": 2190,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/splits/fold_00/train_ids.txt",
+        "sha256": "8605c4bfbd9921380706b8afc61e4173ce53d975668679628771daf9b615950f"
+      },
+      "val": {
+        "bytes": 462,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/splits/fold_00/val_ids.txt",
+        "sha256": "ac4ee1490d8ca4d0e342591c18738b444b5152b59716f80957f5b85ca4321e5c"
+      }
+    }
+  },
+  "mismatch_qualification_release": {
+    "comparison": "matched_F3_versus_F3_mismatch_availability_cycle_v1",
+    "currently_available": "CPU fabricated actual-mask, parameter/RNG and historical-control parity evidence only.",
+    "design_sha256": "c9c30676ca2059ead03f4ec7584fe0a688e7b7c9e916bd02ccc6956072ea66df",
+    "execution_source_commit": null,
+    "historical_C_qualification_releases_intervention": false,
+    "historical_numerical_policy_source_bindings": "Keep original C candidate bytes unchanged; a prospective source/policy addendum must bind changed trainer, qualifier, construction mapper, models and design.",
+    "intervention_id": "anatomical_mismatch_availability_cycle_v1",
+    "policy_source_addendum_sha256": null,
+    "production_qualification_result_sha256": null,
+    "qualification_report_schema": 2,
+    "required": "Explicit new-source H100 qualification of both actual routing branches under accepted production numerical settings after the resource gate.",
+    "source_file_hashes": null
+  },
+  "pending_actions": [
+    "Complete/dispose bound C under its declared numerical acceptance; retain its skip and all evidence.",
+    "Resolve numerical exposure before accepting any common cap; do not add a skip tolerance retrospectively.",
+    "Bind accepted source, complete paired assessment, common epochs and complete cosine schedule.",
+    "Publish new frozen principal spec and fresh baseline release; execute C0/C1 then six fresh neural fits in one-H100 sequence."
+  ],
+  "principal_neural_matrix": [
+    {
+      "cosine_T_max": null,
+      "epochs": null,
+      "execution_source_commit": null,
+      "fresh_initialization": true,
+      "mode": "F2",
+      "output_root": null,
+      "routing_intervention": null,
+      "seed": 42
+    },
+    {
+      "cosine_T_max": null,
+      "epochs": null,
+      "execution_source_commit": null,
+      "fresh_initialization": true,
+      "mode": "F3",
+      "output_root": null,
+      "routing_intervention": null,
+      "seed": 42
+    },
+    {
+      "cosine_T_max": null,
+      "epochs": null,
+      "execution_source_commit": null,
+      "fresh_initialization": true,
+      "mode": "F2",
+      "output_root": null,
+      "routing_intervention": null,
+      "seed": 142
+    },
+    {
+      "cosine_T_max": null,
+      "epochs": null,
+      "execution_source_commit": null,
+      "fresh_initialization": true,
+      "mode": "F3",
+      "output_root": null,
+      "routing_intervention": null,
+      "seed": 142
+    },
+    {
+      "cosine_T_max": null,
+      "epochs": null,
+      "execution_source_commit": null,
+      "fresh_initialization": true,
+      "mode": "F2",
+      "output_root": null,
+      "routing_intervention": null,
+      "seed": 242
+    },
+    {
+      "cosine_T_max": null,
+      "epochs": null,
+      "execution_source_commit": null,
+      "fresh_initialization": true,
+      "mode": "F3",
+      "output_root": null,
+      "routing_intervention": null,
+      "seed": 242
+    }
+  ],
+  "principal_settings_from_accepted_budget": {
+    "candidate_settings_by_mode_sha256": "8d6fbb0b4800c61d4f46a1aea6b13eb5698153fd5017c88f19e891556b545e03",
+    "candidate_settings_source_plan_sha256": "3fadfbda88ede8abf61063084d9d531d7344047d4786858205ba1643a17f90be",
+    "other_scientific_settings": "Unchanged from the accepted source/policy and full parsed settings; bind exact final per-fit settings before release.",
+    "principal_changes": {
+      "cosine_T_max": null,
+      "curve_export_times_days": [
+        210,
+        240,
+        270,
+        300,
+        330,
+        360,
+        365,
+        390,
+        420,
+        450,
+        480,
+        510,
+        540,
+        570,
+        600,
+        630,
+        660,
+        690,
+        720,
+        730,
+        1095
+      ],
+      "development_only": false,
+      "epochs": null,
+      "export_survival_curves": true,
+      "metadata_and_radiomics": "exact_full_519_eligible_inventory",
+      "out_dir": "fresh_per_fit",
+      "seed": "each_paired_seed"
+    }
+  },
+  "release_evidence_required": {
+    "accepted_common_epoch_cap": null,
+    "accepted_numerical_policy_sha256": null,
+    "accepted_production_qualification_sha256": null,
+    "accepted_source_commit": null,
+    "accepted_source_tree_sha256": null,
+    "complete_cosine_T_max": null,
+    "final_principal_specification_sha256": null,
+    "fresh_admission_review_sha256": null,
+    "fresh_controller_binding_sha256": null,
+    "fresh_job_identity": null,
+    "latest_execution_owner_cleanup_sha256": null,
+    "qualified_complete_paired_budget_assessment_sha256": null
+  },
+  "release_rule": "All release fields require actual verified artifact bindings under a new frozen principal version. A status-field edit or synthetic qualification alone cannot release execution.",
+  "resource_sequence": {
+    "PVC": "yding4-gpu-home",
+    "PVC_subpath": "TriFuseSurv2/common-grid-h100-20261027",
+    "automatic_retries": 0,
+    "maximum_H100s_including_Pending": 1,
+    "maximum_concurrent_jobs_including_Pending": 1,
+    "pinned_image": "hpcharbor.mdanderson.edu/yding41/radiomics@sha256:bd8ad6777cbf704fbee7a1942f09e6a704ee718cf8bd198a7f65a0929cb6e161",
+    "scheduler": "Kubernetes",
+    "whole_job_deadline": null,
+    "worker_visible_root": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027"
+  },
+  "schema_version": 1,
+  "source_compatibility": {
+    "accepted_budget_source_commit": null,
+    "principal_F3_reuse_for_mismatch_requires": "Verified inactive-F3 parameter/RNG, actual output, contracts, preprocessing, numerical-policy and artifact compatibility; no automatic inheritance from source similarity.",
+    "principal_source_commit": null,
+    "prospective_mismatch_source_commit": null
+  },
+  "status": "prepared_not_frozen_not_released"
+}

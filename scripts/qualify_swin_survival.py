@@ -48,14 +48,40 @@ def validate_initial_scale(value):
             'Initial scaler scale must be finite and positive')
 
 
-def validate_settings(settings_by_mode, profile):
-    require(set(settings_by_mode) == {'F2', 'F3'}, 'Exactly paired F2/F3 settings are required')
+def comparison_modes(comparison):
+    if comparison == 'paired-fusion':
+        return ('F2', 'F3')
+    require(comparison == 'routing-intervention', 'Unknown qualification comparison')
+    from trifusesurv2.models.routing_intervention import ROUTING_EXPORT_LABEL
+    return ('F3', ROUTING_EXPORT_LABEL)
+
+
+def validate_settings(settings_by_mode, profile, comparison='paired-fusion'):
+    modes = comparison_modes(comparison)
+    require(set(settings_by_mode) == set(modes),
+            'Exactly paired F2/F3 settings are required' if comparison == 'paired-fusion'
+            else 'Exactly matched F3 and the distinct routing-intervention settings are required')
+    routing_fields = ('routing_intervention', 'routing_intervention_design_sha256',
+                      'routing_intervention_export_label')
+    if comparison == 'routing-intervention':
+        from trifusesurv2.models.routing_intervention import ROUTING_INTERVENTION_ID, routing_intervention_metadata
+        expected_intervention = routing_intervention_metadata(ROUTING_INTERVENTION_ID)
     shared = []
-    for mode in ('F2', 'F3'):
+    for mode in modes:
         settings = settings_by_mode[mode]
         validate_initial_scale(settings.get('amp_init_scale'))
-        require(settings['fusion_mode'] == mode and settings['model_version'] == 'v2'
+        fusion_mode = mode if comparison == 'paired-fusion' else 'F3'
+        require(settings['fusion_mode'] == fusion_mode and settings['model_version'] == 'v2'
                 and settings['region_mode'] == 'verified', 'Only verified F2/F3 v2 is qualified')
+        if comparison == 'routing-intervention' and mode != 'F3':
+            require(all(settings.get(key) == value for key, value in expected_intervention.items()),
+                    'The intervention settings must bind the exact identifier, design hash and export label')
+        else:
+            require(all(settings.get(key) is None for key in routing_fields),
+                    'The matched control and ordinary paired qualification require inactive routing')
+        if comparison == 'routing-intervention':
+            require(settings.get('comparison_recipe') == 'principal',
+                    'Routing qualification requires the principal controlled comparison recipe')
         require(settings['clinical_cols'] == CLINICAL_COLUMNS
                 and settings.get('clinical_type_policy') == 'approved_categorical_v1',
                 'The approved prospective clinical column/type policy is required')
@@ -83,13 +109,18 @@ def validate_settings(settings_by_mode, profile):
                     and settings['depths'] == [2, 2, 18, 2] and settings['num_heads'] == [3, 6, 12, 24]
                     and settings['use_checkpoint'] is True and settings['grad_accumulation_steps'] == 8,
                     'Production qualification requires the declared full Swin/canvas and eight-batch accumulation')
+            if comparison == 'routing-intervention':
+                require(settings.get('amp') is True and settings.get('amp_init_scale') is not None,
+                        'Production routing qualification requires an explicit bound CUDA AMP scale')
         elif profile == 'tiny':
             require(settings['img_size'] == [32, 32, 32] and settings['feature_size'] == 12
                     and settings['depths'] == [1, 1, 1, 1], 'Tiny engineering fixture shape differs')
         else:
             raise ValueError('Unknown qualification profile')
-        shared.append({key: value for key, value in settings.items() if key not in ('fusion_mode', 'out_dir')})
-    require(shared[0] == shared[1], 'F2/F3 settings differ beyond fusion mode/output directory')
+        ignored = ('fusion_mode', 'out_dir') + (routing_fields if comparison == 'routing-intervention' else ())
+        shared.append({key: value for key, value in settings.items() if key not in ignored})
+    require(shared[0] == shared[1], 'F2/F3 settings differ beyond fusion mode/output directory'
+            if comparison == 'paired-fusion' else 'Matched/intervention settings differ beyond routing/output directory')
     return canonical_sha256(shared[0])
 
 
@@ -358,6 +389,138 @@ def instrument_trainer(trainer, model, optimizer, scaler, record, groups, requir
         handle.remove()
 
 
+def reference_routing_assignment(image_presence, radiomics_presence):
+    """Independent, fabricated-mask reference; never reads IDs or measurements."""
+    assignments = []
+    for query_mask, key_mask in zip(image_presence.tolist(), radiomics_presence.tolist()):
+        assignment = list(range(4))
+        classes = {}
+        for index, signature in enumerate(zip(query_mask, key_mask)):
+            classes.setdefault(signature, []).append(index)
+        for members in classes.values():
+            for offset, index in enumerate(members):
+                assignment[index] = members[(offset + 1) % len(members)]
+        assignments.append(assignment)
+    return assignments
+
+
+@contextlib.contextmanager
+def instrument_routing(model, settings, record, phase):
+    """Observe actual fuser masks and local outputs without changing its graph.
+
+    Hooks receive the prelocal presence masks after trainer dropout. The
+    reference reconstructs the prescribed Boolean edges independently of the
+    runtime assignment helper, then compares every actual local-fuser input.
+    This instrumentation is exclusive to the explicit intervention comparison.
+    """
+    import torch
+    from trifusesurv2.models.routing_intervention import (
+        REGIONAL_ORDER, ROUTING_INTERVENTION_ID, routing_intervention_metadata,
+    )
+    core = model.habitat_model
+    intervention = settings.get('routing_intervention')
+    require(core.fusion_mode == 'F3' and core.routing_intervention == intervention,
+            'Constructed routing branch differs from bound F3 settings')
+    require(tuple(core.radiomics_habitats) == tuple(REGIONAL_ORDER),
+            'Qualification requires the canonical four radiomics keys')
+    expected_metadata = routing_intervention_metadata(intervention)
+    evidence = record.setdefault('routing_execution', {
+        'fusion_mode': 'F3', 'routing_intervention': intervention,
+        'design': routing_intervention_metadata(ROUTING_INTERVENTION_ID),
+        'observation': 'actual_prelocal_presence_and_local_fuser_input_masks_and_outputs',
+        'phases': {},
+    })
+    frames = evidence['phases'].setdefault(phase, [])
+    pending = [None]
+    handles = []
+
+    def begin(module, args, kwargs):
+        require(pending[0] is None, 'Overlapping routing forwards are unsupported')
+        image = kwargs['image_tokens']
+        query = kwargs.get('image_presence')
+        query = (torch.ones(image.shape[:2], device=image.device, dtype=torch.bool)
+                 if query is None else query.to(device=image.device, dtype=torch.bool))
+        keys = kwargs.get('radiomics_presence')
+        if keys is None:
+            keys = torch.full((image.shape[0], 4), kwargs.get('radiomics_tokens') is not None,
+                              device=image.device, dtype=torch.bool)
+        else:
+            keys = keys.to(device=image.device, dtype=torch.bool)
+        clinical = kwargs.get('clinical_presence')
+        if clinical is None:
+            clinical = torch.full((image.shape[0], len(core.clinical_groups)),
+                                  kwargs.get('clinical_tokens') is not None,
+                                  device=image.device, dtype=torch.bool)
+        else:
+            clinical = clinical.to(device=image.device, dtype=torch.bool)
+        regional_queries = [core.image_index[name] for name in REGIONAL_ORDER]
+        regional_presence = query[:, regional_queries]
+        assignment = (reference_routing_assignment(regional_presence, keys) if intervention is not None
+                      else [list(range(4)) for _ in range(image.shape[0])])
+        assignment_tensor = torch.tensor(assignment, device=image.device, dtype=torch.long)
+        nominal = torch.zeros((image.shape[0], len(core.image_habitats),
+                               1 + 4 + len(core.clinical_groups)), device=image.device, dtype=torch.bool)
+        nominal[:, :, 0] = True
+        nominal[:, :, 5:] = True
+        for region, index in enumerate(regional_queries):
+            nominal[:, index, 1:5] = torch.nn.functional.one_hot(assignment_tensor[:, region], 4).bool()
+        availability = torch.cat((query[:, :, None],
+            keys[:, None].expand(-1, len(core.image_habitats), -1),
+            clinical[:, None].expand(-1, len(core.image_habitats), -1)), dim=2)
+        actual_expected = nominal & availability
+        changed = (assignment_tensor != torch.arange(4, device=image.device)[None])
+        effective = changed & regional_presence & keys.gather(1, assignment_tensor)
+        frame = {'training': bool(module.training), 'query_names': list(core.image_habitats),
+                 'prelocal_image_presence': regional_presence.tolist(),
+                 'prelocal_radiomics_presence': keys.tolist(), 'assignment': assignment,
+                 'effective_mismatched_edges': int(effective.sum().item()),
+                 'expected_context_mask': actual_expected.tolist(), 'actual_local_fusers': {}}
+        frames.append(frame)
+        pending[0] = (frame, actual_expected)
+
+    def observe(index, habitat):
+        def hook(module, args):
+            require(pending[0] is not None, 'Local fuser was called outside its recorded forward')
+            frame, expected = pending[0]
+            require(habitat not in frame['actual_local_fusers'], 'A local query was repeated')
+            observed = args[2].detach()
+            require(torch.equal(observed, expected[:, index]), 'Actual local attention mask differs from prescribed routing')
+            frame['actual_local_fusers'][habitat] = {'context_mask': observed.tolist()}
+        return hook
+
+    def observe_output(habitat):
+        def hook(module, args, output):
+            frame, _ = pending[0]
+            value = output[0] if isinstance(output, tuple) else output
+            require(bool(torch.isfinite(value).all()), 'Nonfinite local output before global fusion')
+            frame['actual_local_fusers'][habitat]['local_output'] = tensor_observation(value)
+        return hook
+
+    def finish(module, args, kwargs, output):
+        require(pending[0] is not None, 'Routing forward completion has no input record')
+        frame, _ = pending[0]
+        require(set(frame['actual_local_fusers']) == set(core.image_habitats),
+                'Actual local query coverage is incomplete')
+        frame['status'] = 'passed_actual_masks_and_local_outputs'
+        pending[0] = None
+
+    handles.append(core.register_forward_pre_hook(begin, with_kwargs=True))
+    handles.append(core.register_forward_hook(finish, with_kwargs=True))
+    for index, habitat in enumerate(core.image_habitats):
+        handles.append(core.habitat_fusers[habitat].register_forward_pre_hook(observe(index, habitat)))
+        handles.append(core.habitat_fusers[habitat].register_forward_hook(observe_output(habitat)))
+    try:
+        yield
+        require(pending[0] is None and frames and all(frame.get('status') == 'passed_actual_masks_and_local_outputs'
+                for frame in frames), 'Actual routing execution evidence is incomplete')
+        if intervention is not None and phase == 'training':
+            require(any(frame['effective_mismatched_edges'] > 0 for frame in frames),
+                    'Training did not exercise an effective mismatch')
+        evidence.update(expected_metadata)
+    finally:
+        for handle in handles: handle.remove()
+
+
 def qualify_mode(trainer, settings, options, record):
     import torch
     device = torch.device(options.device)
@@ -379,6 +542,11 @@ def qualify_mode(trainer, settings, options, record):
     record['initial_state_sha256'] = tensor_sha256(model.state_dict().items())
     record['parameters'] = sum(parameter.numel() for parameter in model.parameters())
     record['trainable_parameters'] = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    if getattr(options, 'comparison', 'paired-fusion') == 'routing-intervention':
+        rng_states = [('cpu', torch.get_rng_state())]
+        if device.type == 'cuda': rng_states.append(('cuda', torch.cuda.get_rng_state(device)))
+        record['initial_rng_state_sha256'] = tensor_sha256(rng_states)
+        record['bound_training_amp_init_scale'] = settings.get('amp_init_scale')
     groups, required = active_names(model)
     record['expected_active_parameter_names'] = required
     controls = {key: settings[key] for key in inspect.signature(trainer.make_param_groups).parameters if key != 'mm'}
@@ -388,7 +556,10 @@ def qualify_mode(trainer, settings, options, record):
     kwargs.update(fold=0, epoch=1, primary_endpoint='OS', num_time_bins=6, time_bin_width_days=settings['time_bin_width_days'],
         teacher_force_alpha=0., survival_loss_weight=1., ema=None, autocast_ctx=autocast,
         grad_accumulation_steps=settings['grad_accumulation_steps'], nonfinite_check_every_batches=1)
-    with instrument_trainer(trainer, model, optimizer, scaler, record, groups, required):
+    routing_comparison = getattr(options, 'comparison', 'paired-fusion') == 'routing-intervention'
+    routing_context = (instrument_routing(model, settings, record, 'training') if routing_comparison
+                       else contextlib.nullcontext())
+    with routing_context, instrument_trainer(trainer, model, optimizer, scaler, record, groups, required):
         stats = trainer.train_one_epoch(model, batches, optimizer, scaler, device, **kwargs)
     record['training_statistics'] = {key: value for key, value in stats.items() if isinstance(value, (int, float)) and math.isfinite(value)}
     record['unassessable_optional_statistics'] = [key for key, value in stats.items() if isinstance(value, (int, float)) and not math.isfinite(value)]
@@ -402,7 +573,9 @@ def qualify_mode(trainer, settings, options, record):
     for key in ('loss_total', 'loss_surv_total', 'loss_surv_primary', 'surv_os_nll', 'surv_dss_nll', 'surv_dfs_nll'):
         require(math.isfinite(stats[key]), 'Required aggregate training loss is nonfinite: ' + key)
     model.eval()
-    with torch.no_grad():
+    routing_context = (instrument_routing(model, settings, record, 'post_update_eval') if routing_comparison
+                       else contextlib.nullcontext())
+    with routing_context, torch.no_grad():
         payload = trainer._unpack_surv_batch(batches[-1])
         output = trainer._model_forward_eval(model, payload, device, autocast, teacher_force_alpha=0.)
         losses, counts = trainer._endpoint_survival_losses(output, t_all=payload['t_all'].to(device),
@@ -420,6 +593,90 @@ def qualify_mode(trainer, settings, options, record):
     if device.type == 'cuda': torch.cuda.empty_cache()
 
 
+def validate_routing_comparison_report(report, *, profile='production'):
+    """A legacy F2/F3 pass cannot release the newly introduced branch.
+
+    This numerical-report check supplements the caller's source/settings/image
+    hash bindings and the separate exhaustive runtime-mask compatibility gate.
+    Tiny reports remain explicit CPU fixtures and cannot satisfy production.
+    """
+    from trifusesurv2.models.routing_intervention import (
+        ROUTING_EXPORT_LABEL, ROUTING_INTERVENTION_ID, routing_intervention_metadata,
+    )
+    require(report.get('schema_version') == 2 and report.get('comparison') == 'routing-intervention'
+            and report.get('profile') == profile and report.get('status') == 'passed',
+            'An explicit successful routing-intervention comparison report with the required profile is required')
+    require(profile in ('production', 'tiny'), 'Unknown routing report profile')
+    require(report.get('routing_design') == routing_intervention_metadata(ROUTING_INTERVENTION_ID),
+            'Routing report design binding differs')
+    modes = report.get('modes', {})
+    require(set(modes) == {'F3', ROUTING_EXPORT_LABEL}, 'Routing report mode labels differ')
+    batches, accumulation = report.get('comparison_batches'), report.get('comparison_accumulation')
+    require(type(accumulation) is int and accumulation >= 2 and batches == accumulation + 1,
+            'Routing comparison must exercise one full and one final partial accumulation')
+    if profile == 'production':
+        hardware = report.get('hardware', {})
+        require(report.get('device') == 'cuda:0' and batches == 9 and accumulation == 8
+                and hardware.get('visible_device_count') == 1 and 'H100' in str(hardware.get('name', '')).upper()
+                and hardware.get('compute_capability', [0])[0] == 9
+                and hardware.get('total_memory_bytes', 0) >= 75 * 1024**3,
+                'Routing production evidence requires the actual full one-H100 profile')
+    for label in ('F3', ROUTING_EXPORT_LABEL):
+        record = modes[label]
+        require(record.get('status') == 'passed' and record.get('fusion_mode') == 'F3'
+                and record.get('actual_successful_updates') == 2
+                and record.get('final_partial_accumulation_batches') == 1,
+                'Routing mode numerical qualification is incomplete')
+        stats = record.get('training_statistics', {})
+        require(stats.get('training_batches') == batches and stats.get('optimizer_step_attempts') == 2
+                and stats.get('optimizer_steps_succeeded') == 2 and stats.get('optimizer_steps_skipped') == 0
+                and stats.get('nonfinite_gradient_updates') == 0,
+                'Routing mode has incomplete or skipped numerical exposure')
+        execution = record.get('routing_execution', {})
+        intervention = None if label == 'F3' else ROUTING_INTERVENTION_ID
+        require(execution.get('fusion_mode') == 'F3' and execution.get('routing_intervention') == intervention
+                and execution.get('design') == report['routing_design'], 'Observed routing branch differs')
+        for phase, expected_count, training in (('training', batches, True), ('post_update_eval', 1, False)):
+            frames = execution.get('phases', {}).get(phase, [])
+            require(len(frames) == expected_count and all(frame.get('training') is training
+                    and frame.get('status') == 'passed_actual_masks_and_local_outputs' for frame in frames),
+                    'Actual training/evaluation local-mask evidence is incomplete')
+            for frame in frames:
+                names, actual = frame.get('query_names', []), frame.get('actual_local_fusers', {})
+                expected_masks = frame.get('expected_context_mask', [])
+                require(names and len(names) == len(set(names)) and set(names) == set(actual)
+                        and expected_masks and all(len(row) == len(names) for row in expected_masks),
+                        'Observed local-fuser query coverage is incomplete')
+                for index, habitat in enumerate(names):
+                    observed = actual[habitat]
+                    output = observed.get('local_output', {})
+                    require(observed.get('context_mask') == [row[index] for row in expected_masks]
+                            and output.get('elements', 0) > 0
+                            and output.get('finite_elements') == output.get('elements'),
+                            'Observed local masks or finite local outputs differ from the execution evidence')
+        wrong_edges = sum(frame['effective_mismatched_edges'] for frame in execution['phases']['training'])
+        require(wrong_edges > 0 if intervention is not None else wrong_edges == 0,
+                'The intended matched/intervention local branch did not execute')
+        if profile == 'production':
+            precision = record.get('precision', {})
+            scale = record.get('bound_training_amp_init_scale')
+            state = precision.get('scaler')
+            require(precision.get('selection') == 'trainer-default'
+                    and type(scale) in (int, float) and math.isfinite(scale) and scale > 0
+                    and isinstance(state, dict) and state.get('scale') == scale,
+                    'Production routing qualification must use the bound trainer scale, not a diagnostic override')
+    left, right = modes['F3'], modes[ROUTING_EXPORT_LABEL]
+    identity_keys = ('initial_state_sha256', 'initial_rng_state_sha256', 'input_identity',
+                     'parameters', 'trainable_parameters')
+    require(all(left.get(key) is not None and left[key] == right.get(key) for key in identity_keys)
+            and left.get('bound_training_amp_init_scale') == right.get('bound_training_amp_init_scale'),
+            'Matched/intervention initial states, RNG state, inputs, parameters or numerical policy differ')
+    return {'status': 'passed_source_bound_routing_numerical_comparison', 'profile': profile,
+            'routing_design': report['routing_design'], 'modes': ['F3', ROUTING_EXPORT_LABEL],
+            'successful_updates_per_mode': 2, 'skipped_updates_per_mode': 0,
+            'production_H100_qualified': profile == 'production'}
+
+
 def run(settings_by_mode, options):
     import torch
     from trifusesurv2.multimodal_survival import train as trainer
@@ -430,9 +687,20 @@ def run(settings_by_mode, options):
         'checkpoint_payload_reads': 0, 'production_precision_policy_changed': False, 'modes': {},
         'container_image': options.container_image, 'started_at_utc': datetime.now(timezone.utc).isoformat()}
     try:
-        report['shared_settings_sha256'] = validate_settings(settings_by_mode, options.profile)
-        accumulation = settings_by_mode['F2']['grad_accumulation_steps']
+        comparison = getattr(options, 'comparison', 'paired-fusion')
+        modes = comparison_modes(comparison)
+        if comparison == 'routing-intervention':
+            from trifusesurv2.models.routing_intervention import ROUTING_INTERVENTION_ID, routing_intervention_metadata
+            report.update(schema_version=2, comparison=comparison,
+                          routing_design=routing_intervention_metadata(ROUTING_INTERVENTION_ID))
+            if options.profile == 'production':
+                require(options.precision == 'trainer-default' and options.amp_init_scale is None,
+                        'Routing production qualification must use the bound trainer policy without diagnostic override')
+        report['shared_settings_sha256'] = validate_settings(settings_by_mode, options.profile, comparison)
+        accumulation = settings_by_mode[modes[0]]['grad_accumulation_steps']
         require(options.batches == accumulation + 1, 'Exactly one full accumulation and one final partial batch are required')
+        if comparison == 'routing-intervention':
+            report.update(comparison_batches=options.batches, comparison_accumulation=accumulation)
         if options.profile == 'production':
             require(options.device == 'cuda:0', 'Production profile requires one H100 CUDA device')
         if torch.device(options.device).type == 'cuda':
@@ -441,8 +709,9 @@ def run(settings_by_mode, options):
         else:
             report['hardware'] = {'qualification': 'CPU engineering only; not H100 execution'}
         report['backend'] = {'torch_version': str(torch.__version__), 'cuda_build': torch.version.cuda}
-        for mode in ('F2', 'F3'):
+        for mode in modes:
             record = {'status': 'failed', 'mode': mode, 'seed': settings_by_mode[mode]['seed']}
+            if comparison == 'routing-intervention': record['fusion_mode'] = 'F3'
             report['modes'][mode] = record
             try:
                 qualify_mode(trainer, settings_by_mode[mode], options, record)
@@ -452,13 +721,15 @@ def run(settings_by_mode, options):
                 if torch.device(options.device).type == 'cuda': torch.cuda.empty_cache()
         require(all(item['status'] == 'passed' for item in report['modes'].values()),
                 'At least one prescribed fusion-mode qualification failed; inspect retained mode/phase evidence')
-        left, right = report['modes']['F2'], report['modes']['F3']
+        left, right = (report['modes'][mode] for mode in modes)
         require(left['initial_state_sha256'] == right['initial_state_sha256']
                 and left['input_identity'] == right['input_identity'] and left['parameters'] == right['parameters'],
                 'Materialized paired initial states, fabricated inputs or parameter counts differ')
         report['status'] = 'passed'
+        if comparison == 'routing-intervention':
+            report['routing_comparison_validation'] = validate_routing_comparison_report(report, profile=options.profile)
     except Exception as error:
-        report.update(error_type=type(error).__name__, error=str(error))
+        report.update(status='failed', error_type=type(error).__name__, error=str(error))
     finally:
         report['finished_at_utc'] = datetime.now(timezone.utc).isoformat()
     return json_safe_evidence(report)
@@ -470,6 +741,8 @@ def main(argv=None):
     parser.add_argument('--settings-sha256', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--profile', choices=('production', 'tiny'), default='production')
+    parser.add_argument('--comparison', choices=('paired-fusion', 'routing-intervention'), default='paired-fusion',
+                        help='Explicit matched-F3/intervention qualification; legacy paired-fusion stays unchanged')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--precision', choices=('trainer-default', 'fp32', 'fp16', 'bf16'), default='trainer-default')
     parser.add_argument('--amp-init-scale', type=float,

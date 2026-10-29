@@ -18,7 +18,7 @@ RESUME_MUTABLE_SETTINGS = frozenset({
 def canonical_experiment_spec(args, *, runtime: Mapping[str, Any] | None = None) -> dict:
     settings = {name: value for name, value in vars(args).items()
                 if name not in RESUME_MUTABLE_SETTINGS
-                and not (name == "amp_init_scale" and value is None)}
+                and not (name in {"amp_init_scale", "routing_intervention"} and value is None)}
     value = {"schema_version": 1, "settings": settings, "runtime": dict(runtime or {}),
              "resume_mutable_settings": sorted(RESUME_MUTABLE_SETTINGS)}
     # Round-trip gives one JSON representation for tuples/lists and rejects NaN.

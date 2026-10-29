@@ -1,5 +1,12 @@
 # Principal-study freeze preparation
 
+This document retains the earlier default-scale preparation and its immutable
+manifest. The later [release candidates](study_release_preparation_20261028.md)
+bind budget-C evidence separately and leave all final acceptance fields
+unresolved. The [current numerical observation](budget_c_qualification_20261028.md)
+records a real-training skip after the 32,768 fabricated qualification pass.
+
+
 This is preparation for a new principal protocol version, **not a frozen
 protocol or an execution release**. The common epoch cap remains `null` until
 both qualified development traces support the prespecified decision. No cap is

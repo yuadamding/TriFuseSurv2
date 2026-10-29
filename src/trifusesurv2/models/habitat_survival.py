@@ -10,6 +10,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from trifusesurv2.data.batch import HabitatBatch
+from trifusesurv2.models.routing_intervention import (
+    REGIONAL_ORDER,
+    availability_cycle_assignment,
+    routing_intervention_metadata,
+    validate_routing_intervention,
+)
 from trifusesurv2.schema import (
     CLINICAL_TOKEN_GROUPS,
     DEFAULT_HABITAT_CLINICAL_CONTEXT,
@@ -242,11 +248,21 @@ class HabitatAlignedSurvivalModel(nn.Module):
         clinical_groups: OrderedDict[str, tuple[str, ...]] = CLINICAL_TOKEN_GROUPS,
         habitat_clinical_context: dict[str, tuple[str, ...]] | None = None,
         fusion_mode: str = "F3",
+        routing_intervention: str | None = None,
     ):
         super().__init__()
         self.fusion_mode = str(fusion_mode).upper()
         if self.fusion_mode not in {"F0", "F1", "F2", "F3", "F4", "LEGACY"}:
             raise ValueError(f"Unknown fusion_mode: {fusion_mode}")
+        self.routing_intervention = validate_routing_intervention(
+            routing_intervention, fusion_mode=self.fusion_mode
+        )
+        if self.routing_intervention is not None and (
+            tuple(image_habitats) != IMAGE_HABITATS
+            or tuple(radiomics_habitats) != REGIONAL_ORDER
+            or radiomics_token_dim <= 0
+        ):
+            raise ValueError("The routing intervention requires the canonical six image and four radiomics habitats.")
         if self.fusion_mode != "LEGACY" and (node_token_dim > 0 or topology_dim > 0):
             raise ValueError("F0–F4 keep node/topology extensions disabled; use zero dimensions or explicit legacy mode.")
         self.model_dim = int(model_dim)
@@ -584,12 +600,26 @@ class HabitatAlignedSurvivalModel(nn.Module):
         else:
             if self.fusion_mode in {"F2", "F3", "F4"}:
                 routing = self.local_context_routing(device=image.device)
+                if self.routing_intervention is not None:
+                    regional_queries = [self.image_index[name] for name in REGIONAL_ORDER]
+                    regional_image_mask = image_mask[:, regional_queries]
+                    assignment = availability_cycle_assignment(regional_image_mask, radiomics_mask)
+                    routing = routing.unsqueeze(0).expand(image.shape[0], -1, -1).clone()
+                    for regional_index, query_index in enumerate(regional_queries):
+                        routing[:, query_index, 1:1 + len(REGIONAL_ORDER)] = F.one_hot(
+                            assignment[:, regional_index], num_classes=len(REGIONAL_ORDER)
+                        ).to(torch.bool)
+                    local_masks = []
                 fused = []
                 for index, habitat in enumerate(self.image_habitats):
                     query = image[:, index]
                     context = torch.cat([query.unsqueeze(1), radiomics, clinical], dim=1)
                     context_mask = torch.cat([image_mask[:, index:index + 1], radiomics_mask, clinical_mask], dim=1)
-                    context_mask = context_mask & routing[index].unsqueeze(0)
+                    if self.routing_intervention is None:
+                        context_mask = context_mask & routing[index].unsqueeze(0)
+                    else:
+                        context_mask = context_mask & routing[:, index]
+                        local_masks.append(context_mask)
                     result = self.habitat_fusers[habitat](query, context, context_mask, return_attention=return_attention)
                     if return_attention:
                         value, weights = result
@@ -620,6 +650,21 @@ class HabitatAlignedSurvivalModel(nn.Module):
             "region_states": states, "fusion_mode": self.fusion_mode,
             "node_tokens": None, "node_presence": None, "topology_token": None, "topology_presence": None,
         }
+        if self.routing_intervention is not None:
+            aux.update(routing_intervention_metadata(self.routing_intervention))
+            aux.update(
+                routing_assignment=assignment,
+                routing_prelocal_image_presence=regional_image_mask,
+                routing_prelocal_radiomics_presence=radiomics_mask,
+                local_context_routing=routing,
+                local_context_mask=torch.stack(local_masks, dim=1),
+                routing_context_names=[
+                    [f"image:{habitat}"]
+                    + [f"radiomics:{name}" for name in self.radiomics_habitats]
+                    + [f"clinical:{name}" for name in self.clinical_groups]
+                    for habitat in self.image_habitats
+                ],
+            )
         if return_attention:
             aux.update(habitat_attention=habitat_attention, pt_node_attention=None)
         return logits, aux

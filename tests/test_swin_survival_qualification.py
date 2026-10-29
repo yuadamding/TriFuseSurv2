@@ -12,6 +12,9 @@ from unittest.mock import Mock, patch
 
 import torch
 from trifusesurv2.multimodal_survival import train
+from trifusesurv2.models.routing_intervention import (
+    ROUTING_EXPORT_LABEL, ROUTING_INTERVENTION_ID, routing_intervention_metadata,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('qualify_swin_survival', ROOT / 'scripts/qualify_swin_survival.py')
@@ -38,6 +41,13 @@ def tiny_settings():
     return {mode: dict(settings, fusion_mode=mode, out_dir='/fabricated/' + mode) for mode in ('F2', 'F3')}
 
 
+def tiny_routing_settings():
+    matched = tiny_settings()['F3']
+    intervention = dict(matched, **routing_intervention_metadata(ROUTING_INTERVENTION_ID),
+                        out_dir='/fabricated/' + ROUTING_EXPORT_LABEL)
+    return {'F3': matched, ROUTING_EXPORT_LABEL: intervention}
+
+
 class QualificationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -62,9 +72,12 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(result['status'], 'passed', result.get('error'))
         self.assertEqual(result['patient_input_reads'], 0)
         self.assertEqual(result['checkpoint_payload_reads'], 0)
+        self.assertEqual(result['schema_version'], 1)
+        self.assertNotIn('comparison', result)
         self.assertEqual(result['modes']['F2']['initial_state_sha256'], result['modes']['F3']['initial_state_sha256'])
         for mode in ('F2', 'F3'):
             record = result['modes'][mode]
+            self.assertNotIn('routing_execution', record)
             self.assertEqual(record['clinical_type_policy']['name'], 'approved_categorical_v1')
             self.assertEqual(record['clinical_policy']['columns'], qualification.CLINICAL_COLUMNS)
             self.assertEqual(record['actual_successful_updates'], 2)
@@ -78,6 +91,100 @@ class QualificationTests(unittest.TestCase):
                 self.assertEqual(item['loss_dtype'], 'torch.float32')
             self.assertNotEqual(record['initial_state_sha256'], record['final_state_sha256'])
         json.dumps(result, allow_nan=False)
+
+    def test_actual_tiny_routing_comparison_executes_both_branches_and_final_partial_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            settings_path = Path(temporary) / 'settings.json'; output = Path(temporary) / 'routing.json'
+            settings_path.write_text(json.dumps({'settings_by_mode': tiny_routing_settings()}))
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = qualification.main(['--training-settings', str(settings_path),
+                    '--settings-sha256', qualification.file_sha256(settings_path), '--output', str(output),
+                    '--profile', 'tiny', '--comparison', 'routing-intervention', '--device', 'cpu',
+                    '--precision', 'fp32', '--batches', '3', '--container-image', 'fabricated-CPU-only'])
+            result = json.loads(output.read_text())
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['schema_version'], 2)
+        self.assertEqual(result['comparison'], 'routing-intervention')
+        self.assertEqual(set(result['modes']), {'F3', ROUTING_EXPORT_LABEL})
+        control, intervention = result['modes']['F3'], result['modes'][ROUTING_EXPORT_LABEL]
+        for key in ('initial_state_sha256', 'initial_rng_state_sha256', 'input_identity',
+                    'parameters', 'trainable_parameters'):
+            self.assertEqual(control[key], intervention[key], key)
+        for label, record in result['modes'].items():
+            self.assertEqual(record['actual_successful_updates'], 2)
+            self.assertEqual([row['after_training_batch'] for row in record['updates']], [2, 3])
+            self.assertEqual(record['training_statistics']['optimizer_steps_skipped'], 0)
+            self.assertEqual(record['final_partial_accumulation_batches'], 1)
+            phases = record['routing_execution']['phases']
+            self.assertEqual(len(phases['training']), 3)
+            self.assertEqual(len(phases['post_update_eval']), 1)
+            self.assertTrue(all(row['training'] for row in phases['training']))
+            self.assertFalse(phases['post_update_eval'][0]['training'])
+            changed = sum(row['effective_mismatched_edges'] for row in phases['training'])
+            self.assertEqual(changed, 0 if label == 'F3' else 12)
+        self.assertFalse(result['routing_comparison_validation']['production_H100_qualified'])
+        qualification.validate_routing_comparison_report(result, profile='tiny')
+        with self.assertRaisesRegex(ValueError, 'required profile'):
+            qualification.validate_routing_comparison_report(result, profile='production')
+        for change in ('skip', 'branch', 'mask', 'rng', 'design', 'partial'):
+            invalid = copy.deepcopy(result); row = invalid['modes'][ROUTING_EXPORT_LABEL]
+            if change == 'skip': row['training_statistics']['optimizer_steps_skipped'] = 1
+            elif change == 'branch': row['routing_execution']['routing_intervention'] = None
+            elif change == 'mask':
+                observed = row['routing_execution']['phases']['training'][0]['actual_local_fusers']
+                next(iter(observed.values()))['context_mask'][0][0] = not next(iter(observed.values()))['context_mask'][0][0]
+            elif change == 'rng': row['initial_rng_state_sha256'] = 'different'
+            elif change == 'design': invalid['routing_design']['routing_intervention_design_sha256'] = 'wrong'
+            else: row['final_partial_accumulation_batches'] = 0
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                qualification.validate_routing_comparison_report(invalid, profile='tiny')
+
+    def test_routing_comparison_requires_exact_labels_design_and_shared_settings(self):
+        for change in ('label', 'identifier', 'design', 'export_label', 'control', 'learning_rate', 'recipe'):
+            values = tiny_routing_settings(); intervention = values[ROUTING_EXPORT_LABEL]
+            if change == 'label': values['F2'] = values.pop(ROUTING_EXPORT_LABEL)
+            elif change == 'identifier': intervention['routing_intervention'] = 'arbitrary'
+            elif change == 'design': intervention['routing_intervention_design_sha256'] = 'wrong'
+            elif change == 'export_label': intervention['routing_intervention_export_label'] = 'F3'
+            elif change == 'control': values['F3'].update(routing_intervention_metadata(ROUTING_INTERVENTION_ID))
+            elif change == 'recipe':
+                for settings in values.values(): settings['comparison_recipe'] = 'exploratory'
+            else: intervention['lr_head'] = .5
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                qualification.validate_settings(values, 'tiny', 'routing-intervention')
+        values = tiny_settings(); values['F3'].update(routing_intervention_metadata(ROUTING_INTERVENTION_ID))
+        with self.assertRaisesRegex(ValueError, 'inactive routing'):
+            qualification.validate_settings(values, 'tiny')
+        with self.assertRaisesRegex(ValueError, 'Unknown qualification comparison'):
+            qualification.validate_settings(values, 'tiny', 'unknown')
+
+    def test_ordinary_paired_report_cannot_release_routing_branch(self):
+        report = {'schema_version': 1, 'status': 'passed', 'profile': 'production',
+                  'modes': {'F2': {'status': 'passed'}, 'F3': {'status': 'passed'}}}
+        with self.assertRaisesRegex(ValueError, 'explicit successful routing-intervention'):
+            qualification.validate_routing_comparison_report(report)
+
+    def test_routing_production_diagnostic_override_is_rejected_before_hardware_or_model(self):
+        options = SimpleNamespace(profile='production', comparison='routing-intervention', device='cuda:0',
+            precision='fp16', amp_init_scale=1., batches=9, container_image='fabricated')
+        with patch.object(qualification, 'qualify_mode') as attempt:
+            result = qualification.run(tiny_routing_settings(), options)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('without diagnostic override', result['error'])
+        self.assertEqual(result['modes'], {})
+        attempt.assert_not_called()
+
+    def test_failed_routing_consumer_validation_cannot_leave_a_passed_report(self):
+        options = SimpleNamespace(profile='tiny', comparison='routing-intervention', device='cpu',
+            precision='fp32', amp_init_scale=None, batches=3, container_image='fabricated')
+        def fabricated_mode(trainer, settings, options, record):
+            record.update(status='passed', initial_state_sha256='same-fabricated-state',
+                          input_identity={'fabricated': True}, parameters=1)
+        with patch.object(qualification, 'qualify_mode', side_effect=fabricated_mode), \
+                patch.object(qualification, 'validate_routing_comparison_report', side_effect=ValueError('gate rejected')):
+            report = qualification.run(tiny_routing_settings(), options)
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(report['error'], 'gate rejected')
 
     def test_production_profile_cannot_be_promoted_from_tiny_shape(self):
         with self.assertRaisesRegex(ValueError, 'full Swin'):

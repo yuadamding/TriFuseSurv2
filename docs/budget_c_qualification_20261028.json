@@ -1,0 +1,104 @@
+{
+  "execution_disposition": "Preserve the active bound attempt and evidence; its existing sequential workflow remains unchanged. Evaluate final checkpoint/trace evidence separately; resolve numerical exposure before principal release.",
+  "heldout_test_scoring": "not_run",
+  "interpretation": "A fabricated full-production-path pass is distinct from sustained real-cohort numerical exposure. No primary IBS result or clinical validity is established.",
+  "job": "trifusesurv2-budget-development-20261028c",
+  "job_uid": "e8c1468d-1b19-4f60-b922-7bf2a1541587",
+  "paired_budget_decision": {
+    "accepted_common_cap": null,
+    "automatic_24_epoch_extension": false,
+    "automatic_retry": false,
+    "disposition": "unresolved",
+    "full_curve_rule_applied": false,
+    "policy_changed_during_C": false,
+    "reason": "Observed F2 skip violates this attempt's zero-skip acceptance; F2/F3 traces and audits remain incomplete.",
+    "skip_tolerance_added": false
+  },
+  "plan_sha256": "3fadfbda88ede8abf61063084d9d531d7344047d4786858205ba1643a17f90be",
+  "principal_or_baseline_fit_release": false,
+  "qualification": {
+    "actual_successful_updates_per_mode": 2,
+    "affected_CPU_source_suites_passed": 3,
+    "batches_per_mode": 9,
+    "effective_backend_settings": {
+      "cuda_matmul_allow_tf32": true,
+      "cudnn_allow_tf32": false,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": true,
+      "deterministic_algorithms": true,
+      "float32_matmul_precision": "high"
+    },
+    "final_partial_accumulation_batches": 1,
+    "finite_following_survival_NLL": true,
+    "finite_required_gradients_and_model_optimizer_state": true,
+    "full_accumulation_batches": 8,
+    "independent_metadata_acceptance_sha256": "ab8d6b44a2121e6b38b4e6f5b16edbca5ccb5b69f47e3127b5f0c16c492aa834",
+    "initial_scale": 32768,
+    "precision": "trainer-default CUDA FP16",
+    "raw_report_sha256": "4f9727cc0f7b56796b26f49be959d8ed992331c559c1e781125baff6becc22e1",
+    "real_patient_fits_qualified_by_fixture": 0,
+    "scope": "fabricated_production_Swin_survival_NLL_at_bound_FP16_init32768_only",
+    "skips_per_mode": 0,
+    "status": "passed",
+    "tensor_payload_reads_by_metadata_acceptance": 0,
+    "worker_gate_sha256": "72a36596da5f7bb6d06d40f4db2566e586c3d3eb7fead2d632d96b4bddbb1fb8"
+  },
+  "real_training_observation": {
+    "F3": "not_observed_started_at_scheduler_snapshot",
+    "actual_bound_amp_initial_scale": 32768.0,
+    "artifact_sha256": "9244d66e14dc44f7b6d8e3da78b98a89fd9cd2d2283c107ce64b78e7d4583478",
+    "at_houston": "October 28, 2026, 10:20:33 PM CDT",
+    "at_utc": "2026-10-29T03:20:33.009114+00:00",
+    "attempted": 92,
+    "best_last_checkpoint_audits": "pending_complete_fit",
+    "common_cap": "unassessed",
+    "completed_epoch_rows": 2,
+    "epochs": [
+      {
+        "attempted": 46,
+        "epoch": 1,
+        "skipped": 1,
+        "successful": 45,
+        "train_eval_nll": "2.5503730687172443",
+        "val_nll": "2.644569021056999"
+      },
+      {
+        "attempted": 46,
+        "epoch": 2,
+        "skipped": 0,
+        "successful": 46,
+        "train_eval_nll": "2.4779909956332755",
+        "val_nll": "2.6174644984595186"
+      }
+    ],
+    "extension": "not_determined_from_incomplete_pair",
+    "metrics_sha256": "a1a14f046a3be776a920740a1e733dfb516a122da91cc04b866c902ce7d734c3",
+    "nonfinite_gradient_updates": 1,
+    "scope": "active_partial_F2_observation_not_completed_fit",
+    "skipped": 1,
+    "successful": 91,
+    "trace_file": "results/budget_c_F2_partial_metrics.csv",
+    "zero_skip_acceptance": "cannot_be_met_by_this_F2_trace_without_changing_the_declared_policy"
+  },
+  "scheduler_snapshot": {
+    "Running_Ready_H100_requests": 1,
+    "at_houston": "October 28, 2026, 10:16:53 PM CDT",
+    "at_utc": "2026-10-29T03:16:53.430683+00:00",
+    "pending_Pods": 0,
+    "restarts": 0,
+    "snapshot_sha256": "8a3a44818b6e00ce86923d5db4ab7173e8135a3bcc2284658d5db4d414b2a562",
+    "supervisor": "exact_identity_alive",
+    "verified_hardware": {
+      "compute_capability": [
+        9,
+        0
+      ],
+      "name": "NVIDIA H100 80GB HBM3",
+      "total_memory_bytes": 84929478656,
+      "visible_device_count": 1
+    }
+  },
+  "schema_version": 1,
+  "source_commit": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+  "status": "active_C_fabricated_qualification_passed_real_F2_zero_skip_requirement_unmet"
+}
