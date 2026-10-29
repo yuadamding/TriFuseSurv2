@@ -1,0 +1,149 @@
+{
+  "ETA": "insufficient evidence",
+  "admission_review_sha256": "ee3747bbeda22b05d6d3c3c9e85b7f346e9013a64f57010ff3698953b264bd81",
+  "admitted_pod_spec_sha256": "20ed843b4dd18206b2007403b578ff6952460f379a2a1f252af72352a8b98f9a",
+  "budget_C_disposition": "numerical_review_required_preserved",
+  "candidate_common_budget": {
+    "T_max": 12,
+    "accepted": false,
+    "epochs": 12
+  },
+  "cleanup": "pending_active_Job_owned_by_bound_detached_supervisor",
+  "container_restarts": 0,
+  "controller_binding_sha256": "1dfdb416db5bad6cb393157212f47412c8d6e06211754bd16f52fb12f43ce094",
+  "diagnostic_sidecar_source": {
+    "commit_sha": "4f1d220a09ee0fb9aa3fd4a2a8d9720701870370",
+    "scope": "explicit_diagnostic_sidecar_files_only",
+    "source_tree_sha256": "a15564a32925cdd7999ce594901462f8d4a28776105ecaea204d392fd6c67302"
+  },
+  "evidence": {
+    "production-gradient-admission-a.json": {
+      "local_path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/production-gradient-admission-a.json",
+      "sha256": "94debc55a44ec70b88d807440add64d15146519b27d75d410c0767ac05d10b1f"
+    },
+    "production-gradient-launch-a.json": {
+      "local_path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/production-gradient-launch-a.json",
+      "sha256": "6f69aeabeedec6163bdea2bf92e4b2847949043e5422fcde8767745a2152aae2"
+    },
+    "production-gradient-publication-a.json": {
+      "local_path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/production-gradient-publication-a.json",
+      "sha256": "816c6f4c550bd87714738c98f18999281da042195932c736313614bc27ed024c"
+    },
+    "production-gradient-status-a.json": {
+      "local_path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/production-gradient-status-a.json",
+      "sha256": "40f2bf369ed67fbabbe827942fd51dd56fcf750a4c526f8651d03f3c6fcc7bdb"
+    }
+  },
+  "full_budget_fit_invocations": 0,
+  "gpu_requests_including_Pending": 1,
+  "hardware": {
+    "compute_capability": [
+      9,
+      0
+    ],
+    "cuda_build": "12.8",
+    "name": "NVIDIA H100 80GB HBM3",
+    "torch_version": "2.9.1+cu128",
+    "total_memory_bytes": 85028372480,
+    "visible_device_count": 1
+  },
+  "host_gate_sha256": "b0529e2cb05577840e5a41196c395c5582c936e0cfb99ba64cce11950b7e51c3",
+  "initial_configuration": {
+    "accumulation": 8,
+    "inferred_microbatches": [
+      209,
+      216
+    ],
+    "inferred_target_update": 27,
+    "mode": "F2",
+    "original_FP16_initial_scale": 32768,
+    "seed": 42
+  },
+  "input_identity_verification": {
+    "files_verified": 4420,
+    "inventory_sha256": "1a19b0e820b0c3f655eb7cdde73c07d56b3dba4d6f2a70cefd93a5adcfb7393c",
+    "patient_count": 442,
+    "payload_bytes_verified": 709056957,
+    "test_payloads_included": false
+  },
+  "job": "trifusesurv2-production-gradient-diagnostic-20261029a",
+  "job_uid": "7ab92dcd-d4bc-4458-8b6b-393e4ad859c2",
+  "launch_handoff_at_houston": "October 29, 2026, 10:26:43 AM CDT",
+  "launch_handoff_at_utc": "2026-10-29T15:26:43.069013+00:00",
+  "local_fabricated_CPU_regressions": {
+    "source_stable": true,
+    "subtests": 340,
+    "tests": 379
+  },
+  "manifest_sha256": "276cf3da851051bac8f03926177305c7a9ac5a9e9782092ef2e8af35e814dc27",
+  "model_scientific_source": {
+    "commit_sha": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+    "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-c/source",
+    "source_tree_sha256": "43db0d27b34ff38ebd90d2c13193cdd968680fcc410d4e2ac87f0a8e9ec06e1b"
+  },
+  "new_numerical_policy_selected": false,
+  "next_submission": "Conditional new-source production qualification followed by fresh F2/F3 budget pair in one Job; no successor submitted.",
+  "numerical_result": "not_yet_available_at_snapshot",
+  "parent_C_owner_release_sha256": "6040344c6c67a7bb79bf73d30a116ede11602d6ea21169e1f8866036005c5e71",
+  "pending_Pods": 0,
+  "plan_sha256": "18c66f27ce7af1d823d518e6b31db24c1dee54449eab470d57f5a99270496ea8",
+  "pod": "trifusesurv2-production-gradient-diagnostic-20261029a-zz9zv",
+  "pod_uid": "d7591a5b-5560-459d-9c5d-f4c53edf30aa",
+  "portable_controller_tests": {
+    "actual_Seadragon_host": 49,
+    "failed": 0,
+    "local": 49
+  },
+  "publication": {
+    "Mac_relay_files_created": false,
+    "controller_files": 47,
+    "new_environment_created": false,
+    "readback_verified": true,
+    "temporary_staging_archives_removed": true,
+    "workload_files": 10
+  },
+  "replay_cells": [
+    "FP16_scale32768",
+    "FP16_scale16384",
+    "autocast_disabled_FP32_record_actual_TF32"
+  ],
+  "report_kind": "dated_diagnostic_activation_snapshot",
+  "running_ready_H100s": 1,
+  "schema_version": 1,
+  "scientific_acceptance": false,
+  "sidecar_scope": "Three scripts plus focused test; no scientific src copied or shadowed. Archived C computation remains unchanged.",
+  "snapshot_at_houston": "October 29, 2026, 10:29:21 AM CDT",
+  "snapshot_at_utc": "2026-10-29T15:29:21.379928+00:00",
+  "stages": [
+    {
+      "returncode": 0,
+      "stage": "test_production_gradient_diagnostic",
+      "started_at_utc": "2026-10-29T15:26:55.614545+00:00",
+      "status": "completed"
+    },
+    {
+      "returncode": null,
+      "stage": "matrix",
+      "started_at_utc": "2026-10-29T15:28:10.571500+00:00",
+      "status": "started"
+    }
+  ],
+  "startup_receipt_sha256": "af87e91875c5d97eb3121d606361e88b38e6452e4eb1ea984c8d80009387402a",
+  "status": "running_real_production_gradient_diagnostic",
+  "test_evaluation": "not_run",
+  "whole_job_deadline": null,
+  "work_bound": {
+    "original_candidate_epochs_and_T_max": 12,
+    "original_optimizer_opportunities_max": 46,
+    "original_training_epochs_max": 1,
+    "replay_optimizer_opportunities_max": 3,
+    "retained_window_payloads_max": 2,
+    "selected_replay_windows": 1
+  },
+  "worker_focused_tests": {
+    "fixed_source_test_inventory": 11,
+    "scope": "fabricated_CPU_inside_approved_worker_before_real_diagnostic",
+    "stage_returncode": 0
+  },
+  "workload_binding_sha256": "00b8c510a94f4220fb97825b4c4c3bd341e82b3617c599c14b2074608cc235b0"
+}

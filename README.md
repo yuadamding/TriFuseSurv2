@@ -16,6 +16,10 @@ The [production-gradient recovery protocol](docs/production_gradient_diagnostic.
 specifies the bounded real-data diagnostic, matched replay cells, prospective
 stop-on-numerical-failure policy and conditional qualification-plus-budget run.
 It also publishes both complete budget-C aggregate metric CSVs.
+The [October 29 diagnostic activation record](docs/production_gradient_diagnostic_20261029.md)
+records one verified H100 running the real-data diagnostic after the container
+source-test stage passed. Its numerical result and the successor budget release
+remain pending at the dated snapshot.
 
 Start with the [implementation and validation guide](docs/implementation_and_validation.md)
 for design decisions, lessons from revisions, evidence levels, and remaining work.
