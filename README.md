@@ -5,6 +5,14 @@ controlled F0–F4 fusion alternatives. The default is **F3, verified regions,
 expert contours**. These are implementation capabilities, not evidence of
 improved prognosis or clinical validity.
 
+The [October 29 explicit report](docs/explicit_report_20261029.md) is the latest
+consolidated execution record. Both budget-C modes completed 12 epochs and
+finite checkpoint audits, but F2 had one AMP-skipped update, so paired numerical
+acceptance failed and the common cap remains unaccepted. Exact Job/Pod cleanup
+is verified, with zero retained H100 reservations. C0/C1, the six fresh principal
+fits, mismatch H100 qualification and held-out evaluation remain unstarted.
+Earlier dated reports below preserve their historical states.
+
 Start with the [implementation and validation guide](docs/implementation_and_validation.md)
 for design decisions, lessons from revisions, evidence levels, and remaining work.
 The [anatomical correspondence workflow](docs/anatomical_correspondence.md)

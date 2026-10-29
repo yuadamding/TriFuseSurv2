@@ -1,0 +1,345 @@
+{
+  "adequacy": "numerical_review_required",
+  "cleanup": {
+    "C_retained_H100_reservations": 0,
+    "absence_reads": 2,
+    "exact_snapshot_job_absent": true,
+    "exact_snapshot_owned_pods": 0,
+    "status": "complete"
+  },
+  "clinical_predictors": {
+    "categorical": [
+      "PATHOLOGY",
+      "SEX",
+      "RACE",
+      "T",
+      "N",
+      "M",
+      "KFCF",
+      "SMOKE",
+      "ALCOHOL",
+      "HPV"
+    ],
+    "excluded": [
+      "NSTAGE",
+      "TX"
+    ],
+    "numeric": [
+      "AGE"
+    ]
+  },
+  "cohort": {
+    "OS_eligible": 519,
+    "heldout_test": 77,
+    "paired_missing_OS_excluded": 94,
+    "prepared": 613,
+    "train": 365,
+    "validation": 77
+  },
+  "decision": "Preserve both attempts and resolve numerical exposure; no adequacy declaration or automatic extension from a numerical problem.",
+  "engineering_validation": {
+    "CPU_subtests": 337,
+    "CPU_tests": 358,
+    "historical_F3_bitwise_scenarios": 18,
+    "intervention_production_H100_qualification": "pending"
+  },
+  "evidence": {
+    "F2-FIT.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/F2-FIT.json",
+      "sha256": "cc5680731fd4e53a2bc364e36dfa53d3569f751f2716239d5e71e07e4d4194ef"
+    },
+    "F3-FIT.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/F3-FIT.json",
+      "sha256": "3f8fbb5f14d3ac036cc8fc45d576669c2426f1038b3451d7c686dd1a726680ca"
+    },
+    "FINAL.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/FINAL.json",
+      "sha256": "640099a58d35241fcc75f4b8e7dd7d3542dc9ab99d9f6a927a37d34e7444004c"
+    },
+    "STATUS.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/STATUS.json",
+      "sha256": "798a607620e678335838bc715436ee690946afd394c47c3a4a86cddc18c153f6"
+    },
+    "assessment/budget_adequacy.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/assessment/budget_adequacy.json",
+      "sha256": "35001fefcdb6c104cd39d2914b1dd43d08694780491986ab127696099d43faa6"
+    },
+    "cleanup.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/cleanup.json",
+      "sha256": "587af7fcc4de0a36c26e296a3f72567c6e33e1e304dfdbd9e942aeb71e187c6f"
+    },
+    "exact_status_snapshot": {
+      "local_path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/budget-c-status-e.json",
+      "sha256": "54e28fc52773ce4f621326456d976a9809f65f286afeb356feb3f505eccbde04"
+    },
+    "supervisor-terminal.json": {
+      "local_path": "/storage/TriFuseSurv/runs/study-20261028/budget-c-terminal-status-a/supervisor-terminal.json",
+      "sha256": "1c21689e674668629b05b552ecaa93b2265b4c08e3d5c8572d1628aead9a5f88"
+    }
+  },
+  "evidence_cutoff_houston": "October 29, 2026, 08:58:12 AM CDT",
+  "evidence_cutoff_utc": "2026-10-29T13:58:12.829907+00:00",
+  "implementation_source_commit": "989cf455861b5336075ff27522c82c85ad45ce61",
+  "job_uid": "e8c1468d-1b19-4f60-b922-7bf2a1541587",
+  "modes": {
+    "F2": {
+      "assessment": {
+        "delta_decimal": "0.0025680259200562903",
+        "earliest_global_minimum_epoch": 6,
+        "improvement_decimal": "-0.1722417535598987",
+        "improvement_exceeds_delta": false,
+        "minimum_is_in_final_five_epochs": false,
+        "previous_median_nll_decimal": "2.5680259200562903",
+        "previous_window_epochs": [
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "recent_median_nll_decimal": "2.740267673616189",
+        "recent_window_epochs": [
+          8,
+          9,
+          10,
+          11,
+          12
+        ],
+        "requires_extension": false
+      },
+      "checkpoints": {
+        "best": {
+          "all_tensors_finite": true,
+          "epoch": 6,
+          "model_tensors_checked": 585,
+          "optimizer_states_checked": 528,
+          "optimizer_tensors_checked": 1584,
+          "reconstruction": {
+            "parameters": 307566600,
+            "trainable_parameters": 307566600
+          },
+          "reconstruction_forward_passes": 0,
+          "scaler_cumulative_skipped_steps": 1,
+          "scaler_cumulative_successful_steps": 275,
+          "scaler_state": {
+            "_growth_tracker": 249,
+            "backoff_factor": 0.5,
+            "growth_factor": 2.0,
+            "growth_interval": 2000,
+            "scale": 16384.0
+          },
+          "sha256": "7c91dddf1e58929fe073e206a960e3bf1ec854c6ca15179bd9e988f2e7aafb6c",
+          "validation_nll": 2.520520329620544
+        },
+        "last": {
+          "all_tensors_finite": true,
+          "epoch": 12,
+          "model_tensors_checked": 585,
+          "optimizer_states_checked": 528,
+          "optimizer_tensors_checked": 1584,
+          "reconstruction": {
+            "parameters": 307566600,
+            "trainable_parameters": 307566600
+          },
+          "reconstruction_forward_passes": 0,
+          "scaler_cumulative_skipped_steps": 1,
+          "scaler_cumulative_successful_steps": 551,
+          "scaler_state": {
+            "_growth_tracker": 525,
+            "backoff_factor": 0.5,
+            "growth_factor": 2.0,
+            "growth_interval": 2000,
+            "scale": 16384.0
+          },
+          "sha256": "148457a3bed8628560ab057bcf7181cb1eb7d7461d5e6bcf1f9c7db921dcf853",
+          "validation_nll": 2.7504580977868724
+        }
+      },
+      "cost": {
+        "epoch_timing_scope": "epoch entry through train/train-evaluation/validation; checkpoint and finalization excluded",
+        "epoch_training_and_evaluation_seconds": [
+          196.3215471468866,
+          194.24724539928138,
+          200.25230246316642,
+          203.23070660978556,
+          203.1789476890117,
+          199.97484441194683,
+          201.26521171443164,
+          199.65853515453637,
+          199.86911708768457,
+          201.04453194513917,
+          197.27100382745266,
+          192.2203509863466
+        ],
+        "extrapolated_duration_or_ETA": null,
+        "median_measured_epoch_seconds": 199.9219807498157,
+        "stage_scope": "Trainer subprocess wall time including setup, epochs, checkpoints and development finalization",
+        "stage_seconds": 2900.628402461298,
+        "sum_measured_epoch_seconds": 2388.5343444356695,
+        "unattributed_stage_overhead_seconds": 512.0940580256283
+      },
+      "epochs": 12,
+      "final_epoch_train_eval_nll": 0.7764404119821648,
+      "numerical_issues": [
+        {
+          "AMP_skipped_optimizer_steps": 1,
+          "epoch": 1,
+          "kind": "numerical_update_review",
+          "nonfinite_gradient_updates": 1
+        }
+      ],
+      "update_counts": {
+        "loss_finite_checks": 4380,
+        "nonfinite_gradient_updates": 1,
+        "optimizer_step_attempts": 552,
+        "optimizer_steps_skipped": 1,
+        "optimizer_steps_succeeded": 551,
+        "training_batches": 4380
+      }
+    },
+    "F3": {
+      "assessment": {
+        "delta_decimal": "0.002562114275459732",
+        "earliest_global_minimum_epoch": 6,
+        "improvement_decimal": "-0.1115574350024204",
+        "improvement_exceeds_delta": false,
+        "minimum_is_in_final_five_epochs": false,
+        "previous_median_nll_decimal": "2.562114275459732",
+        "previous_window_epochs": [
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "recent_median_nll_decimal": "2.6736717104621524",
+        "recent_window_epochs": [
+          8,
+          9,
+          10,
+          11,
+          12
+        ],
+        "requires_extension": false
+      },
+      "checkpoints": {
+        "best": {
+          "all_tensors_finite": true,
+          "epoch": 6,
+          "model_tensors_checked": 585,
+          "optimizer_states_checked": 528,
+          "optimizer_tensors_checked": 1584,
+          "reconstruction": {
+            "parameters": 307566600,
+            "trainable_parameters": 307566600
+          },
+          "reconstruction_forward_passes": 0,
+          "scaler_cumulative_skipped_steps": 0,
+          "scaler_cumulative_successful_steps": 276,
+          "scaler_state": {
+            "_growth_tracker": 276,
+            "backoff_factor": 0.5,
+            "growth_factor": 2.0,
+            "growth_interval": 2000,
+            "scale": 32768.0
+          },
+          "sha256": "0142c16c10e759e1bb6387ff0345170c28499fb4bfbaa6172042d98fb283c98a",
+          "validation_nll": 2.5002673904278447
+        },
+        "last": {
+          "all_tensors_finite": true,
+          "epoch": 12,
+          "model_tensors_checked": 585,
+          "optimizer_states_checked": 528,
+          "optimizer_tensors_checked": 1584,
+          "reconstruction": {
+            "parameters": 307566600,
+            "trainable_parameters": 307566600
+          },
+          "reconstruction_forward_passes": 0,
+          "scaler_cumulative_skipped_steps": 0,
+          "scaler_cumulative_successful_steps": 552,
+          "scaler_state": {
+            "_growth_tracker": 552,
+            "backoff_factor": 0.5,
+            "growth_factor": 2.0,
+            "growth_interval": 2000,
+            "scale": 32768.0
+          },
+          "sha256": "110354142e6c223b2a43defff1eceab7e86e2eb6f3922f10cdb0bca753e5f88c",
+          "validation_nll": 2.6750605452515477
+        }
+      },
+      "cost": {
+        "epoch_timing_scope": "epoch entry through train/train-evaluation/validation; checkpoint and finalization excluded",
+        "epoch_training_and_evaluation_seconds": [
+          203.80412897467613,
+          206.37696562055498,
+          202.5985492579639,
+          206.365012999624,
+          197.1886798972264,
+          195.43368161469698,
+          195.16851420607418,
+          196.22249342501163,
+          192.95612393133342,
+          192.53525513689965,
+          186.94899351429194,
+          185.28463846538216
+        ],
+        "extrapolated_duration_or_ETA": null,
+        "median_measured_epoch_seconds": 195.8280875198543,
+        "stage_scope": "Trainer subprocess wall time including setup, epochs, checkpoints and development finalization",
+        "stage_seconds": 2845.4005682058632,
+        "sum_measured_epoch_seconds": 2360.8830370437354,
+        "unattributed_stage_overhead_seconds": 484.51753116212785
+      },
+      "epochs": 12,
+      "final_epoch_train_eval_nll": 0.925733907603697,
+      "numerical_issues": [],
+      "update_counts": {
+        "loss_finite_checks": 4380,
+        "nonfinite_gradient_updates": 0,
+        "optimizer_step_attempts": 552,
+        "optimizer_steps_skipped": 0,
+        "optimizer_steps_succeeded": 552,
+        "training_batches": 4380
+      }
+    }
+  },
+  "plan_sha256": "3fadfbda88ede8abf61063084d9d531d7344047d4786858205ba1643a17f90be",
+  "primary_analysis": {
+    "bootstrap_seed": 20261028,
+    "interval_days": [
+      210,
+      730
+    ],
+    "metric": "mean paired per-seed F3-minus-F2 IBS",
+    "minimum_valid_draw_fraction": 0.95,
+    "minimum_worthwhile_absolute_reduction": 0.005,
+    "paired_patient_bootstrap_draws": 2000,
+    "seeds": [
+      42,
+      142,
+      242
+    ]
+  },
+  "remaining_counts": {
+    "C0_C1_selected_baselines_completed": 0,
+    "mismatch_cohort_fits_completed": 0,
+    "mismatch_cohort_fits_required": 3,
+    "principal_neural_fits_completed": 0,
+    "principal_neural_fits_required": 6
+  },
+  "report_kind": "dated_terminal_development_report",
+  "run_id": "trifusesurv2-budget-development-20261028c",
+  "schema_version": 1,
+  "scientific_source": {
+    "commit_sha": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+    "source_tree_sha256": "43db0d27b34ff38ebd90d2c13193cdd968680fcc410d4e2ac87f0a8e9ec06e1b"
+  },
+  "status": "failed_budget_development",
+  "test_evaluation": "not_run",
+  "verification_scope": "Hash-verified terminal metadata and worker checkpoint audits; no new model forward, checkpoint payload load, test scoring or remote execution during report preparation.",
+  "worker_finished_at_houston": "October 28, 2026, 11:47:05 PM CDT",
+  "worker_finished_at_utc": "2026-10-29T04:47:05.883766+00:00"
+}
