@@ -1,0 +1,204 @@
+schema_version: 1
+study_id: trifusesurv_compartment_phenotype_20261029
+title: Prespecified primary-versus-nodal CT intensity dispersion and OS substudy
+authority: User-supplied execution plan dated 2026-10-29
+status: prospective_before_new_measurement_qualification_and_association
+paths:
+  workspace_root: /storage/TriFuseSurv
+  audit_root: /storage/TriFuseSurv/reports/local-data-audit-20261029
+  run_root: /storage/TriFuseSurv/runs/phenotype-substudy-20261029
+  imaging_root: /storage/TriFuseSurv/OPSCC_preprocessed_128
+  clinical: /storage/TriFuseSurv/clinical_covariate.csv
+  outcomes: /storage/TriFuseSurv/opscc_survival_time_event.csv
+  train_ids: /storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/splits/fold_00/train_ids.txt
+  val_ids: /storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/splits/fold_00/val_ids.txt
+  test_ids: /storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/plan/splits/fold_00/test_ids.txt
+  image_source_inventory_csv: /storage/TriFuseSurv/reports/local-data-audit-20261029/imaging/source_inventory.csv
+  imaging_qc: /storage/TriFuseSurv/reports/local-data-audit-20261029/imaging/case_qc.csv
+  imaging_flags: /storage/TriFuseSurv/reports/local-data-audit-20261029/imaging/imaging_flags_by_case.csv
+  known_source_conflicts: /storage/TriFuseSurv/reports/local-data-audit-20261029/imaging/shared_ct_series_uid_case_groups.json
+  source_conflict_physical_evidence: /storage/TriFuseSurv/reports/local-data-audit-20261029/imaging/shared_uid_physical_overlap_detailed.json
+  source_conflict_independent_evidence: /storage/TriFuseSurv/reports/local-data-audit-20261029/radiomics/shared_uid_overlap_independent_review.json
+  current_radiomics: /storage/TriFuseSurv/runs/study-20261028/metadata-mirror/paired-development-a-output/development/radiomics_development.csv
+  radiomics_configuration: /storage/TriFuseSurv/TriFuseSurv2/configs/radiomics_normalized_candidate.json
+  cohort_manifest_csv: /storage/TriFuseSurv/runs/phenotype-substudy-20261029/preparation/cohort_manifest.csv
+  phenotype_features_csv: /storage/TriFuseSurv/runs/phenotype-substudy-20261029/measurements/phenotype_features.csv
+  protocol_lock: /storage/TriFuseSurv/runs/phenotype-substudy-20261029/protocol/PROTOCOL_LOCK.json
+  timing_retained_metadata_root: /storage/TriFuseSurv/runs/study-20261028/metadata-mirror
+scope:
+  execute_locally_on_CPU: true
+  new_GPU_jobs: 0
+  source_mutation: false
+  original_split_mutation: false
+  feature_screening: false
+  endpoint: OS_only
+  development_partitions: [train, val]
+  qualification_partition: train
+  heldout_partition: test
+  reserved_test_execution: explicit_once_after_all_gates
+  timing_unknown_interpretation: exploratory_retrospective_association_not_verified_pretreatment_prediction
+source_integrity_screen:
+  physical_coordinate_system: SimpleITK_LPS_mm
+  global_lattice_spacing_mm: 4.0
+  interpolation: linear
+  intensity_range: [0.0, 1.0]
+  excluded_constant_values: [0.0, 0.5, 1.0]
+  constant_exclusion_tolerance: 0.000001
+  fingerprint_quantization: 0.00001
+  candidate_min_matched_points: 64
+  candidate_min_fraction_smaller_informative_support: 0.10
+  review_min_common_informative_points: 1000
+  review_lattice_spacing_mm: 2.0
+  review_equal_tolerance: 0.00001
+  review_min_nearly_equal_fraction: 0.50
+  review_min_correlation: 0.995
+  review_max_mean_absolute_difference: 0.005
+  review_decision: sufficient_support_AND_equal_fraction_OR_sufficient_support_AND_correlation_AND_MAE
+  known_shifted_pair_must_be_detected_by_fingerprint_stage: true
+  unresolved_candidate_rule: analytically_exclude_every_record_in_unresolved_confirmed_or_suspected_shared_source_groups
+  insufficient_or_failed_candidate_review: inconclusive_analytically_exclude_all_involved_records
+  no_record_choice_using_outcomes: true
+  limitations: registration_free_physical_alignment_preserving_alias_screen_not_exhaustive_arbitrary_transform_matching
+eligibility:
+  minimum_voxels_each_region: 100
+  minimum_voxel_volume_cm3_on_delivered_grid: 0.025
+  require_valid_supplied_OS_pair: true
+  require_no_unresolved_source_conflict: true
+  require_readable_finite_aligned_binary_inputs: true
+  exclude_primary_Peritumor_mixtures: true
+  exclude_delivered_boundary_contact: true
+  exclude_primary_nodal_overlap_for_paired: true
+  require_finite_AGE_and_literal_M_or_F_SEX: true
+  require_all_eleven_clinical_fields_complete: false
+  flow_order:
+    - valid_OS
+    - no_unresolved_source_conflict
+    - readable_finite_aligned_binary
+    - nonempty_required_regions
+    - primary_is_PT_only
+    - no_required_mask_boundary_contact
+    - no_PT_LN_overlap_for_paired
+    - minimum_100_voxels_each_required_region
+    - valid_same_support_IQR_and_voxel_volume
+    - recorded_AGE_and_MF_SEX
+measurement:
+  image_generation: audited_delivered_NIfTI
+  primary_metric: intensity_interquartile_range
+  quantile_method: linear
+  volume_definition: voxel_count_times_spacing_product_divided_by_1000_cm3
+  M_definition: (HP+HN)/2
+  D_definition: (HN-HP)/2
+  independent_PT_LN_standardization: false
+  report_D_effect_per_fixed_development_SD: true
+  iqr_validation_tolerance: 0.000001
+  zero_sd_tolerance: 0.000000000001
+  zero_IQR_is_valid: true
+  minimum_voxels: 100
+  morphology_mm: 1.0
+  morphology: padded_anisotropic_Euclidean_distance_transform
+  grid_spacings_mm: [1.0, 2.0]
+  resampling_extent: preserve_original_voxel_outer_edges_direction_and_physical_FOV
+  resampling_origin: original_origin_plus_direction_times_half_new_minus_old_spacing
+  CT_interpolator: linear
+  mask_interpolator: nearest_neighbor
+  primary_conditions: [erosion_1mm, dilation_1mm, isotropic_1mm]
+  stress_conditions: [isotropic_2mm]
+  unavailable_if: [empty_region, fewer_than_100_voxels, support_crosses_delivered_boundary, PT_LN_overlap]
+  coverage_min: 0.90
+  icc_definition: two_way_absolute_agreement_single_measure_ICC_A_1
+  icc_min: 0.90
+  icc_lower95_min: 0.75
+  median_change_sd_max: 0.20
+  bootstrap_resamples: 1000
+  bootstrap_seed: 2026102902
+  minimum_bootstrap_valid_fraction: 0.95
+  ICC_interval: paired_patient_bootstrap_percentile_2_5_97_5
+  gate_on_stress_2mm: false
+  fail_primary_qualification_stops_primary_association: true
+  fallback_metric: primary_sphericity
+  fallback_definition: PyRadiomics_3_0_1_original_shape_Sphericity_mesh_based
+  fallback_separate_qualification_required: true
+  fallback_qualification_variable: phiP
+  fallback_inherits_primary_perturbations_coverage_ICC_CI_and_change_criteria: true
+  fallback_bootstrap_seed: 2026102903
+models:
+  tie_handling: efron
+  primary_reduced: AGE + SEX + log(VP_cm3) + log(VN_cm3) + M
+  primary_full: AGE + SEX + log(VP_cm3) + log(VN_cm3) + M + D
+  primary_full_slopes: 6
+  primary_test: two_sided_one_df_unpenalized_nested_Cox_LRT_beta_D_zero
+  alpha: 0.05
+  coefficient_relations:
+    beta_P: (beta_M-beta_D)/2
+    beta_N: (beta_M+beta_D)/2
+    difference: beta_D
+  SEX_reference: F
+  development_scaling_source: qualified_original_train_plus_val_only
+  no_automatic_category_collapsing: true
+  stage_sensitivity: add_nominal_T_and_N_same_patients
+  stage_max_expected_full_slopes: 15
+  volume_allocation_reduced: AGE + SEX + log(VP_cm3+VN_cm3)
+  volume_allocation_full: AGE + SEX + log(VP_cm3+VN_cm3) + log(VN_cm3/VP_cm3)
+  temporal_change_point_days: 1826
+  temporal_reduced_slopes: 7
+  temporal_full_slopes: 8
+  temporal_reduced: primary_full_plus_M_times_late
+  temporal_full: temporal_reduced_plus_D_times_late
+  formal_temporal_claim_requires_primary_rejection_and_temporal_estimability: true
+  HPV_sensitivity: literal_0_1_recorded_factor_same_patient_nested_comparison_no_interaction
+  technical_sensitivities:
+    - exclude_f0_or_f1_over_0_01_in_either_compartment
+    - require_500_voxels_each_compartment
+    - exclude_known_original_z_spacing_above_3mm
+  fallback_full: AGE + SEX + log(VP_cm3) + phiP
+  fallback_slopes: 4
+  fallback_only_if_paired_infeasible_before_real_association_inspection: true
+  penalized_LRT: forbidden
+simulation:
+  scenarios: [null_D, alternative_D_HR1_5, common_M_temporal_stress_D_zero]
+  simulations_per_scenario: 1000
+  seed: 2026102904
+  baseline_approximation: exponential_event_and_censor_rates_calibrated_to_development_event_fraction_and_observed_duration_median_if_unknown_entry_or_post_entry_duration_median_if_authentic_entry
+  preserve_development_covariate_rows: true
+  estimate_real_phenotype_OS_coefficients_for_simulation: false
+  nuisance_HR_age_per_10_units: 1.2
+  nuisance_HR_log_volume_per_unit: 1.1
+  nuisance_HR_SEX: 1.0
+  nuisance_HR_M_constant: 1.0
+  alternative_HR_D_per_development_SD: 1.5
+  temporal_stress_HR_M_late_per_development_SD: 1.5
+  temporal_stress_D_early_and_late_HR: 1.0
+  minimum_usable_fraction: 0.95
+  maximum_null_rejection_fraction: 0.07
+  CI_coverage_range: [0.93, 0.97]
+  maximum_median_log_HR_CI_width: 0.8109302162163288
+  report_power_separately: true
+  temporal_stress_primary_guard: correctly_specified_7_vs_8_slope_D_late_test
+  interval_width_gating_scenarios: [null_D, alternative_D_HR1_5]
+  temporal_stress_D_late_interval_width_is_gating: false
+  temporal_stress_D_late_width_role: report_secondary_precision_separately_not_veto_primary_precision
+  temporal_stress_also_report_misspecified_6_slope_PH_false_positive: true
+  fallback_scenarios: [null_phiP, alternative_phiP_HR1_5]
+  fallback_simulations_per_scenario: 1000
+  fallback_seed: 2026102907
+  fallback_nuisance_HR_age_per_10_units: 1.2
+  fallback_nuisance_HR_log_primary_volume_per_unit: 1.1
+  fallback_alternative_HR_phiP_per_development_SD: 1.5
+bootstrap:
+  association_patient_resamples: 1000
+  association_seed: 2026102905
+  heldout_paired_patient_resamples: 1000
+  heldout_seed: 2026102906
+  fallback_association_patient_resamples: 1000
+  fallback_association_seed: 2026102908
+operational_choices:
+  thresholds_are_project_criteria_not_biological_validation: true
+  coverage_approximately_calibrated_CI_defined_prospectively_as: 0.93_to_0.97
+  no_deadline_or_elapsed_time_ceiling: true
+  no_threshold_relaxation_after_measurement_results: true
+references:
+  - https://pyradiomics.readthedocs.io/en/v3.0.1/_modules/radiomics/firstorder.html
+  - https://stat.ethz.ch/R-manual/R-devel/library/survival/doc/timedep.pdf
+  - https://stat.ethz.ch/R-manual/R-devel/library/survival/html/anova.coxph.html
+  - https://stat.ethz.ch/R-manual/R-devel/library/survival/html/cox.zph.html
+  - https://www.bmj.com/content/368/bmj.m441

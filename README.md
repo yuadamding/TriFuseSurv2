@@ -14,6 +14,12 @@ The common cap and numerical policy remain unaccepted. C0/C1, the six fresh
 principal fits, mismatch H100 qualification and held-out evaluation remain
 unstarted. This is a dated snapshot, not a live status query.
 
+The separate [cohort-only phenotype substudy](substudies/compartment_phenotype/README.md)
+implements the October 29 user-supplied measurement-first protocol. It preserves
+source records and split labels, excludes unresolved image-source conflicts in
+its analysis view, and gates any OS association on measurement robustness and
+prespecified design assessment. It does not require neural retraining or a GPU.
+
 The [October 29 explicit report](docs/explicit_report_20261029.md) preserves
 budget C: both modes completed 12 epochs and finite checkpoint audits, but
 F2 had one AMP-skipped update, so paired numerical acceptance failed. Its exact
