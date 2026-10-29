@@ -1,0 +1,510 @@
+{
+  "additional_different_UID_candidates": 0,
+  "biological_null_result": false,
+  "cohort_counts": [
+    {
+      "analysis": "paired",
+      "censored": "87",
+      "deaths": "86",
+      "patients": "173",
+      "split": "all"
+    },
+    {
+      "analysis": "paired",
+      "censored": "62",
+      "deaths": "59",
+      "patients": "121",
+      "split": "train"
+    },
+    {
+      "analysis": "paired",
+      "censored": "13",
+      "deaths": "16",
+      "patients": "29",
+      "split": "val"
+    },
+    {
+      "analysis": "paired",
+      "censored": "12",
+      "deaths": "11",
+      "patients": "23",
+      "split": "test"
+    },
+    {
+      "analysis": "paired",
+      "censored": "0",
+      "deaths": "0",
+      "patients": "0",
+      "split": "excluded_missing_OS"
+    },
+    {
+      "analysis": "primary_only",
+      "censored": "150",
+      "deaths": "192",
+      "patients": "342",
+      "split": "all"
+    },
+    {
+      "analysis": "primary_only",
+      "censored": "107",
+      "deaths": "132",
+      "patients": "239",
+      "split": "train"
+    },
+    {
+      "analysis": "primary_only",
+      "censored": "20",
+      "deaths": "36",
+      "patients": "56",
+      "split": "val"
+    },
+    {
+      "analysis": "primary_only",
+      "censored": "23",
+      "deaths": "24",
+      "patients": "47",
+      "split": "test"
+    },
+    {
+      "analysis": "primary_only",
+      "censored": "0",
+      "deaths": "0",
+      "patients": "0",
+      "split": "excluded_missing_OS"
+    }
+  ],
+  "date_houston": "2026-10-29",
+  "evidence_sha256": {
+    "measurements/measurement_validation.csv": "77ce0c191a59c5a28a85dcfa57200e32072181458e71a65acc9162681cc841a6",
+    "measurements/phenotype_features.parquet": "1b6ad0fd035e9cc32fd5fc21ed4352cbec030d100fa1f5f276f224c5085d0231",
+    "preparation/cohort_manifest.parquet": "3c1db994871efe0e49c8398b02cf1b67ccf02b01fe2eba75df2b4fac6901d178",
+    "preparation/source_manifest.json": "7c52bdf8df988db7aa72baaae6fec40ec182bda225a10b5f47bb92176bf13923",
+    "qualification/paired_decision.json": "f756a84cca223344d5c337036d0c3963a382a8742ce99c2380eb7dca477926e4",
+    "qualification/primary_only_decision.json": "0950ff56f6c7aa964eb6482ee1dc68599f9590fc728eb56656cfe3646f569e45",
+    "statistics/design_assessment.json": "d710453771e9edc14cf47341d0cee9cc5751d17e444ba72d77de31bafad1c780",
+    "statistics/design_simulations.csv": "fd1415019f8be6535da5ad72890f5a39308956cc72f9e6ade6e89f676ad3e405"
+  },
+  "execution_source_commit": "e93fef19397174a0951f42f3501c904bc184edb3",
+  "fallback_design_simulations_run": 0,
+  "fallback_measurement_passed": false,
+  "fallback_qualification": [
+    {
+      "baseline_train_n": 239,
+      "condition": "erosion_1mm",
+      "coverage": 0.99581589958159,
+      "evaluable_n": 238,
+      "gating": true,
+      "measurements": {
+        "phiP": {
+          "ICC_A_1": 0.9290414346230139,
+          "ICC_lower95": 0.9090447665002354,
+          "ICC_upper95": 0.9464132168175333,
+          "baseline_training_SD": 0.08498240536637418,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026102903,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": false,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.022731311257138204,
+          "median_absolute_change_in_baseline_training_SD": 0.26748255899723594,
+          "passed": false
+        }
+      },
+      "passed": false
+    },
+    {
+      "baseline_train_n": 239,
+      "condition": "dilation_1mm",
+      "coverage": 0.9874476987447699,
+      "evaluable_n": 236,
+      "gating": true,
+      "measurements": {
+        "phiP": {
+          "ICC_A_1": 0.7557302956522484,
+          "ICC_lower95": 0.7024919581921396,
+          "ICC_upper95": 0.7967636232467764,
+          "baseline_training_SD": 0.08498240536637418,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103003,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": false,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": false,
+            "median_absolute_change_within_training_SD_threshold": false,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.05613952188415766,
+          "median_absolute_change_in_baseline_training_SD": 0.6606017050485952,
+          "passed": false
+        }
+      },
+      "passed": false
+    },
+    {
+      "baseline_train_n": 239,
+      "condition": "isotropic_1mm",
+      "coverage": 1.0,
+      "evaluable_n": 239,
+      "gating": true,
+      "measurements": {
+        "phiP": {
+          "ICC_A_1": 0.9348658870616098,
+          "ICC_lower95": 0.9146851421600801,
+          "ICC_upper95": 0.9500255005455825,
+          "baseline_training_SD": 0.08498240536637418,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103103,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": false,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0315866931167319,
+          "median_absolute_change_in_baseline_training_SD": 0.3716850915263704,
+          "passed": false
+        }
+      },
+      "passed": false
+    },
+    {
+      "baseline_train_n": 239,
+      "condition": "isotropic_2mm",
+      "coverage": 0.9748953974895398,
+      "evaluable_n": 233,
+      "gating": false,
+      "measurements": {
+        "phiP": {
+          "ICC_A_1": 0.6505873473868427,
+          "ICC_lower95": 0.588925679287986,
+          "ICC_upper95": 0.6999671977272576,
+          "baseline_training_SD": 0.08498240536637418,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103203,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": false,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": false,
+            "median_absolute_change_within_training_SD_threshold": false,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.07955347973792493,
+          "median_absolute_change_in_baseline_training_SD": 0.936117063231569,
+          "passed": false
+        }
+      },
+      "passed": false
+    }
+  ],
+  "heldout_model_assessment_performed": false,
+  "image_pairs_screened": 187578,
+  "images_screened": 613,
+  "input_files_freshly_verified": 3068,
+  "known_source_pair_detected": true,
+  "new_GPU_jobs": 0,
+  "paired_design": {
+    "approximation": "exponential_event_and_censor_rates_calibrated_to_development_event_fraction_and_observed_duration_median_if_unknown_entry_or_post_entry_duration_median_if_authentic_entry",
+    "calibration": {
+      "calibration_time_scale": "supplied_OS_duration_retrospective_timing_unknown",
+      "censor_rate": 0.00010783247986309043,
+      "event_rate": 0.00010783247986309043,
+      "observed_duration_median": 3214,
+      "observed_event_fraction": 0.5
+    },
+    "deaths": 75,
+    "n": 150,
+    "passed": false,
+    "scenarios": {
+      "alternative_D_HR1_5": {
+        "checks": {
+          "CI_coverage": true,
+          "median_interval_width": false,
+          "usable_fraction": true
+        },
+        "coverage": 0.9359359359359359,
+        "interval_width_is_gating": true,
+        "median_log_HR_CI_width": 0.9978354817703349,
+        "passed": false,
+        "power_if_alternative": 0.4954954954954955,
+        "rejection_fraction": 0.4954954954954955,
+        "simulations": 1000,
+        "six_slope_PH_false_positive_if_temporal_stress": {},
+        "usable_fraction": 0.999
+      },
+      "common_M_temporal_stress_D_zero": {
+        "checks": {
+          "CI_coverage": true,
+          "null_rejection": false,
+          "usable_fraction": true
+        },
+        "coverage": 0.95,
+        "interval_width_is_gating": false,
+        "median_log_HR_CI_width": 1.953168397783555,
+        "passed": false,
+        "power_if_alternative": {},
+        "rejection_fraction": 0.085,
+        "simulations": 1000,
+        "six_slope_PH_false_positive_if_temporal_stress": 0.021021021021021023,
+        "usable_fraction": 1
+      },
+      "null_D": {
+        "checks": {
+          "CI_coverage": true,
+          "median_interval_width": true,
+          "null_rejection": false,
+          "usable_fraction": true
+        },
+        "coverage": 0.932,
+        "interval_width_is_gating": true,
+        "median_log_HR_CI_width": 0.7949901368185353,
+        "passed": false,
+        "power_if_alternative": {},
+        "rejection_fraction": 0.077,
+        "simulations": 1000,
+        "six_slope_PH_false_positive_if_temporal_stress": {},
+        "usable_fraction": 1
+      }
+    }
+  },
+  "paired_measurement_passed": true,
+  "paired_qualification": [
+    {
+      "baseline_train_n": 121,
+      "condition": "erosion_1mm",
+      "coverage": 0.9586776859504132,
+      "evaluable_n": 116,
+      "gating": true,
+      "measurements": {
+        "D": {
+          "ICC_A_1": 0.9863499396708647,
+          "ICC_lower95": 0.9504023725434304,
+          "ICC_upper95": 0.9969676223423793,
+          "baseline_training_SD": 0.019018931154986596,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026102903,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0007144995033740896,
+          "median_absolute_change_in_baseline_training_SD": 0.03756780533835384,
+          "passed": true
+        },
+        "M": {
+          "ICC_A_1": 0.9860461286115718,
+          "ICC_lower95": 0.9578821863760627,
+          "ICC_upper95": 0.9962401269745028,
+          "baseline_training_SD": 0.021588702858075313,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026102902,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0010100901126861685,
+          "median_absolute_change_in_baseline_training_SD": 0.046787901956246596,
+          "passed": true
+        }
+      },
+      "passed": true
+    },
+    {
+      "baseline_train_n": 121,
+      "condition": "dilation_1mm",
+      "coverage": 0.9338842975206612,
+      "evaluable_n": 113,
+      "gating": true,
+      "measurements": {
+        "D": {
+          "ICC_A_1": 0.9821859139965761,
+          "ICC_lower95": 0.9119747889570197,
+          "ICC_upper95": 0.992926023823472,
+          "baseline_training_SD": 0.019018931154986596,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103003,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0011993348598479691,
+          "median_absolute_change_in_baseline_training_SD": 0.06306005579779987,
+          "passed": true
+        },
+        "M": {
+          "ICC_A_1": 0.9716499888693304,
+          "ICC_lower95": 0.9046736443574224,
+          "ICC_upper95": 0.9869602021970962,
+          "baseline_training_SD": 0.021588702858075313,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103002,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0025080740451813664,
+          "median_absolute_change_in_baseline_training_SD": 0.11617530065004412,
+          "passed": true
+        }
+      },
+      "passed": true
+    },
+    {
+      "baseline_train_n": 121,
+      "condition": "isotropic_1mm",
+      "coverage": 0.9834710743801653,
+      "evaluable_n": 119,
+      "gating": true,
+      "measurements": {
+        "D": {
+          "ICC_A_1": 0.9973052141038243,
+          "ICC_lower95": 0.9856126905580617,
+          "ICC_upper95": 0.9997168639517648,
+          "baseline_training_SD": 0.019018931154986596,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103103,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.00016104429960246648,
+          "median_absolute_change_in_baseline_training_SD": 0.0084675788712891,
+          "passed": true
+        },
+        "M": {
+          "ICC_A_1": 0.997447566016962,
+          "ICC_lower95": 0.9901852593971573,
+          "ICC_upper95": 0.9993126790827385,
+          "baseline_training_SD": 0.021588702858075313,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103102,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": true,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": true,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0003714859485625423,
+          "median_absolute_change_in_baseline_training_SD": 0.017207423299338567,
+          "passed": true
+        }
+      },
+      "passed": true
+    },
+    {
+      "baseline_train_n": 121,
+      "condition": "isotropic_2mm",
+      "coverage": 0.8677685950413223,
+      "evaluable_n": 105,
+      "gating": false,
+      "measurements": {
+        "D": {
+          "ICC_A_1": 0.636669434602479,
+          "ICC_lower95": 0.23982473066168286,
+          "ICC_upper95": 0.9961427065517329,
+          "baseline_training_SD": 0.019018931154986596,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103203,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": false,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": false,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.00043874979019159076,
+          "median_absolute_change_in_baseline_training_SD": 0.023069108701019428,
+          "passed": false
+        },
+        "M": {
+          "ICC_A_1": 0.6682764943002001,
+          "ICC_lower95": 0.300292628913022,
+          "ICC_upper95": 0.9962459053389728,
+          "baseline_training_SD": 0.021588702858075313,
+          "bootstrap_finite": 1000,
+          "bootstrap_requested": 1000,
+          "bootstrap_seed": 2026103202,
+          "bootstrap_valid_fraction": 1.0,
+          "checks": {
+            "ICC_at_least_threshold": false,
+            "bootstrap_valid_fraction": true,
+            "finite_ICC": true,
+            "lower95_at_least_threshold": false,
+            "median_absolute_change_within_training_SD_threshold": true,
+            "nonzero_baseline_training_SD": true
+          },
+          "median_absolute_change": 0.0007885992527007397,
+          "median_absolute_change_in_baseline_training_SD": 0.03652832955666727,
+          "passed": false
+        }
+      },
+      "passed": false
+    }
+  ],
+  "primary_hypothesis_tested": false,
+  "protocol_sha256": "d010f984293abf698e09f9637e3e677d6e0e304c4a1c4cf1832fb098d7485e41",
+  "real_OS_association_models_fitted": 0,
+  "record_kind": "completed_first_milestone_failed_association_release_gates",
+  "schema_version": 1,
+  "software_validation": {
+    "Python_tests": 15,
+    "R_fixture_checks": 42
+  },
+  "source_records_and_original_splits_changed": false,
+  "thresholds_relaxed": false,
+  "timing_unknown_cases": 613,
+  "unresolved_records_analytically_excluded": 2
+}

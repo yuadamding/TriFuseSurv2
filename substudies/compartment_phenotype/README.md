@@ -5,6 +5,10 @@ CT intensity IQR on the same delivered supports, qualify perturbation
 robustness, assess the fixed model's precision, and only then consider OS
 association. It is separate from neural training and requires no GPU job.
 
+The [completed October 29 milestone](RESULTS_20261029.md) records a passed
+paired measurement gate, failed paired design gate and failed fallback
+measurement gate. No real OS association or held-out model assessment was run.
+
 The protocol is prespecified relative to these new phenotype–OS associations.
 It is informed by the prior local data-characteristics audit; it is not an
 external registration or a claim that the underlying cohort is independently
