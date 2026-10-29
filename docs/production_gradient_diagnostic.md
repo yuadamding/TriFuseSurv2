@@ -98,6 +98,16 @@ observed fact. A cell that cannot execute is not a passing numerical comparison.
 
 ## Numerical decision and prospective stopping behavior
 
+The following table records the original conditional diagnostic plan. The later
+[full numerical disposition](production_numerical_disposition_20261029.md)
+supersedes its recommendation to advance scale 16,384: that cell was finite but
+had substantial gradient-magnitude and global-clipping differences from FP32.
+Autocast-disabled FP32, with no GradScaler and the recorded TF32 settings, was
+selected for the [fresh budget-D attempt](budget_d_fp32_launch_20261029.md).
+Production qualification and paired numerical acceptance remain pending at
+that report's dated launch snapshot. The original table and historical
+diagnostic receipts remain preserved below.
+
 | Matched result | Disposition |
 | --- | --- |
 | Historical FP16 fails; lower-scale FP16 and FP32 pass | Supports a scale-sensitive finding for the captured state; advance 16,384 to prospective qualification |

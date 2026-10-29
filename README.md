@@ -5,13 +5,19 @@ controlled F0–F4 fusion alternatives. The default is **F3, verified regions,
 expert contours**. These are implementation capabilities, not evidence of
 improved prognosis or clinical validity.
 
-The [October 29 explicit report](docs/explicit_report_20261029.md) is the latest
-consolidated execution record. Both budget-C modes completed 12 epochs and
-finite checkpoint audits, but F2 had one AMP-skipped update, so paired numerical
-acceptance failed and the common cap remains unaccepted. Exact Job/Pod cleanup
-is verified, with zero retained H100 reservations. C0/C1, the six fresh principal
-fits, mismatch H100 qualification and held-out evaluation remain unstarted.
-Earlier dated reports below preserve their historical states.
+The [October 29 FP32 budget-D launch report](docs/budget_d_fp32_launch_20261029.md)
+records one Running/Ready H100 at **11:38:25 AM CDT on October 29, 2026**.
+Source qualification had started; production qualification and both fresh
+12-epoch F2/F3 fits remained pending. Autocast-disabled FP32 with no GradScaler
+is selected for this attempt, with the recorded TF32 settings retained.
+The common cap and numerical policy remain unaccepted. C0/C1, the six fresh
+principal fits, mismatch H100 qualification and held-out evaluation remain
+unstarted. This is a dated snapshot, not a live status query.
+
+The [October 29 explicit report](docs/explicit_report_20261029.md) preserves
+budget C: both modes completed 12 epochs and finite checkpoint audits, but
+F2 had one AMP-skipped update, so paired numerical acceptance failed. Its exact
+Job/Pod cleanup is verified. Earlier dated reports preserve their own states.
 The [production-gradient recovery protocol](docs/production_gradient_diagnostic.md)
 specifies the bounded real-data diagnostic, matched replay cells, prospective
 stop-on-numerical-failure policy and conditional qualification-plus-budget run.

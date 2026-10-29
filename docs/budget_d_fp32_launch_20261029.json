@@ -1,0 +1,428 @@
+{
+  "admission_review": {
+    "admission_profile_sha256": "fd72b49302e381cbd489504d3203749215168e3a0d644efaec4fb57049dc8d04",
+    "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d-controller/admission/ADMISSION_REVIEW.json",
+    "sha256": "ff56698b11a01db6deaeaca59ba388677937920d9f1b968ba64f20b382d81c74"
+  },
+  "admitted_pod_spec_sha256": "626b032940706b89be9243d5b76443e76093e1469eb525478a5ea4def6650e68",
+  "context": "yding4_yn-gpu-workload@kubernetes-admin@kubernetes",
+  "controller_binding_sha256": "0c37d53655a4b5393fd4eb7d3e6d23ce9f262c7934de513ff6f086f6685b6462",
+  "documentation_preparation": {
+    "local_metadata_reads_only": true,
+    "model_fits_performed": 0,
+    "new_remote_queries_performed": 0,
+    "sealed_worker_or_source_mutations": 0,
+    "tensor_payload_reads": 0
+  },
+  "environment": {
+    "base_prefix": "/opt/conda/envs/swin3d",
+    "installations": 0,
+    "prefix": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/environments/radiomics-v1",
+    "python": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/environments/radiomics-v1/bin/python"
+  },
+  "interpretation": "Launch and preparation evidence only. New source/H100 production qualification and both fresh 12-epoch real-data trajectories remain pending at this non-atomic snapshot. Historical B/C/diagnostic evidence remains unchanged; no training-budget adequacy, strict IEEE-FP32, clinical benefit or held-out performance claim.",
+  "job": "trifusesurv2-budget-development-20261029d",
+  "job_uid": "3e44b2b8-6e59-4006-a3f1-6ecf7e2d38c6",
+  "launch_handoff_at_houston": "October 29, 2026, 11:37:37 AM CDT",
+  "launch_handoff_at_utc": "2026-10-29T16:37:37.873145+00:00",
+  "manifest_sha256": "47b63d8f0b3b86d4adf61464c1095d56a116adfef3e45256eb3ccfb3cb0f373a",
+  "namespace": "yn-gpu-workload",
+  "numerical_disposition": {
+    "diagnostic_report": {
+      "bytes": 27581387,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-output/matrix/DIAGNOSTIC.json",
+      "sha256": "2d024ee5eba9aeda095a8fc11ebc512ef52618095ba54e57597abee1abb7db3d"
+    },
+    "metadata_audit_sha256": "4b8f578d6445849d6a375811150ffe6df2d5edcdfbcf4f97cf3dd57b7f6d2ede",
+    "repository_path": "docs/production_numerical_disposition_20261029.json",
+    "worker_reference": {
+      "bytes": 12685,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d/inputs/numerical_disposition.json",
+      "sha256": "d1c060f65a002681535580292ee68d70d5dcd956bd399096d8a223aeb311c050"
+    }
+  },
+  "numerical_policy": {
+    "active_failure_policy": "zero_skip_stop_v1",
+    "amp": false,
+    "amp_init_scale": null,
+    "effective_backend_required_by_qualification": {
+      "cuda_matmul_allow_tf32": true,
+      "cudnn_allow_tf32": false,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": true,
+      "deterministic_algorithms": true,
+      "float32_matmul_precision": "high"
+    },
+    "effective_backend_verified_by_new_qualification": false,
+    "gradient_scaler": null,
+    "id": "production_fp32_zero_skip_stop_v3",
+    "production_policy_accepted": false,
+    "repository_reference": {
+      "bytes": 7079,
+      "path": "configs/production_numerical_policy_v3_candidate.json",
+      "sha256": "970c257c4e3b10826729afc9a93c67878f28a9d6c0c823392634a79194acfd40"
+    },
+    "requested_backend_settings": {
+      "allow_tf32": true,
+      "deterministic": true,
+      "matmul_precision": "high"
+    },
+    "selected_precision": "autocast_disabled_FP32",
+    "strict_IEEE_FP32_claim": false,
+    "worker_reference": {
+      "bytes": 7079,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d/inputs/production_numerical_policy.json",
+      "sha256": "970c257c4e3b10826729afc9a93c67878f28a9d6c0c823392634a79194acfd40"
+    }
+  },
+  "observation": {
+    "container_ready": true,
+    "container_restarts": 0,
+    "eta": "insufficient evidence",
+    "fit_progress": {},
+    "hardware": {
+      "compute_capability": [
+        9,
+        0
+      ],
+      "cuda_build": "12.8",
+      "name": "NVIDIA H100 80GB HBM3",
+      "torch_version": "2.9.1+cu128",
+      "total_memory_bytes": 85028372480,
+      "visible_device_count": 1
+    },
+    "job_present": true,
+    "patient_fit_invocations_reported_at_startup": 0,
+    "pod_phase": "Running",
+    "production_qualification": "pending_no_completion_receipt_at_snapshot",
+    "requested_gpu_count": 1,
+    "running_ready_gpu_count": 1,
+    "source_qualification": {
+      "completion_observed": false,
+      "start": {
+        "bytes": 425,
+        "fields": {
+          "stage": "qualify-source",
+          "started_at_utc": "2026-10-29T16:37:50.323976+00:00"
+        },
+        "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d-output/qualify-source-START.json",
+        "sha256": "658d7b499ff2fcac80cddb56abcde581ba97cfff9d662b2f9e125e39d238515d"
+      },
+      "status": "started"
+    },
+    "supervisor_identity": {
+      "cmdline_sha256": "f8c8cc74c0271a9ad8e39f3caca2d3baeb961b44ce5f9087428b7a9fd1e4076a",
+      "fqdn": "ldragon3.cm.cluster",
+      "hostname": "ldragon3",
+      "pid": 2573568,
+      "process_group": 2573568,
+      "session_id": 2573568,
+      "start_time_ticks": 421855749,
+      "tty_nr": 0
+    },
+    "supervisor_live_check": {
+      "bound_host": "ldragon3",
+      "current_host": "ldragon3",
+      "live_check": "exact_identity_alive"
+    },
+    "test_evaluation": "not_run"
+  },
+  "observed_archive_source_identity": {
+    "commit_sha": null,
+    "declared_commit_sha": "cdf7bd25ef82179f6c491286f1eaae7e8c2d0160",
+    "source_dirty": null,
+    "source_tree_sha256": "2d4715f019e6548e75ef517270fe8f0491e8a0a60b6715210edf7c1d25d164c4"
+  },
+  "pinned_image": "hpcharbor.mdanderson.edu/yding41/radiomics@sha256:bd8ad6777cbf704fbee7a1942f09e6a704ee718cf8bd198a7f65a0929cb6e161",
+  "plan": {
+    "bytes": 25956,
+    "path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/sealed/budget-development-d/PLAN.json",
+    "sha256": "dd3b82a4ddfd5132e1913198c1813f43079b8da5abf60a96be30e299f322e55b"
+  },
+  "pod": "trifusesurv2-budget-development-20261029d-6gmbs",
+  "pod_uid": "25a5ef84-6321-464d-a260-0540027bb436",
+  "preparation_evidence": {
+    "actual_Seadragon_host_controller": {
+      "host_gate_sha256": "ae4558cd452fb0ce892296951bb27012bc0263d204d7cef8e1e5dc3d06ee6745",
+      "model_or_GPU_work_performed_by_tests": false,
+      "python_executable": "/usr/libexec/platform-python3.6",
+      "tests_failed": 0,
+      "tests_run": 88
+    },
+    "actual_tiny_CPU_producer": {
+      "GradScaler": null,
+      "actual_top_level_checkpoint_auditor_CLI_fresh_process": true,
+      "epochs_each": 12,
+      "numerical_failure_policy": "zero_skip_stop_v1",
+      "path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-d/PRODUCER.json",
+      "production_gate_fixture_adapter": "Explicit tiny CPU metadata qualification only; never production H100 annotations/acceptance",
+      "sha256": "0f7262792d84afedd988cc2fb53393c034b89b7efa6076c2306604bef8f91cdc",
+      "skips_each": 0,
+      "successful_updates_each": 24
+    },
+    "actual_tiny_CPU_qualifier": {
+      "actual_successes_each_mode": 2,
+      "path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-d/tiny-qualification.json",
+      "scope": "tiny_CPU_FP32_active_policy",
+      "sha256": "1b773b65b8843888be75c053d733d34f22181e8693a240b122093fcda216c0d9",
+      "skips_each_mode": 0
+    },
+    "failed_local_final_gate_preserved": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d-operator/final-gate-a.failed.log",
+    "failed_producer_fixture_history_preserved": [
+      {
+        "directory": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-a",
+        "log_path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-a.log"
+      },
+      {
+        "directory": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-b",
+        "log_path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-b.log"
+      },
+      {
+        "directory": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-c",
+        "log_path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/producer-fixture-c.log"
+      }
+    ],
+    "full_source_fabricated_CPU_regression": {
+      "path": "/storage/TriFuseSurv/runs/study-20261028/numerical-followup-20261029-a/full-regressions-d.json",
+      "sha256": "ed64bc5ffdbbf2ac084a91389ac97f770ab1954623e83033171b36f738eaf623",
+      "subtests": 351,
+      "tests": 382
+    },
+    "local_controller": {
+      "preparation_receipt": {
+        "bytes": 673,
+        "path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d-operator/PUBLICATION_PREPARATION.json",
+        "sha256": "e1c50536472c82318824e455013bfbbf02a9c00a9582dfbe4a622fd46ebfc2d6"
+      },
+      "tests_passed": 88
+    },
+    "local_workload_qualification": {
+      "bytes": 4769,
+      "path": "/storage/TriFuseSurv/runs/study-20261028/budget-development-d/LOCAL_WORKLOAD_QUALIFICATION.json",
+      "sha256": "0752f537bec358672528de965d7b7696a83d301d42bd9c0196df37cadc8e657f"
+    },
+    "tiny_CPU_updates_are_not_production_552_updates": true
+  },
+  "publication": {
+    "bundles": [
+      {
+        "allowlist_sha256": "d3df4312baa230be418fb48463a529d20183f941c3f8d06db71cde766e346dbc",
+        "archive_sha256": "ce7341d018de9d086bc1fc63ff373c42de7aff0623c7b63ab15c65bf5fa7cbc7",
+        "destination": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d",
+        "files": 204,
+        "owner_gid": 600815,
+        "owner_uid": 307469,
+        "readback_verified": true,
+        "status": "immutable_bundle_published",
+        "verified_staging_archive_removed": true
+      },
+      {
+        "allowlist_sha256": "b4f7dbd2d5d490834c2948c7e913a60569e8111f225310dfac5e1272bab96188",
+        "archive_sha256": "451ffe5ad011835b7015be88d4e19051c15e1792b6136469afbcbd54e68f6b5b",
+        "destination": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d-controller",
+        "files": 60,
+        "owner_gid": 600815,
+        "owner_uid": 307469,
+        "readback_verified": true,
+        "status": "immutable_bundle_published",
+        "verified_staging_archive_removed": true
+      }
+    ],
+    "development_input_payload_verification": {
+      "files_verified": 4420,
+      "inventory_sha256": "1a19b0e820b0c3f655eb7cdde73c07d56b3dba4d6f2a70cefd93a5adcfb7393c",
+      "patient_count": 442,
+      "payload_bytes_verified": 709056957,
+      "test_payloads_included": false
+    },
+    "existing_radiomics_environment_reused": true,
+    "mac_relay_files_created": false,
+    "new_environment_created": false,
+    "parent_release": {
+      "failed_C_parent_preserved": {
+        "job": "trifusesurv2-budget-development-20261028c",
+        "owner_release": {
+          "bytes": 1414,
+          "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-parent-release.json",
+          "sha256": "6040344c6c67a7bb79bf73d30a116ede11602d6ea21169e1f8866036005c5e71"
+        },
+        "receipts": {
+          "cleanup": {
+            "bytes": 257,
+            "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-c-lifecycle/cleanup.json",
+            "sha256": "587af7fcc4de0a36c26e296a3f72567c6e33e1e304dfdbd9e942aeb71e187c6f"
+          },
+          "final": {
+            "bytes": 14459,
+            "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-c-output/FINAL.json",
+            "sha256": "640099a58d35241fcc75f4b8e7dd7d3542dc9ab99d9f6a927a37d34e7444004c"
+          },
+          "terminal": {
+            "bytes": 392,
+            "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-c-lifecycle/supervisor-terminal.json",
+            "sha256": "1c21689e674668629b05b552ecaa93b2265b4c08e3d5c8572d1628aead9a5f88"
+          }
+        },
+        "status": "numerically_failed_parent_preserved_and_cleaned",
+        "uid": "e8c1468d-1b19-4f60-b922-7bf2a1541587"
+      },
+      "job": "trifusesurv2-production-gradient-diagnostic-20261029a",
+      "numerical_disposition": {
+        "bytes": 12685,
+        "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d/inputs/numerical_disposition.json",
+        "sha256": "d1c060f65a002681535580292ee68d70d5dcd956bd399096d8a223aeb311c050"
+      },
+      "owner_release": {
+        "bytes": 1952,
+        "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d-parent-release.json",
+        "sha256": "29c244e2961ff932d52e9244be802331c8a454c43f1b13d8e88ff420186b7d85"
+      },
+      "parent_fit_reuse": {
+        "F2": false,
+        "F3": false
+      },
+      "receipts": {
+        "application": {
+          "bytes": 877,
+          "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-lifecycle/application-validation.json",
+          "sha256": "366158f0fdcdbab07de6ecb578fde3c837bf94c64232e85d9d46517090fb69ac"
+        },
+        "cleanup": {
+          "bytes": 269,
+          "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-lifecycle/cleanup.json",
+          "sha256": "3e6eb8ff98e846c9440e797d9e638ddb30ae383f6028515b53700e5db1feadb4"
+        },
+        "final": {
+          "bytes": 5203,
+          "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-output/FINAL.json",
+          "sha256": "fafa9c03d5ff1b126596643cfd9a89ceaf699510d6f1964b23a7bf28591a244f"
+        },
+        "report": {
+          "bytes": 27581387,
+          "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-output/matrix/DIAGNOSTIC.json",
+          "sha256": "2d024ee5eba9aeda095a8fc11ebc512ef52618095ba54e57597abee1abb7db3d"
+        },
+        "terminal": {
+          "bytes": 1182,
+          "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-lifecycle/supervisor-terminal.json",
+          "sha256": "ea47b5b58ced62b3b3e92c2d5ae0233bb7217e3a1c16c961ba8caa64ca30e5d3"
+        }
+      },
+      "status": "completed_diagnostic_parent_accepted_cleaned_owner_released",
+      "uid": "7ab92dcd-d4bc-4458-8b6b-393e4ad859c2"
+    }
+  },
+  "qualification_and_budget": {
+    "accepted_common_cap": null,
+    "allowed_nonfinite_events_each": 0,
+    "allowed_skips_each": 0,
+    "automatic_retries": 0,
+    "both_fresh": true,
+    "budget": {
+      "batch_size": 1,
+      "common_epochs": 12,
+      "grad_accumulation": 8,
+      "seed": 42,
+      "train_patients": 365
+    },
+    "cosine_T_max": 12,
+    "fresh_real_trajectories_accepted": false,
+    "maximum_H100s_including_Pending": 1,
+    "order": [
+      "current_affected_source_tests_and_shared_memory",
+      "both_full_production_F2_F3_Swin_survival_NLL_qualification",
+      "fresh_F2_fit_and_checkpoint_audit",
+      "fresh_F3_fit_and_checkpoint_audit",
+      "paired_budget_assessment"
+    ],
+    "parent_fit_reuse": {
+      "F2": false,
+      "F3": false
+    },
+    "planned_optimizer_opportunities_each": 552,
+    "production_qualification": {
+      "amp_enabled": false,
+      "amp_init_scale_override": null,
+      "autocast_enabled": false,
+      "clinical_type_policy": "approved_categorical_v1",
+      "fabricated_batches_each": 9,
+      "gradient_accumulation": 8,
+      "gradient_scaler_enabled": false,
+      "modes": [
+        "F2",
+        "F3"
+      ],
+      "numerical_failure_policy": "zero_skip_stop_v1",
+      "precision": "trainer-default",
+      "profile": "production",
+      "release_real_data_training_only_after_both_pass": true,
+      "required_actual_updates_each": 2,
+      "required_finite_gradients_state_and_post_update_survival_nll": true,
+      "required_full_partial_boundaries": true,
+      "required_skips_each": 0,
+      "script": "scripts/qualify_swin_survival.py",
+      "training_amp_init_scale": null
+    },
+    "required_successful_optimizer_updates_each": 552,
+    "whole_job_deadline": null
+  },
+  "receipt_bindings": {
+    "launch_handoff": {
+      "bytes": 5552,
+      "path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/budget-d-launch-a.json",
+      "sha256": "e69e31241aa3484e549fd736350676164740d69910e08aa8b566504969db82b2"
+    },
+    "publication_and_host_gate": {
+      "bytes": 16279,
+      "path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/budget-d-publication-a.json",
+      "sha256": "9b62d56ef3c71aa81cf9564abda23ed31b53500e740c59c521814215f5e0eb01"
+    },
+    "read_only_status": {
+      "bytes": 3251,
+      "path": "/storage/TriFuseSurv/runs/common-grid-h100-20261027/budget-d-status-a.json",
+      "sha256": "8b014c133f1d61c152f1ce6f9a3c6926297fb001917a20c231ec6ab784f58b88"
+    },
+    "startup": {
+      "bytes": 4148,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-development-d-output/STARTUP.json",
+      "sha256": "3d3a3b434439268c69e3509fe29ed972463aa17782a85c33094741b93641dfcc"
+    }
+  },
+  "report_kind": "dated_budget_D_FP32_launch_snapshot",
+  "schema_version": 1,
+  "scientific_status": {
+    "baseline_fits_started": 0,
+    "heldout_evaluation": "not_run",
+    "minimum_worthwhile_absolute_IBS_reduction": 0.005,
+    "mismatch_H100_qualification": "deferred",
+    "primary_metric": "paired_F3_minus_F2_IBS_210_to_730_days_across_seeds_42_142_242",
+    "principal_fits_started": 0,
+    "scientific_effect_threshold_used_for_numerical_policy_or_budget": false,
+    "scientific_result_available": false
+  },
+  "snapshot_at_houston": "October 29, 2026, 11:38:25 AM CDT",
+  "snapshot_at_utc": "2026-10-29T16:38:25.112924+00:00",
+  "snapshot_is_atomic": false,
+  "source": {
+    "commit_sha": "cdf7bd25ef82179f6c491286f1eaae7e8c2d0160",
+    "source_tree_sha256": "2d4715f019e6548e75ef517270fe8f0491e8a0a60b6715210edf7c1d25d164c4"
+  },
+  "source_archive_sha256": "e948196a4345e699ad49953f02b0d84b05230e5a73a91271e59490a53deee0c0",
+  "source_bindings": {
+    "ast_hash_interpreter": "CPython 3.10.14 ast.dump(include_attributes=False)",
+    "execution_commit_bound_by_release_plan": true,
+    "execution_source_tree_sha256": "2d4715f019e6548e75ef517270fe8f0491e8a0a60b6715210edf7c1d25d164c4",
+    "experiment_contract_file_sha256": "594c5d1bdb9f59fb3e1ea51d91a2530ff5f0b467599ca260188cab643e2e1a05",
+    "mapper_file_sha256": "b536f5b8abd25b12b26b178d432ea40e3f87060dab6243c255f8fd8f3d4b6ca1",
+    "qualifier_file_sha256": "d15aa981a3038218dcc563b963e505de054d6ccb312163c51ac1abbc8e7a6321",
+    "trainer_file_sha256": "bcfcc306f9560570cb93031f7cf4b8d630e67a0ad4aca9e5e1a995c92bbac75c",
+    "training_function_ast_sha256": {
+      "configure_cuda_performance": "475faa2d13eed111934a75e8daf5417493f68d4ee37c1d1931524e3dcbee97f8",
+      "make_amp": "6bedb1507d7305c0a0363958844d9981f0830253232d53921ddc5fa2eb5af760",
+      "perform_optimizer_update": "a7861c1d03f6f3c29f50f1f27d2d329c7da2ff850d341e8b3a3045318f41d6ab",
+      "train_one_epoch": "7de03b60952f47bbceb3bc73212fc4d0f1f90ebe2b0f6eacd7f0b7b719427e3e"
+    }
+  },
+  "status": "running_source_qualification",
+  "worker_sha256": "42a66d051daa4d28684f84309e6ee802b464c5187d1cd6fd4d04765bcbdb7a4f"
+}
