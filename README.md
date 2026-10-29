@@ -20,6 +20,11 @@ The [October 29 diagnostic activation record](docs/production_gradient_diagnosti
 records one verified H100 running the real-data diagnostic after the container
 source-test stage passed. Its numerical result and the successor budget release
 remain pending at the dated snapshot.
+The subsequent [full numerical disposition](docs/production_numerical_disposition_20261029.md)
+confirms update 27 and selects autocast-disabled FP32 for fresh qualification:
+scale 16,384 avoided the infinity but retained substantial gradient-magnitude
+and global-clipping differences. The new policy preserves the recorded TF32
+settings and requires a fresh qualified pair before any cap is accepted.
 
 Start with the [implementation and validation guide](docs/implementation_and_validation.md)
 for design decisions, lessons from revisions, evidence levels, and remaining work.

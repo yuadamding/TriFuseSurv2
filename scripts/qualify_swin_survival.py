@@ -112,8 +112,9 @@ def validate_settings(settings_by_mode, profile, comparison='paired-fusion'):
                     and settings['use_checkpoint'] is True and settings['grad_accumulation_steps'] == 8,
                     'Production qualification requires the declared full Swin/canvas and eight-batch accumulation')
             if comparison == 'routing-intervention':
-                require(settings.get('amp') is True and settings.get('amp_init_scale') is not None,
-                        'Production routing qualification requires an explicit bound CUDA AMP scale')
+                amp, scale = settings.get('amp'), settings.get('amp_init_scale')
+                require((amp is True and scale is not None) or (amp is False and scale is None),
+                        'Production routing qualification requires explicit AMP/scale or autocast-disabled FP32 settings')
         elif profile == 'tiny':
             require(settings['img_size'] == [32, 32, 32] and settings['feature_size'] == 12
                     and settings['depths'] == [1, 1, 1, 1], 'Tiny engineering fixture shape differs')
@@ -549,6 +550,7 @@ def qualify_mode(trainer, settings, options, record):
         if device.type == 'cuda': rng_states.append(('cuda', torch.cuda.get_rng_state(device)))
         record['initial_rng_state_sha256'] = tensor_sha256(rng_states)
         record['bound_training_amp_init_scale'] = settings.get('amp_init_scale')
+        record['bound_training_amp_enabled'] = settings['amp']
     groups, required = active_names(model)
     record['expected_active_parameter_names'] = required
     controls = {key: settings[key] for key in inspect.signature(trainer.make_param_groups).parameters if key != 'mm'}
@@ -677,15 +679,25 @@ def validate_routing_comparison_report(report, *, profile='production'):
             precision = record.get('precision', {})
             scale = record.get('bound_training_amp_init_scale')
             state = precision.get('scaler')
-            require(precision.get('selection') == 'trainer-default'
-                    and type(scale) in (int, float) and math.isfinite(scale) and scale > 0
-                    and isinstance(state, dict) and state.get('scale') == scale,
-                    'Production routing qualification must use the bound trainer scale, not a diagnostic override')
+            require(precision.get('selection') == 'trainer-default',
+                    'Production routing qualification must use the bound trainer policy, not a diagnostic override')
+            if record.get('bound_training_amp_enabled') is False:
+                require(scale is None and state is None and precision.get('autocast_enabled') is False
+                        and precision.get('dtype') == 'torch.float32',
+                        'Bound FP32 routing qualification must disable autocast and have no scaler or initial scale')
+            else:
+                # Historical FP16 reports retain their strict explicit-scale requirement.
+                require(record.get('bound_training_amp_enabled', True) is True
+                        and type(scale) in (int, float) and math.isfinite(scale) and scale > 0
+                        and precision.get('autocast_enabled') is True and precision.get('dtype') == 'torch.float16'
+                        and isinstance(state, dict) and state.get('scale') == scale,
+                        'Production routing qualification must use the bound trainer scale, not a diagnostic override')
     left, right = modes['F3'], modes[ROUTING_EXPORT_LABEL]
     identity_keys = ('initial_state_sha256', 'initial_rng_state_sha256', 'input_identity',
                      'parameters', 'trainable_parameters')
     require(all(left.get(key) is not None and left[key] == right.get(key) for key in identity_keys)
-            and left.get('bound_training_amp_init_scale') == right.get('bound_training_amp_init_scale'),
+            and left.get('bound_training_amp_init_scale') == right.get('bound_training_amp_init_scale')
+            and left.get('bound_training_amp_enabled', True) is right.get('bound_training_amp_enabled', True),
             'Matched/intervention initial states, RNG state, inputs, parameters or numerical policy differ')
     return {'status': 'passed_source_bound_routing_numerical_comparison', 'profile': profile,
             'routing_design': report['routing_design'], 'modes': ['F3', ROUTING_EXPORT_LABEL],

@@ -1,0 +1,132 @@
+{
+  "accumulation_and_update": {
+    "actual_optimizer_call_observation": "register_step_post_hook",
+    "batches_per_effective_batch": 8,
+    "clipping": "Original max_norm1.0 clipping after preclip numerical evidence; active policy stops before mutation on invalid gradients.",
+    "gradient_observation": "After accumulation, before clipping; all observed gradients remain unscaled.",
+    "scale_constant_within_accumulation": "not_applicable_no_scaler",
+    "skipped_update_accounting": "552 actual successful updates required per mode; first disqualifying event writes exclusive receipt and terminates before next epoch/mode.",
+    "unscale_calls_per_opportunity": 0
+  },
+  "applies_equally_to": [
+    "F2",
+    "F3"
+  ],
+  "autocast": {
+    "device_type": "cuda",
+    "dtype": "torch.float32",
+    "enabled": false,
+    "selection": "trainer.make_amp with enabled=False; bound trainer-default qualification",
+    "strict_IEEE_FP32_reference": false
+  },
+  "backend_effective_policy": "Call the unchanged trainer.set_seed and configure_cuda_performance with bound settings. Retain effective backend observations for both modes; compare with the same configured training path, not diagnostic defaults.",
+  "backend_requested_settings": {
+    "allow_tf32": true,
+    "deterministic": true,
+    "matmul_precision": "high"
+  },
+  "decision": "select_autocast_disabled_FP32_for_prospective_qualification",
+  "decision_at_utc": "2026-10-29T16:12:21.543185+00:00",
+  "decision_rationale": "The exact captured real-data update reproduced the scale32768 overflow. Scale16384 was finite but had global gradient relative-L2 difference1.570076887 and cosine0.946134517 versus the actual autocast-disabled FP32 cell, with consequential global clipping changes. Select the tested FP32 no-autocast path with the same recorded TF32/backend conditions; no production acceptance is declared until exact-source qualification and a fresh paired trajectory pass.",
+  "failure_handling": "Any qualification failure prevents all patient fits. The first disqualifying forward, required-gradient, elementwise-gradient, aggregate-norm or actual-update event preserves an exclusive numerical-failure receipt and terminates the paired attempt. No second mode, automatic retry, numerical tolerance or precision change follows.",
+  "gradient_scaler": {
+    "backoff_factor": null,
+    "class": null,
+    "device": "cuda",
+    "enabled": false,
+    "growth_factor": null,
+    "growth_interval": null,
+    "init_scale": null,
+    "initial_scale_override": null
+  },
+  "numerical_failure_policy": "zero_skip_stop_v1",
+  "paired_budget_requalification": {
+    "automatic_retries": 0,
+    "both_fresh": true,
+    "cosine_T_max": 12,
+    "epochs": 12,
+    "historical_F2_reused_as_candidate_fit": false,
+    "modes": [
+      "F2",
+      "F3"
+    ],
+    "planned_opportunities_per_mode": 552,
+    "require_all_planned_updates_successful": true,
+    "same_previous_budget_rule": true,
+    "seed": 42
+  },
+  "policy_id": "production_fp32_zero_skip_stop_v3",
+  "predecessor_policy": {
+    "historical_qualification_remains_valid_for_its_fixture": true,
+    "historical_real_pair_accepted": false,
+    "path": "configs/production_numerical_policy_v2_candidate.json",
+    "sha256": "5a4595bd4f89d76d3ba535c1faa9dc9747b0be9a223f93c87ad3f230df252c7a"
+  },
+  "production_numerical_behavior_changed": true,
+  "qualification": {
+    "amp_enabled": false,
+    "amp_init_scale_override": null,
+    "autocast_enabled": false,
+    "clinical_type_policy": "approved_categorical_v1",
+    "fabricated_batches_each": 9,
+    "gradient_accumulation": 8,
+    "gradient_scaler_enabled": false,
+    "modes": [
+      "F2",
+      "F3"
+    ],
+    "numerical_failure_policy": "zero_skip_stop_v1",
+    "precision": "trainer-default",
+    "profile": "production",
+    "release_real_data_training_only_after_both_pass": true,
+    "required_actual_updates_each": 2,
+    "required_finite_gradients_state_and_post_update_survival_nll": true,
+    "required_full_partial_boundaries": true,
+    "required_skips_each": 0,
+    "script": "scripts/qualify_swin_survival.py",
+    "training_amp_init_scale": null
+  },
+  "real_cohort_evidence": {
+    "accepted_budget": false,
+    "diagnostic_report": {
+      "bytes": 27581387,
+      "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-output/matrix/DIAGNOSTIC.json",
+      "sha256": "2d024ee5eba9aeda095a8fc11ebc512ef52618095ba54e57597abee1abb7db3d"
+    },
+    "fresh_FP32_budget_fits": 0,
+    "metadata_audit_sha256": "4b8f578d6445849d6a375811150ffe6df2d5edcdfbcf4f97cf3dd57b7f6d2ede",
+    "path": "docs/production_numerical_disposition_20261029.json",
+    "scope": "Matched captured-window actual production-path numerical diagnosis; no held-out scoring.",
+    "sha256": "d1c060f65a002681535580292ee68d70d5dcd956bd399096d8a223aeb311c050"
+  },
+  "release_requirements": [
+    "Fresh exact predecessor Job/owned-Pod absence and bound-owner absence release, without repeating administrator-fencing questions.",
+    "New source/policy/disposition/inputs/manifest/controller bindings and one-H100 cap including Pending.",
+    "Explicit FP32/noScaler qualification, checkpoint-audit and assessment consumers; historical FP16 hardcoded validators cannot release this policy.",
+    "Both full production Swin/survival-NLL modes pass actual H100 trainer-default/no-autocast qualification before any patient fit.",
+    "Both fresh seed42 fits complete552 actual successful updates without disqualifying numerical events; then apply unchanged common-budget curve rule."
+  ],
+  "required_training_argument": {
+    "amp": false,
+    "amp_init_scale": null,
+    "numerical_failure_policy": "zero_skip_stop_v1",
+    "unconfigured_default": "This prospective release explicitly binds autocast disabled and no scaler; it does not alter historical AMP runs."
+  },
+  "schema_version": 1,
+  "source_bindings": {
+    "ast_hash_interpreter": "CPython 3.10.14 ast.dump(include_attributes=False)",
+    "execution_commit_bound_by_release_plan": true,
+    "execution_source_tree_sha256": "2d4715f019e6548e75ef517270fe8f0491e8a0a60b6715210edf7c1d25d164c4",
+    "experiment_contract_file_sha256": "594c5d1bdb9f59fb3e1ea51d91a2530ff5f0b467599ca260188cab643e2e1a05",
+    "mapper_file_sha256": "b536f5b8abd25b12b26b178d432ea40e3f87060dab6243c255f8fd8f3d4b6ca1",
+    "qualifier_file_sha256": "d15aa981a3038218dcc563b963e505de054d6ccb312163c51ac1abbc8e7a6321",
+    "trainer_file_sha256": "bcfcc306f9560570cb93031f7cf4b8d630e67a0ad4aca9e5e1a995c92bbac75c",
+    "training_function_ast_sha256": {
+      "configure_cuda_performance": "475faa2d13eed111934a75e8daf5417493f68d4ee37c1d1931524e3dcbee97f8",
+      "make_amp": "6bedb1507d7305c0a0363958844d9981f0830253232d53921ddc5fa2eb5af760",
+      "perform_optimizer_update": "a7861c1d03f6f3c29f50f1f27d2d329c7da2ff850d341e8b3a3045318f41d6ab",
+      "train_one_epoch": "7de03b60952f47bbceb3bc73212fc4d0f1f90ebe2b0f6eacd7f0b7b719427e3e"
+    }
+  },
+  "status": "prospective_policy_pending_new_source_H100_and_paired_budget_qualification"
+}

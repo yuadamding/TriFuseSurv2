@@ -190,6 +190,67 @@ class QualificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'full Swin'):
             qualification.validate_settings(tiny_settings(), 'production')
 
+    def test_production_routing_settings_explicitly_support_bound_FP32_and_legacy_FP16(self):
+        values = tiny_routing_settings()
+        for settings in values.values():
+            settings.update(img_size=[96, 160, 96], feature_size=96, depths=[2, 2, 18, 2],
+                            num_heads=[3, 6, 12, 24], grad_accumulation_steps=8,
+                            amp=False, amp_init_scale=None)
+        qualification.validate_settings(values, 'production', 'routing-intervention')
+        for amp, scale, accepted in [(True, 16384., True), (True, None, False),
+                                      (False, 16384., False), (None, None, False)]:
+            changed = copy.deepcopy(values)
+            for settings in changed.values(): settings.update(amp=amp, amp_init_scale=scale)
+            with self.subTest(amp=amp, scale=scale):
+                if accepted:
+                    qualification.validate_settings(changed, 'production', 'routing-intervention')
+                else:
+                    with self.assertRaises(ValueError):
+                        qualification.validate_settings(changed, 'production', 'routing-intervention')
+
+    def test_FP32_trainer_default_uses_no_scaler_and_rejects_a_scale_override(self):
+        trainer = SimpleNamespace(make_amp=Mock(return_value=(None, contextlib.nullcontext)))
+        scaler, autocast, precision = qualification.make_precision(
+            trainer, torch.device('cuda:0'), 'trainer-default', None, False, training_init_scale=None)
+        trainer.make_amp.assert_called_once_with(torch.device('cuda:0'), enabled=False)
+        self.assertIsNone(scaler)
+        self.assertEqual(precision, {'autocast_enabled': False, 'dtype': 'torch.float32', 'scaler': None,
+            'selection': 'trainer-default', 'production_policy_adopted_by_this_script': False})
+        with self.assertRaises(ValueError):
+            qualification.make_precision(trainer, torch.device('cuda:0'), 'trainer-default', None, False,
+                                          training_init_scale=16384.)
+
+    def test_production_routing_FP32_consumer_requires_explicit_no_autocast_no_scaler(self):
+        # Actual tiny producer; only production sizes/hardware/counts are simulated
+        # here to exercise metadata rejection. This is no H100 qualification claim.
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            options = SimpleNamespace(profile='tiny', comparison='routing-intervention', device='cpu',
+                precision='fp32', amp_init_scale=None, batches=3, container_image='fabricated',
+                output=Path(temporary) / 'tiny.json')
+            report = qualification.run(tiny_routing_settings(), options)
+        self.assertEqual(report['status'], 'passed', report.get('error'))
+        report.update(profile='production', device='cuda:0', comparison_batches=9, comparison_accumulation=8,
+                      hardware={'visible_device_count': 1, 'name': 'SIMULATED H100',
+                                'compute_capability': [9, 0], 'total_memory_bytes': 80 * 1024**3})
+        for row in report['modes'].values():
+            row['training_statistics']['training_batches'] = 9
+            row['routing_execution']['phases']['training'] *= 3
+            row['precision'] = {'autocast_enabled': False, 'dtype': 'torch.float32', 'scaler': None,
+                'selection': 'trainer-default', 'production_policy_adopted_by_this_script': False}
+            row['bound_training_amp_enabled'] = False
+            row['bound_training_amp_init_scale'] = None
+        qualification.validate_routing_comparison_report(report, profile='production')
+        for field, value in [('bound_training_amp_enabled', True), ('bound_training_amp_enabled', None),
+                             ('bound_training_amp_init_scale', 16384.)]:
+            broken = copy.deepcopy(report); broken['modes']['F3'][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                qualification.validate_routing_comparison_report(broken, profile='production')
+        for field, value in [('selection', 'fp32'), ('autocast_enabled', True),
+                             ('dtype', 'torch.float16'), ('scaler', {'scale': 16384.})]:
+            broken = copy.deepcopy(report); broken['modes']['F3']['precision'][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                qualification.validate_routing_comparison_report(broken, profile='production')
+
     def test_wrong_policy_or_mismatched_pair_rejected(self):
         for change in ('legacy_policy', 'staging_column', 'pair_lr'):
             values = tiny_settings()

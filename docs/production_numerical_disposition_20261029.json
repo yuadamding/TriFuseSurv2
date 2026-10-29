@@ -1,0 +1,274 @@
+{
+  "audit_receipt": {
+    "local_path": "/storage/TriFuseSurv/runs/study-20261028/numerical-recovery-d-20261029/numerical-review-a/AUDIT.json",
+    "script_sha256": "06002694d6a1a6cd7473f420ecb0c0358c54943847919667e878e3e81834170a",
+    "sha256": "4b8f578d6445849d6a375811150ffe6df2d5edcdfbcf4f97cf3dd57b7f6d2ede"
+  },
+  "backend_requested_settings": {
+    "allow_tf32": true,
+    "deterministic": true,
+    "matmul_precision": "high"
+  },
+  "basis_excludes_validation_NLL": true,
+  "cell_results": {
+    "fp16_scale16384": {
+      "actual_attempts": 1,
+      "actual_skips": 0,
+      "actual_successes": 1,
+      "missing_required_gradient_count": 0,
+      "preclip_robust_finite_element_global_norm": 60.91825722870156,
+      "resulting_state": {
+        "all_tensors_finite": true,
+        "nonfinite_names": [],
+        "tensors_checked": 2169
+      },
+      "status": "passed_numerical"
+    },
+    "fp16_scale32768": {
+      "actual_attempts": 1,
+      "actual_skips": 1,
+      "actual_successes": 0,
+      "missing_required_gradient_count": 0,
+      "preclip_robust_finite_element_global_norm": 60.87458370127188,
+      "resulting_state": {
+        "all_tensors_finite": true,
+        "nonfinite_names": [],
+        "tensors_checked": 2169
+      },
+      "status": "failed_numerical"
+    },
+    "fp32": {
+      "actual_attempts": 1,
+      "actual_skips": 0,
+      "actual_successes": 1,
+      "missing_required_gradient_count": 0,
+      "preclip_robust_finite_element_global_norm": 24.539420466877473,
+      "resulting_state": {
+        "all_tensors_finite": true,
+        "nonfinite_names": [],
+        "tensors_checked": 2169
+      },
+      "status": "passed_numerical"
+    }
+  },
+  "decision_at_utc": "2026-10-29T16:12:21.543185+00:00",
+  "decision_rationale": [
+    "Historical scale32768 reproduced the original preclip nonfinite-gradient event and skipped update.",
+    "Scale16384 and autocast-disabled FP32 each executed one successful matched update with finite required gradients, state and following survival NLL.",
+    "Scale16384 has substantial Swin gradient magnitude amplification and global normalization effects compared with the actual FP32 comparison.",
+    "The scale16384-versus-FP32 discrepancy is not explained by the sparse zero mismatches alone and is not confined to the one nonfinite bias element.",
+    "Using the already exercised FP32 comparison for prospective qualification avoids declaring finiteness alone sufficient numerical fidelity."
+  ],
+  "diagnostic_backend_observed": {
+    "allow_bf16_reduced_precision_reduction": true,
+    "allow_fp16_reduced_precision_reduction": true,
+    "cudnn_allow_tf32": false,
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": true,
+    "cudnn_enabled": true,
+    "cudnn_sdp_enabled": true,
+    "deterministic_algorithms": true,
+    "deterministic_warn_only": true,
+    "flash_sdp_enabled": true,
+    "float32_matmul_precision": "high",
+    "math_sdp_enabled": true,
+    "matmul_allow_tf32": true,
+    "mem_efficient_sdp_enabled": true
+  },
+  "diagnostic_report": {
+    "bytes": 27581387,
+    "path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/production-gradient-diagnostic-a-output/matrix/DIAGNOSTIC.json",
+    "sha256": "2d024ee5eba9aeda095a8fc11ebc512ef52618095ba54e57597abee1abb7db3d"
+  },
+  "diagnostic_report_sha256": "2d024ee5eba9aeda095a8fc11ebc512ef52618095ba54e57597abee1abb7db3d",
+  "fresh_trajectory_accepted": false,
+  "gradient_comparison": {
+    "automatic_acceptance_tolerance": null,
+    "comparison": "FP16 initial replay scale16384 versus autocast-disabled FP32, identical captured state/inputs/RNG",
+    "derived_quantities": {
+      "cosine": "(candidate_norm^2 + reference_norm^2 - difference_norm^2) / (2*candidate_norm*reference_norm)",
+      "group_classification": {
+        "other_backbone_and_localizer": "name starts 'backbone.' after excluding Swin",
+        "other_fusion_and_projection": "all remaining observed gradient parameters",
+        "survival_heads": "remaining name contains 'survival_heads.'",
+        "swin_backbone": "name starts 'backbone.backbone_shared.swinViT.'"
+      },
+      "group_norms": "square root of sum of per-parameter squared L2 norms over the stated name classification",
+      "per_parameter_difference_norm": "reported_relative_l2_on_joint_finite * reference_l2_norm; if reference norm is zero use candidate norm",
+      "unit_global_normalized_difference": "Use each recorded actual global clipping norm as divisor; compare vectors after unit global normalization. This is an approximation to clipping and omits the framework clipping epsilon."
+    },
+    "global": {
+      "candidate_preclip_l2_norm": 60.918257228701584,
+      "candidate_zero_reference_nonzero_fraction": 4.0078768725761545e-06,
+      "candidate_zero_where_reference_nonzero": 365,
+      "cosine_derived": 0.9461345166824162,
+      "difference_l2_norm_derived": 38.52877689674183,
+      "element_count": 91070662,
+      "reference_preclip_l2_norm": 24.5394204668775,
+      "reference_zero_where_candidate_nonzero": 6,
+      "relative_l2_difference_derived": 1.5700768870539021,
+      "tensor_count": 528,
+      "unit_global_normalized_relative_l2_difference_derived": 0.32822395828165096
+    },
+    "groups": {
+      "other_backbone_and_localizer": {
+        "candidate_preclip_l2_norm": 4.1310378431151875,
+        "candidate_zero_reference_nonzero_fraction": 9.866577661914009e-06,
+        "candidate_zero_where_reference_nonzero": 256,
+        "cosine_derived": 0.999540812726688,
+        "difference_l2_norm_derived": 0.12994359911522022,
+        "element_count": 25946180,
+        "reference_preclip_l2_norm": 4.1640184319099545,
+        "reference_zero_where_candidate_nonzero": 0,
+        "relative_l2_difference_derived": 0.031206297772226145,
+        "tensor_count": 46,
+        "unit_global_normalized_relative_l2_difference_derived": 0.6006707235412797
+      },
+      "other_fusion_and_projection": {
+        "candidate_preclip_l2_norm": 8.315417468002984,
+        "candidate_zero_reference_nonzero_fraction": 6.131904069767442e-06,
+        "candidate_zero_where_reference_nonzero": 27,
+        "cosine_derived": 0.9999921100010337,
+        "difference_l2_norm_derived": 0.033121306244442844,
+        "element_count": 4403200,
+        "reference_preclip_l2_norm": 8.312923104747826,
+        "reference_zero_where_candidate_nonzero": 6,
+        "relative_l2_difference_derived": 0.003984315243518373,
+        "tensor_count": 132,
+        "unit_global_normalized_relative_l2_difference_derived": 0.5970590673631502
+      },
+      "survival_heads": {
+        "candidate_preclip_l2_norm": 8.401625543341178,
+        "candidate_zero_reference_nonzero_fraction": 0.0,
+        "candidate_zero_where_reference_nonzero": 0,
+        "cosine_derived": 0.9999989767583015,
+        "difference_l2_norm_derived": 0.012025229848110084,
+        "element_count": 314560,
+        "reference_preclip_l2_norm": 8.402004844948651,
+        "reference_zero_where_candidate_nonzero": 0,
+        "relative_l2_difference_derived": 0.0014312333865577026,
+        "tensor_count": 24,
+        "unit_global_normalized_relative_l2_difference_derived": 0.5971934890772951
+      },
+      "swin_backbone": {
+        "candidate_preclip_l2_norm": 59.61740610495652,
+        "candidate_zero_reference_nonzero_fraction": 1.3574648198920643e-06,
+        "candidate_zero_where_reference_nonzero": 82,
+        "cosine_derived": 0.9997055967871438,
+        "difference_l2_norm_derived": 38.528541656710516,
+        "element_count": 60406722,
+        "reference_preclip_l2_norm": 21.098476992165306,
+        "reference_zero_where_candidate_nonzero": 0,
+        "relative_l2_difference_derived": 1.8261290457608705,
+        "tensor_count": 326,
+        "unit_global_normalized_relative_l2_difference_derived": 0.14065596880014297
+      }
+    }
+  },
+  "localized_event": {
+    "attempted_update": 27,
+    "captured_microbatches": [
+      209,
+      216
+    ],
+    "first_faulty_autograd_operation_identified": false,
+    "first_nonfinite_scaled_accumulation_microbatch": 215,
+    "nonfinite_scaled_accumulation_microbatches": [
+      215,
+      216
+    ],
+    "observation_boundary": "after backward accumulation; unscaled once and observed before clipping",
+    "preclip_nonfinite_elements": {
+      "elements": 96,
+      "nan": 0,
+      "negative_inf": 1,
+      "positive_inf": 0
+    },
+    "preclip_nonfinite_parameter": "backbone.backbone_shared.swinViT.patch_embed.proj.bias"
+  },
+  "matched_replay_identity": {
+    "model_state_sha256": "fccec39fdcb23325196f4f98f634c927a8a97065e9e6855edc65a4871a050d77",
+    "optimizer_state_sha256": "78ee0c63eea7ff296e3e4a2d806f6231c959b63b6badabee4c010c5e36463802",
+    "pre_window_scaler_state": {
+      "_growth_tracker": 26,
+      "backoff_factor": 0.5,
+      "growth_factor": 2.0,
+      "growth_interval": 2000,
+      "scale": 32768.0
+    },
+    "rng_state_sha256": "7e5b943e447bd1030154f58a75702d454e2814cf21a53f4a8a959d113f02a748",
+    "transformed_batches_sha256": "32117e5b2ef424b8d83572fbaf37a8e3675b972bd89769f09a7ea4bf48358bcf"
+  },
+  "numerical_failure_policy": "zero_skip_stop_v1",
+  "original_epoch": {
+    "attempts": 46,
+    "final_partial_microbatches": 5,
+    "full_accumulations": 45,
+    "loss_divisor": 8,
+    "nonfinite_gradient_updates": 1,
+    "scaler_method_calls": {
+      "load_state_dict": 0,
+      "unscale_": 46,
+      "update": 46
+    },
+    "skips": 1,
+    "successful_updates": 45,
+    "training_batches": 365
+  },
+  "original_replay_A_checks": {
+    "accumulation_normalized_total_loss": true,
+    "actual_clipping_norm": true,
+    "actual_loss_divisor": true,
+    "actual_optimizer_call_delta": true,
+    "after_unscale_before_clip": true,
+    "aggregate_norm_nonfinite": true,
+    "endpoints": true,
+    "one_replay_update": true,
+    "optimizer_steps_skipped": true,
+    "optimizer_steps_succeeded": true,
+    "same_microbatch_count": true,
+    "scaled_gradients_after_backward": true,
+    "scaled_loss": true,
+    "scaler_after": true,
+    "scaler_before": true,
+    "unscaled_total_loss_before_accumulation_divisor": true
+  },
+  "post_hoc_acceptance_threshold_added": false,
+  "preserved_history": {
+    "budget_C_acceptance": "numerical_review_required",
+    "historical_policy_sha256": "5a4595bd4f89d76d3ba535c1faa9dc9747b0be9a223f93c87ad3f230df252c7a",
+    "scale16384_compact_diagnostic_candidate": "finite captured-window candidate; not selected after gradient-fidelity review"
+  },
+  "production_policy_accepted": false,
+  "required_next_gate": [
+    "New exact source/settings/policy bindings with autocast disabled, no GradScaler and original recorded TF32/backend settings.",
+    "Full production F2/F3 qualification including actual full/partial accumulation, successful updates and finite required gradients/state/following NLL.",
+    "Fresh paired 12-epoch F2/F3 seed42 runs, complete T_max12 schedule,552 successful updates and zero disqualifying numerical events each.",
+    "Apply the unchanged curve rule only after numerical acceptance; preserve failed C and diagnostic evidence."
+  ],
+  "schema_version": 1,
+  "scientific_source_of_diagnostic": {
+    "commit_sha": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+    "source_tree_sha256": "43db0d27b34ff38ebd90d2c13193cdd968680fcc410d4e2ac87f0a8e9ec06e1b"
+  },
+  "selected_initial_scale": null,
+  "selected_policy_id": "production_fp32_zero_skip_stop_v3",
+  "selected_precision": "autocast_disabled_FP32",
+  "source_bindings": {
+    "ast_hash_interpreter": "CPython 3.10.14 ast.dump(include_attributes=False)",
+    "execution_commit_bound_by_release_plan": true,
+    "execution_source_tree_sha256": "2d4715f019e6548e75ef517270fe8f0491e8a0a60b6715210edf7c1d25d164c4",
+    "experiment_contract_file_sha256": "594c5d1bdb9f59fb3e1ea51d91a2530ff5f0b467599ca260188cab643e2e1a05",
+    "mapper_file_sha256": "b536f5b8abd25b12b26b178d432ea40e3f87060dab6243c255f8fd8f3d4b6ca1",
+    "qualifier_file_sha256": "d15aa981a3038218dcc563b963e505de054d6ccb312163c51ac1abbc8e7a6321",
+    "trainer_file_sha256": "bcfcc306f9560570cb93031f7cf4b8d630e67a0ad4aca9e5e1a995c92bbac75c",
+    "training_function_ast_sha256": {
+      "configure_cuda_performance": "475faa2d13eed111934a75e8daf5417493f68d4ee37c1d1931524e3dcbee97f8",
+      "make_amp": "6bedb1507d7305c0a0363958844d9981f0830253232d53921ddc5fa2eb5af760",
+      "perform_optimizer_update": "a7861c1d03f6f3c29f50f1f27d2d329c7da2ff850d341e8b3a3045318f41d6ab",
+      "train_one_epoch": "7de03b60952f47bbceb3bc73212fc4d0f1f90ebe2b0f6eacd7f0b7b719427e3e"
+    }
+  },
+  "status": "prospective_numerical_disposition_requires_full_production_and_fresh_pair_qualification",
+  "strict_IEEE_FP32_claim": false
+}
