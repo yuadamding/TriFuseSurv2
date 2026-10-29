@@ -2056,7 +2056,131 @@ def save_endpoint_risk_dict_csv(
 # =============================================================================
 # Training
 # =============================================================================
-def perform_optimizer_update(model, optimizer, scaler=None):
+NUMERICAL_FAILURE_POLICY = "zero_skip_stop_v1"
+
+
+class NumericalTrainingFailure(RuntimeError):
+    """The bound zero-skip experiment is ineligible; its receipt is preserved."""
+
+
+def _numerical_policy_contract(args):
+    policy = getattr(args, "numerical_failure_policy", None)
+    if policy is None:
+        return {}
+    if policy != NUMERICAL_FAILURE_POLICY:
+        raise ValueError("Unknown numerical_failure_policy")
+    return {"numerical_failure_policy": policy, "numerical_failure_receipt_schema": 1,
+            "numerical_failure_action": "stop_on_first_nonfinite_forward_required_gradient_or_clipping_norm_or_optimizer_skip"}
+
+
+def _checkpoint_numerical_metadata(checkpoint):
+    """Reject saved policy/contract drift before restoring active-policy state."""
+    args = checkpoint.get("args") or {}
+    expected = _numerical_policy_contract(argparse.Namespace(numerical_failure_policy=args.get("numerical_failure_policy")))
+    contract = (checkpoint.get("encoders") or {}).get("model_contract") or {}
+    embedded = {key: contract[key] for key in ("numerical_failure_policy", "numerical_failure_receipt_schema", "numerical_failure_action") if key in contract}
+    if expected != embedded:
+        raise ValueError("Numerical failure policy checkpoint arguments and model contract disagree")
+    if expected:
+        spec = contract.get("experiment_spec") or {}
+        if spec.get("settings", {}).get("numerical_failure_policy") != expected["numerical_failure_policy"]:
+            raise ValueError("Numerical failure policy checkpoint experiment settings disagree")
+        if any(spec.get("runtime", {}).get(key) != value for key, value in expected.items()):
+            raise ValueError("Numerical failure policy checkpoint runtime contract disagrees")
+    return expected
+
+
+def _numerical_json_safe(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return {"nonfinite_numeric_value": repr(value)}
+    if isinstance(value, dict):
+        return {str(k): _numerical_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_numerical_json_safe(v) for v in value]
+    return value
+
+
+def _required_numerical_gradients(model):
+    """Match the production qualifier's concrete active-path requirements."""
+    named = dict(_unwrap_model(model).named_parameters())
+    groups = {"os": [n for n, p in named.items() if p.requires_grad and n.startswith("habitat_model.survival_heads.endpoint_residuals.OS.")],
+              "shared": [n for n, p in named.items() if p.requires_grad and n.startswith((
+                  "habitat_model.survival_heads.shared.", "habitat_model.survival_heads.shared_logits."))]}
+    heads = groups["os"] + groups["shared"]
+    backbone = [n for n, p in named.items() if p.requires_grad
+                and n.startswith("backbone.backbone_shared.swinViT.")
+                and (n.endswith("patch_embed.proj.weight") or n.endswith("layers1.0.blocks.0.attn.qkv.weight"))]
+    if not all(groups.values()) or len(backbone) != 2:
+        raise ValueError("Numerical policy requires the production named Swin/survival paths")
+    return sorted(heads + backbone)
+
+
+def observe_preclip_gradients(model, required):
+    """Read detached gradients only; float64 norms distinguish reduction overflow."""
+    rows, missing, nonfinite = {}, [], []
+    robust_norm = 0.0
+    for name, parameter in _unwrap_model(model).named_parameters():
+        grad = parameter.grad
+        if grad is None:
+            missing.append(name)
+            continue
+        value = grad.detach()
+        if value.is_sparse:
+            value = value.coalesce().values()
+        finite = torch.isfinite(value)
+        clean = value[finite].double()
+        maximum = float(clean.abs().max().item()) if clean.numel() else 0.0
+        norm = maximum * math.sqrt(float(((clean / maximum) ** 2).sum().item())) if maximum else 0.0
+        robust_norm = math.hypot(robust_norm, norm)
+        row = {"dtype": str(value.dtype), "elements": value.numel(),
+               "nan_elements": int(torch.isnan(value).sum().item()),
+               "infinite_elements": int(torch.isinf(value).sum().item()),
+               "maximum_finite_absolute_value": maximum if clean.numel() else None,
+               "finite_elements_l2_norm_float64": norm}
+        rows[name] = row
+        if row["nan_elements"] or row["infinite_elements"]:
+            nonfinite.append(name)
+    return {"phase": "after_unscale_before_clip", "parameters": rows,
+            "gradient_tensor_count": len(rows), "grad_none": missing,
+            "required_parameter_names": list(required),
+            "missing_required_parameters": sorted(set(required) & set(missing)),
+            "nonfinite_parameters": nonfinite, "finite_elements_global_l2_norm_float64": robust_norm}
+
+
+def _numerical_state_summary(model, optimizer):
+    bad_model, bad_optimizer = [], []
+    for name, value in _unwrap_model(model).state_dict().items():
+        if torch.is_tensor(value) and not bool(torch.isfinite(value).all()):
+            bad_model.append(name)
+    names = {id(p): n for n, p in _unwrap_model(model).named_parameters()}
+    for parameter, state in optimizer.state.items():
+        for key, value in state.items():
+            if torch.is_tensor(value) and not bool(torch.isfinite(value).all()):
+                bad_optimizer.append({"parameter": names.get(id(parameter), "unmapped"), "state": str(key)})
+    return {"nonfinite_model_tensors": bad_model, "nonfinite_optimizer_tensors": bad_optimizer,
+            "all_checked_model_and_optimizer_tensors_finite": not (bad_model or bad_optimizer)}
+
+
+def _stop_numerical_training(context, model, optimizer, scaler, evidence, reasons):
+    path = Path(context["receipt_path"])
+    receipt = {"schema_version": 1, "status": "failed_numerical_acceptance",
+               "policy": NUMERICAL_FAILURE_POLICY, "reasons": reasons,
+               "created_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+               "location": {k: v for k, v in context.items() if k not in ("receipt_path", "required_parameter_names")},
+               "source_identity": source_contract_identity(), "evidence": evidence,
+               "scaler_state_after": scaler.state_dict() if scaler is not None else None,
+               "resulting_state": _numerical_state_summary(model, optimizer),
+               "next_action": "terminate_attempt_no_next_epoch_or_paired_fit"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x") as stream:
+        json.dump(_numerical_json_safe(receipt), stream, sort_keys=True, indent=2, allow_nan=False)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    raise NumericalTrainingFailure(f"[TRAIN][NUMERICAL_STOP] {', '.join(reasons)}; receipt={path}")
+
+
+def perform_optimizer_update(model, optimizer, scaler=None, *, numerical_failure_context=None):
     """Preserve the update path while counting actual (unfused) optimizer calls.
 
     GradScaler may skip optimizer.step on overflow. Its return value is not a
@@ -2071,7 +2195,29 @@ def perform_optimizer_update(model, optimizer, scaler=None):
     try:
         if scaler is not None:
             scaler.unscale_(optimizer)
+        evidence = None
+        if numerical_failure_context is not None:
+            gradients = observe_preclip_gradients(model, numerical_failure_context["required_parameter_names"])
+            evidence = {"preclip_gradients": gradients, "scaler_state_before": numerical_failure_context.get("scaler_state_before"),
+                        "actual_optimizer_calls": 0, "optimizer_steps_skipped": None,
+                        "disposition_phase": "before_clip_before_optimizer_step"}
+            reasons = []
+            if not gradients["gradient_tensor_count"]:
+                reasons.append("empty_gradient_collection")
+            if gradients["missing_required_parameters"]:
+                reasons.append("missing_required_gradients")
+            if gradients["nonfinite_parameters"]:
+                reasons.append("nonfinite_gradient_elements")
+            if reasons:
+                _stop_numerical_training(numerical_failure_context, model, optimizer, scaler, evidence, reasons)
         norm = clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if evidence is not None:
+            norm_value = float(norm.detach().cpu().item()) if torch.is_tensor(norm) else float(norm)
+            evidence["actual_clipping_norm"] = norm_value
+            if not math.isfinite(norm_value):
+                evidence["disposition_phase"] = "after_clip_before_optimizer_step"
+                _stop_numerical_training(numerical_failure_context, model, optimizer, scaler, evidence,
+                                         ["nonfinite_aggregate_clipping_norm"])
         if scaler is not None:
             scaler.step(optimizer)
             scaler.update()
@@ -2080,6 +2226,11 @@ def perform_optimizer_update(model, optimizer, scaler=None):
                 succeeded = 0
         else:
             optimizer.step()
+        if evidence is not None and succeeded != 1:
+            evidence.update(actual_optimizer_calls=succeeded, optimizer_steps_skipped=1 - succeeded,
+                            disposition_phase="after_observed_optimizer_opportunity")
+            _stop_numerical_training(numerical_failure_context, model, optimizer, scaler, evidence,
+                                     ["optimizer_step_skipped"])
     finally:
         handle.remove()
     norm_value = float(norm.detach().cpu().item()) if torch.is_tensor(norm) else float(norm)
@@ -2141,7 +2292,16 @@ def train_one_epoch(
     v2_dropout_ramp_epochs: int = 0,
     roi_focus_live_csv: Optional[Path] = None,
     roi_focus_every_batches: int = 1,
+    numerical_failure_policy: Optional[str] = None,
+    numerical_failure_receipt: Optional[Path] = None,
+    numerical_run_context: Optional[Dict[str, Any]] = None,
+    numerical_update_offset: int = 0,
 ) -> Dict[str, float]:
+    numerical_active = bool(_numerical_policy_contract(argparse.Namespace(numerical_failure_policy=numerical_failure_policy)))
+    if numerical_active and numerical_failure_receipt is None:
+        raise ValueError("Numerical policy requires its exclusive failure receipt path")
+    numerical_required = _required_numerical_gradients(model) if numerical_active else []
+    numerical_forward_observations = []
     model.train()
     mm = _unwrap_model(model)
     accum_steps = max(1, int(grad_accumulation_steps))
@@ -2211,7 +2371,19 @@ def train_one_epoch(
                      'loss_finite_checks': 0, 'gradient_norm_max': 0.0}
 
     def update_optimizer():
-        observed = perform_optimizer_update(model, optimizer, scaler if device.type == 'cuda' else None)
+        if numerical_active:
+            context = {**(numerical_run_context or {}), "receipt_path": str(numerical_failure_receipt), "required_parameter_names": numerical_required,
+                       "fold": int(fold), "epoch": int(epoch), "microbatch_index": batch_idx,
+                       "attempted_update_in_epoch": update_health["optimizer_step_attempts"] + 1,
+                       "attempted_update_index_since_process_start": int(numerical_update_offset) + update_health["optimizer_step_attempts"] + 1,
+                       "actual_accumulation_batches": batches_since_step, "loss_divisor": accum_steps,
+                       "forward_observations": list(numerical_forward_observations),
+                       "scaler_state_before": scaler.state_dict() if scaler is not None else None}
+            observed = perform_optimizer_update(model, optimizer, scaler if device.type == 'cuda' else None,
+                                                numerical_failure_context=context)
+            numerical_forward_observations.clear()
+        else:
+            observed = perform_optimizer_update(model, optimizer, scaler if device.type == 'cuda' else None)
         for key in ('optimizer_step_attempts', 'optimizer_steps_succeeded', 'optimizer_steps_skipped'):
             update_health[key] += observed[key]
         if np.isfinite(observed['gradient_norm']):
@@ -2561,6 +2733,18 @@ def train_one_epoch(
         )
         if check_nonfinite_loss:
             update_health['loss_finite_checks'] += 1
+        if numerical_active:
+            numerical_forward_observations.append({"microbatch_index": batch_idx, "loss_dtype": str(loss.dtype),
+                "loss_finite": bool(torch.isfinite(loss).all()),
+                "logits": {name: {"dtype": str(value.dtype), "all_finite": bool(torch.isfinite(value).all())}
+                           for name, value in (logits.items() if isinstance(logits, dict) else [(primary_key, logits)])}})
+            if not numerical_forward_observations[-1]["loss_finite"] or not all(
+                    value["all_finite"] for value in numerical_forward_observations[-1]["logits"].values()):
+                _stop_numerical_training({**(numerical_run_context or {}), "receipt_path": str(numerical_failure_receipt), "fold": int(fold),
+                    "epoch": int(epoch), "microbatch_index": batch_idx, "actual_accumulation_batches": batches_since_step,
+                    "loss_divisor": accum_steps}, model, optimizer, scaler,
+                    {"forward_observations": list(numerical_forward_observations), "actual_optimizer_calls": 0,
+                     "optimizer_steps_skipped": None, "disposition_phase": "before_backward"}, ["nonfinite_forward_loss_or_logits"])
         if check_nonfinite_loss and (not torch.isfinite(loss).item()):
             pid_preview = [str(x) for x in list(payload["pid"])[:8]]
             raise RuntimeError(
@@ -2729,6 +2913,8 @@ def save_checkpoint(
         ck_args.pop("routing_intervention", None)
     if ck_args.get("amp_init_scale") is None:
         ck_args.pop("amp_init_scale", None)
+    if ck_args.get("numerical_failure_policy") is None:
+        ck_args.pop("numerical_failure_policy", None)
     ck_args.setdefault("software_version", TRIFUSESURV2_VERSION)
     ck_args.update(source_identity())
     state = {
@@ -2745,6 +2931,7 @@ def save_checkpoint(
     if encoders is not None:
         state["encoders"] = encoders
     _checkpoint_routing_metadata(state)
+    _checkpoint_numerical_metadata(state)
     if include_training_state:
         state["optimizer_state"] = optimizer.state_dict()
         state["scaler_state"] = (scaler.state_dict() if scaler is not None else None)
@@ -2797,6 +2984,7 @@ def load_model_state_only(path: Path, model: nn.Module) -> bool:
     if not path.is_file():
         return False
     ck = torch.load(path, map_location="cpu", weights_only=False)
+    _checkpoint_numerical_metadata(ck)
     in_sd = ck.get("model_state", {})
     if not isinstance(in_sd, dict):
         return False
@@ -2845,6 +3033,7 @@ def load_checkpoint(
     if not path.is_file():
         return 1, False
     ck = torch.load(path, map_location="cpu", weights_only=False)
+    _checkpoint_numerical_metadata(ck)
     if int(ck.get("num_time_bins", -1)) != int(num_time_bins):
         raise RuntimeError(f"Checkpoint num_time_bins mismatch: ckpt={ck.get('num_time_bins')} current={num_time_bins}")
 
@@ -3554,6 +3743,7 @@ def run_one_fold(
     prospective_routing_contract = _routing_intervention_contract(args)
     prospective_routing_coverage = ({"routing_intervention_coverage_schema": ROUTING_COVERAGE_SCHEMA}
                                     if prospective_routing_contract else {})
+    prospective_numerical_contract = _numerical_policy_contract(args)
     prospective_type_contract = ({'clinical_type_policy': clin_enc.type_policy}
                                  if clinical_type_policy == APPROVED_TYPE_POLICY else {})
     experiment_spec = canonical_experiment_spec(contract_args, runtime={
@@ -3563,7 +3753,7 @@ def run_one_fold(
         "optimizer": {"class": "AdamW", "betas": [0.9, 0.999], "eps": 1e-8},
         "scheduler": {"class": "CosineAnnealingLR", "T_max": scheduler_t_max(args), "eta_min": float(args.min_lr)},
         "contour_warmstart_sha256": file_sha256(contour_ckpt) if contour_ckpt and Path(contour_ckpt).is_file() else None,
-        **prospective_type_contract, **prospective_routing_contract, **prospective_routing_coverage,
+        **prospective_type_contract, **prospective_routing_contract, **prospective_routing_coverage, **prospective_numerical_contract,
     })
     model_contract = {
         "schema_version": 2,
@@ -3579,7 +3769,7 @@ def run_one_fold(
         "test_ids": list(split['test']) if development_only else te_df[args.id_col].astype(str).tolist(),
         "evaluation_scope": 'development_only' if development_only else 'train_validation_test',
         "clinical_column_policy": clin_enc.column_policy if v2_requested else {"columns": list(args.clinical_cols)},
-        **prospective_type_contract, **prospective_routing_contract, **prospective_routing_coverage,
+        **prospective_type_contract, **prospective_routing_contract, **prospective_routing_coverage, **prospective_numerical_contract,
         "metadata_sha256": file_sha256(args.meta_csv),
         "region_manifest_sha256": {pid: file_sha256(m["_manifest_path"]) for pid, m in (region_manifests or {}).items()},
         "radiomics_csv_sha256": file_sha256(_v2_radiomics_csv_path(args)) if v2_requested and args.use_radiomics else None,
@@ -3703,6 +3893,7 @@ def run_one_fold(
     print(f"[fold {fold:02d}] training epochs {start_epoch}..{args.epochs} (no early stop)")
     save_full_training_state = not bool(args.lightweight_checkpoints)
     scheduler_warmup_pause_reported = False
+    numerical_attempts_since_process_start = 0
 
     for epoch in range(start_epoch, int(args.epochs) + 1):
         synchronize_timing(device)
@@ -3776,7 +3967,14 @@ def run_one_fold(
             v2_dropout_ramp_epochs=int(getattr(args, "v2_dropout_ramp_epochs", 0)),
             roi_focus_live_csv=roi_focus_live_csv,
             roi_focus_every_batches=int(getattr(args, "roi_focus_every_batches", 1)),
+            **({"numerical_failure_policy": args.numerical_failure_policy,
+                "numerical_failure_receipt": fold_dir / "numerical_failure.json",
+                "numerical_run_context": {"seed": int(args.seed), "mode": str(args.fusion_mode)},
+                "numerical_update_offset": numerical_attempts_since_process_start}
+               if prospective_numerical_contract else {}),
         )
+        if prospective_numerical_contract:
+            numerical_attempts_since_process_start += int(train_stats["optimizer_step_attempts"])
         synchronize_timing(device)
         epoch_train_seconds = time.perf_counter() - train_started_at
 
@@ -4413,6 +4611,8 @@ def parse_args():
     p.add_argument("--amp", action="store_true")
     p.add_argument("--amp_init_scale", type=float, default=None,
                    help="Optional finite positive CUDA GradScaler initial scale; omitted preserves the PyTorch default.")
+    p.add_argument("--numerical_failure_policy", choices=(NUMERICAL_FAILURE_POLICY,), default=None,
+                   help="Opt in to immutable zero-skip monitoring and immediate numerical-failure termination.")
     p.add_argument("--allow_tf32", dest="allow_tf32", action="store_true")
     p.add_argument("--no_allow_tf32", dest="allow_tf32", action="store_false")
     p.set_defaults(allow_tf32=True)
@@ -4735,6 +4935,11 @@ def parse_args():
     if args.amp_init_scale is not None and (not args.amp or str(args.device).strip().lower() == "cpu"):
         raise ValueError("amp_init_scale requires enabled CUDA AMP")
     _validate_comparison_recipe(args)
+    if _numerical_policy_contract(args):
+        if args.ddp or args.data_parallel:
+            raise ValueError("Numerical stop policy currently requires single-device execution")
+        if args.model_version != "v2" or args.region_mode != "verified" or args.comparison_recipe != "principal" or str(args.endpoint).upper() != "OS":
+            raise ValueError("Numerical stop policy requires verified v2 principal OS inputs")
     if args.fusion_mode != "legacy":
         if args.model_version != "v2" or args.region_mode != "verified":
             raise ValueError("F0–F4 comparisons require v2 and verified region manifests; use fusion_mode=legacy for historical inputs.")

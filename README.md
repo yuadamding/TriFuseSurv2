@@ -12,6 +12,10 @@ acceptance failed and the common cap remains unaccepted. Exact Job/Pod cleanup
 is verified, with zero retained H100 reservations. C0/C1, the six fresh principal
 fits, mismatch H100 qualification and held-out evaluation remain unstarted.
 Earlier dated reports below preserve their historical states.
+The [production-gradient recovery protocol](docs/production_gradient_diagnostic.md)
+specifies the bounded real-data diagnostic, matched replay cells, prospective
+stop-on-numerical-failure policy and conditional qualification-plus-budget run.
+It also publishes both complete budget-C aggregate metric CSVs.
 
 Start with the [implementation and validation guide](docs/implementation_and_validation.md)
 for design decisions, lessons from revisions, evidence levels, and remaining work.

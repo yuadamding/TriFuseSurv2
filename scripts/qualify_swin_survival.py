@@ -70,6 +70,8 @@ def validate_settings(settings_by_mode, profile, comparison='paired-fusion'):
     for mode in modes:
         settings = settings_by_mode[mode]
         validate_initial_scale(settings.get('amp_init_scale'))
+        require(settings.get('numerical_failure_policy') in (None, 'zero_skip_stop_v1'),
+                'Unknown prospective numerical failure policy')
         fusion_mode = mode if comparison == 'paired-fusion' else 'F3'
         require(settings['fusion_mode'] == fusion_mode and settings['model_version'] == 'v2'
                 and settings['region_mode'] == 'verified', 'Only verified F2/F3 v2 is qualified')
@@ -556,6 +558,20 @@ def qualify_mode(trainer, settings, options, record):
     kwargs.update(fold=0, epoch=1, primary_endpoint='OS', num_time_bins=6, time_bin_width_days=settings['time_bin_width_days'],
         teacher_force_alpha=0., survival_loss_weight=1., ema=None, autocast_ctx=autocast,
         grad_accumulation_steps=settings['grad_accumulation_steps'], nonfinite_check_every_batches=1)
+    numerical_contract = trainer._numerical_policy_contract(argparse.Namespace(**settings))
+    if numerical_contract:
+        require(getattr(options, 'output', None) is not None,
+                'Active numerical-policy qualification requires an exact output evidence path')
+        mode_label = str(record['mode'])
+        failure_path = Path(options.output).with_name(Path(options.output).stem + '.' + mode_label + '.numerical_failure.json')
+        require(not failure_path.exists() and not failure_path.is_symlink(),
+                'Numerical failure evidence path must be new')
+        kwargs.update(numerical_failure_policy=settings['numerical_failure_policy'],
+                      numerical_failure_receipt=failure_path,
+                      numerical_run_context={'seed': int(settings['seed']), 'mode': settings['fusion_mode'],
+                                             'qualification_mode_label': mode_label})
+        record['numerical_failure_contract'] = numerical_contract
+        record['numerical_failure_receipt_path'] = str(failure_path)
     routing_comparison = getattr(options, 'comparison', 'paired-fusion') == 'routing-intervention'
     routing_context = (instrument_routing(model, settings, record, 'training') if routing_comparison
                        else contextlib.nullcontext())

@@ -66,9 +66,11 @@ specifies one deterministic incorrect-routing rule in a separate
 **three fits beyond the nine-fit ladder**, using seeds 42, 142 and 242 and the
 corresponding substantive F3 comparators. The rule cycles edges within joint
 image/radiomics availability classes, retains singleton identity fallbacks and
-preserves token identities, values and availability. Its runtime implementation,
-actual-mask equivalence checks and numerical qualification remain pending;
-the design does not authorize execution or displace the core study. Equal
+preserves token identities, values and availability. Its
+[runtime implementation and CPU actual-mask checks](mismatched_routing_implementation.md)
+are complete. Production H100 qualification and the three cohort fits remain
+pending under the accepted-policy and resource gates; the design does not
+displace the core study. Equal
 sparsity and available access do not imply equal biological information.
 
 **Contour robustness remains planned, but not yet prespecified.** Before it can
