@@ -1,0 +1,190 @@
+{
+  "historical_budget_B": {
+    "F2": {
+      "attempted_updates": 552,
+      "budget_numerical_disposition": "requires_review",
+      "completed_epochs": 12,
+      "finite_best_and_last_checkpoint_audit": "passed",
+      "skipped_updates": 1,
+      "successful_updates": 551
+    },
+    "F3": {
+      "complete_epoch_successful_updates": 46,
+      "completed_epochs": 1,
+      "epoch2_complete_summary_and_save": "unproven",
+      "epoch2_log_reaches_batch": 365,
+      "final_total_successful_updates": null,
+      "train_returncode": -15
+    },
+    "common_cap": "unassessed",
+    "heldout_test_evaluation": "not_run",
+    "primary_scientific_result": "not_available",
+    "twelve_epochs_accepted": false,
+    "twentyfour_epochs_automatically_authorized": false
+  },
+  "limitations": [
+    "The new scale is a candidate; historical F2 backoff does not prove it fixes sustained training.",
+    "Development inputs do not establish original CT/RTSTRUCT, HU, contour or clinical qualification.",
+    "No paired test IBS result or F3 benefit is established."
+  ],
+  "parallel_deliverables": {
+    "baseline_development_clinical_cells_byte_verified": 4862,
+    "corrected_baseline_candidate": "prepared_not_released_no_C0_or_C1_fit",
+    "mismatched_routing_control": "design_and_development_feasibility_prepared_runtime_parity_and_three_fits_pending",
+    "principal_freeze": "pending_accepted_common_cap",
+    "principal_substantive_fits_completed": 0
+  },
+  "parent_cleanup": {
+    "finalizer_bypass_performed": false,
+    "first_read_only_snapshot_at_houston": "October 28, 2026, 7:35:33 PM CDT",
+    "first_read_only_snapshot_at_utc": "2026-10-29T00:35:33.108033+00:00",
+    "force_delete_performed": false,
+    "historical_failed_cleanup_preserved": true,
+    "historical_pod_delete_rbac_answer": "no",
+    "historical_retained_receipt_sha256": "36399bb86f43af415d7482b5004f3f809c2353f0a43e5a7ab2d5c05dced29ebc",
+    "job": "trifusesurv2-budget-development-20261028b",
+    "job_absent_reads": 2,
+    "kubernetes_mutations_by_reconciliation": 0,
+    "owned_pods_each_read": 0,
+    "owner": {
+      "bound_host": "ldragon3",
+      "current_host": "ldragon3",
+      "identity_receipt_sha256": "eb321b3a3e6890f3922a3b53271d97a7239fd0e123bdeca0a3b6037f9fcc3063",
+      "live_check": "absent",
+      "reason": "recorded_PID_absent_on_bound_host"
+    },
+    "project_outputs_and_checkpoints_preserved": true,
+    "release_receipt_at_houston": "October 28, 2026, 7:36:32 PM CDT",
+    "release_receipt_at_utc": "2026-10-29T00:36:32.855154+00:00",
+    "release_receipt_remote_path": "/rsrch8/home/bcb/yding4/TriFuseSurv2/common-grid-h100-20261027/budget-b-admin-cleanup-reconciliation-c.json",
+    "release_receipt_sha256": "fa5ede8cc999747d4edc674420bddfd244f3bb90a79de2c5e9c3d29f72e1816b",
+    "status": "owned_resources_absent",
+    "uid": "8cc49447-6372-4d6b-8edf-199db3904cfd",
+    "worker_stop_or_node_fencing_user_confirmation": "Worker stopped or node safely fenced"
+  },
+  "prepared_at_houston": "October 28, 2026, 7:38:30 PM CDT",
+  "prepared_at_utc": "2026-10-29T00:38:30.915667+00:00",
+  "replacement_C": {
+    "allowlist_sha256": "580089e7cc71eb57ea3483ea25441104bdd82c2b0d1f5d75bb62401f544e4915",
+    "amp_initial_scale": 32768,
+    "automatic_retries": 0,
+    "budget_acceptance": "requires_complete_new_pair_checkpoint_audits_and_prespecified_curve_rule",
+    "budget_policy_sha256": "b5225f7f3a3d3b4e2d8ca4dafe1b051fce92a29c4c3040dd3ad6eeea2c179a11",
+    "bundle_binding_sha256": "0f08734d9d025a762f67e0200777a2790c37a1e8e3e88439c895d7279b63693b",
+    "heldout_test_evaluation": "not_run",
+    "job": "trifusesurv2-budget-development-20261028c",
+    "launch": {
+      "actual_host_gate": {
+        "clinical_or_GPU_work": false,
+        "python_executable": "/usr/libexec/platform-python3.6",
+        "sha256": "fe1ba681930ab7e294ee2b4685f9289eabf176bf90566b285dba41a402830b80",
+        "status": "passed",
+        "tests_failed": 0,
+        "tests_passed": 85
+      },
+      "admission_review_sha256": "54e5750949c62c6ce3a01a49270126a2b5d9f3a3fc5e939f7488968bf97ba155",
+      "admitted_pod_spec_sha256": "c863f7dc38f26b4177327370f04ad79a881706267bf3b67191aa87036f353002",
+      "context": "yding4_yn-gpu-workload@kubernetes-admin@kubernetes",
+      "controller_binding_sha256": "69ef151db491e2ee25ba14fd072015d2f29b50e58ff3f4b6134dab7d3a25ff15",
+      "handoff_at_houston": "October 28, 2026, 7:39:19 PM CDT",
+      "handoff_at_utc": "2026-10-29T00:39:19.284743+00:00",
+      "handoff_sha256": "2ed90a4bccef0dbee71c813d39a949e4fdf294055554047585fe909a2dc56169",
+      "job_uid": "e8c1468d-1b19-4f60-b922-7bf2a1541587",
+      "namespace": "yn-gpu-workload",
+      "pod_name": "trifusesurv2-budget-development-20261028c-9k8lj",
+      "pod_uid": "6a43c70b-b7d7-4ef9-821b-92526e209538",
+      "publication": {
+        "controller_files": 69,
+        "existing_environment_reused": true,
+        "mac_relay_files_created": false,
+        "staging_archives_removed": true,
+        "status": "both_bundles_readback_verified",
+        "workload_files": 177
+      },
+      "ready_sha256": "9c05d011c020a83cf5563d330e2f0a396c9153a476f26e57e9766c624757e917",
+      "status": "detached_activated_and_watching",
+      "watching_sha256": "bf04c2c802dff34d2b7ad83103d146dad3f4528eb48e87df1806849a02ce2663"
+    },
+    "local_neural_source_tests": {
+      "scope": "fabricated_CPU_engineering_checks",
+      "subtests_passed": 91,
+      "tests_passed": 59
+    },
+    "manifest_sha256": "f06dddc9bf8521990a113125785743d43af934a8ac39872ee38bc0251250b726",
+    "maximum_H100s_including_Pending": 1,
+    "new_policy_H100_qualification": "pending_worker_startup",
+    "new_policy_cohort_fits_completed_at_snapshot": 0,
+    "numerical_policy_sha256": "5a4595bd4f89d76d3ba535c1faa9dc9747b0be9a223f93c87ad3f230df252c7a",
+    "numerical_policy_status": "candidate_pending_new_source_H100_and_paired_budget_qualification",
+    "plan_sha256": "3fadfbda88ede8abf61063084d9d531d7344047d4786858205ba1643a17f90be",
+    "precision": "FP16",
+    "qualification_before_training": {
+      "current_affected_CPU_source_suites": 3,
+      "full_production_Swin_survival_NLL": "required",
+      "shared_memory_check": "required",
+      "skipped_updates_per_mode": 0,
+      "successful_updates_per_mode": 2
+    },
+    "requested_H100s": 1,
+    "resource_contract": {
+      "H100s": 1,
+      "PVC": "yding4-gpu-home",
+      "PVC_subpath": "TriFuseSurv2/common-grid-h100-20261027",
+      "activeDeadlineSeconds": null,
+      "backoffLimit": 0,
+      "cpu": 24,
+      "ephemeral_limits": "16Gi",
+      "ephemeral_requests": "8Gi",
+      "memory": "200Gi",
+      "pinned_image": "hpcharbor.mdanderson.edu/yding41/radiomics@sha256:bd8ad6777cbf704fbee7a1942f09e6a704ee718cf8bd198a7f65a0929cb6e161",
+      "restartPolicy": "Never",
+      "shared_memory": "8Gi",
+      "temporary_space": "16Gi",
+      "ttlSecondsAfterFinished": 86400
+    },
+    "snapshot": {
+      "ETA": "insufficient evidence",
+      "PodScheduled": false,
+      "at_houston": "October 28, 2026, 7:40:08 PM CDT",
+      "at_utc": "2026-10-29T00:40:08.575665+00:00",
+      "completed_epoch_rows": {},
+      "conservative_H100_allowance_occupied": 1,
+      "container_restarts": 0,
+      "new_neural_training_invocations": 0,
+      "new_startup_hardware_proof": "not_yet_available",
+      "old_budget_B_allowance_occupied": 0,
+      "pending_H100_requests": 1,
+      "reason": "Unschedulable",
+      "running_ready_H100_requests": 0,
+      "snapshot_is_atomic": false,
+      "source_evidence_sha256": "ee344670a090d550a3aa3fce9ebef9ab0184f4c625f6cf1aeef66f59e4ebd7d0",
+      "specific_scheduler_message": "not_captured_in_compact_snapshot",
+      "status": "unscheduled_pending",
+      "supervisor_live_check": "exact_identity_alive"
+    },
+    "source_commit": "1fed762a2457c49bbd334c5ac5f83c65dbdbcc16",
+    "source_tree_sha256": "43db0d27b34ff38ebd90d2c13193cdd968680fcc410d4e2ac87f0a8e9ec06e1b",
+    "training_after_qualification": {
+      "T_max_per_mode": 12,
+      "allowed_skipped_updates_per_mode": 0,
+      "epochs_per_mode": 12,
+      "fresh_modes": true,
+      "modes": [
+        "F2",
+        "F3"
+      ],
+      "parent_fit_reuse": {
+        "F2": false,
+        "F3": false
+      },
+      "required_successful_updates_per_mode": 552,
+      "seed": 42
+    },
+    "whole_job_deadline": null
+  },
+  "reported_at_utc": "2026-10-29T00:40:56.112492+00:00",
+  "schema_version": 1,
+  "snapshot_at_houston": "October 28, 2026, 7:40:08 PM CDT",
+  "snapshot_at_utc": "2026-10-29T00:40:08.575665+00:00",
+  "status": "C_submitted_unscheduled_pending_exact_owner_alive"
+}

@@ -97,6 +97,14 @@ interruption: F2 completed twelve epochs with one AMP skip, F3 was terminated,
 and exact cleanup remained unresolved at October 28, 2026, 3:24:06 PM CDT.
 The cap remains unassessed; a prospective scale-32,768 correction requires fresh
 H100 qualification and a new paired run after resource reconciliation.
+The [budget-C recovery report](docs/budget_c_recovery_20261028.md) supersedes
+that cleanup state: two exact absence reads and bound-host supervisor absence
+were verified on October 28, 2026, at 7:35 PM CDT. The fresh scale-32,768
+attempt was submitted with detached supervision at 7:39 PM CDT. Its 7:40 PM CDT
+snapshot showed one unscheduled Pending Pod, zero Running/Ready H100s and no
+training started. Admission, bundle readback and all 85 actual-host controller
+tests passed. Numerical qualification and both fresh fits await worker startup;
+the common cap and scientific comparison remain unassessed.
 
 The [whole-cohort report](docs/cohort_qualification.md) reconciles all 613
 prepared patients and records computational dispositions for all 525 queued
